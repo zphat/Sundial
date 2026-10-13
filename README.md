@@ -4,6 +4,14 @@ Days · tasks · notes. A calendar and to-do app that is fast enough to actually
 "Sundial" is a placeholder name until a final one is chosen.
 
 Live prototype (same link every version): https://claude.ai/artifact/HzhVqj4tbdPWainYbfEDBt
+Source and builds: https://github.com/zphat/Sundial
+
+## Getting the Windows installer
+
+Every push to `main` builds `Sundial_<version>_x64-setup.exe` on GitHub:
+Actions tab → latest "build" run → Artifacts → `Sundial-windows-installer`.
+Tagged versions (`v0.1.0` …) also appear under Releases with the installer attached.
+The installer is unsigned for now, so Windows shows "unrecognized app" once: More info → Run anyway.
 
 ## What is here
 
