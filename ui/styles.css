@@ -35,6 +35,12 @@
   color-scheme:light;
 }
 body.compact{--pad:6px;--row-gap:2px}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-corner{background:transparent}
+::-webkit-scrollbar-thumb{background:transparent;border-radius:999px;border:2px solid transparent;background-clip:padding-box}
+:hover::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--fg-3) 55%,transparent);background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background:var(--fg-3);background-clip:padding-box}
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:14px;line-height:1.4;-webkit-font-smoothing:antialiased;overflow:hidden}
 *{box-sizing:border-box}
@@ -469,6 +475,8 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .gutter.h{width:auto;height:10px;cursor:row-resize}
 .gutter.h::after{width:28px;height:2px}
 .gutter.h:hover::after,.gutter.h.on::after{width:48px;height:2px}
+#calPane.autoh{max-height:max(220px,calc(100% - 300px))}
+#calPane.autoh .calwrap{flex:0 1 auto;min-height:0}
 #calPane.wide .calwrap{flex-direction:row;flex-wrap:wrap;align-items:flex-start}
 #calPane.wide .mini{flex:1 1 260px}
 #calPane.wide .legend,#calPane.wide .upnext{flex:1 1 200px;margin-top:0}

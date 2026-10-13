@@ -40,8 +40,11 @@ function applyLayout(){
     const vis=[L.cal&&cal,L.board&&board,L.tl&&tl].filter(Boolean);
     const filler=L.board?board:vis[vis.length-1];
     const maxH=Math.max(160,cols.clientHeight-180);
-    vis.forEach(p=>{if(p===filler){p.style.flex='1 1 auto';p.style.minHeight='140px'}else{const h=Math.min(maxH,p===cal?L.hc:L.ht);p.style.flex='0 0 '+h+'px';p.style.minHeight='0'}});
+    // the calendar opens to its content (month, colors, up next) unless the user dragged it to a height
+    vis.forEach(p=>{if(p===filler){p.style.flex='1 1 auto';p.style.minHeight='140px'}else if(p===cal&&L.hcAuto!==false){p.style.flex='0 0 auto';p.style.minHeight='0'}else{const h=Math.min(maxH,p===cal?L.hc:L.ht);p.style.flex='0 0 '+h+'px';p.style.minHeight='0'}});
+    cal.classList.toggle('autoh',L.cal&&cal!==filler&&L.hcAuto!==false);
   }
+  if(mode!=='column')cal.classList.remove('autoh');
   cal.classList.toggle('wide',mode==='column'&&cal.getBoundingClientRect().width>560);
   document.querySelectorAll('#paneSeg button[data-pane]').forEach(b=>b.setAttribute('aria-pressed',String(!!L[b.dataset.pane])));
   const lb=$('#layoutBtn');if(lb){lb.textContent=mode==='column'?'⇆':'⇅';lb.title=mode==='column'?'Side by side':'Stacked';lb.setAttribute('aria-pressed',String(mode==='column'))}
@@ -581,7 +584,7 @@ document.addEventListener('drop',e=>{if(!dragId)return;e.preventDefault();const 
   dragId=null;render()});
 // gutters: widths in side-by-side mode, heights in stacked mode
 let gdrag=null;
-document.querySelectorAll('.gutter').forEach(g=>{g.addEventListener('pointerdown',e=>{const L=state.layout;gdrag={side:g.dataset.side,mode:effectiveMode(),x:e.clientX,y:e.clientY,wl:L.wl,wr:L.wr,hc:L.hc,ht:L.ht};g.classList.add('on');g.setPointerCapture(e.pointerId);document.body.style.cursor=gdrag.mode==='column'?'row-resize':'col-resize';document.body.style.userSelect='none'});
+document.querySelectorAll('.gutter').forEach(g=>{g.addEventListener('pointerdown',e=>{const L=state.layout;if(effectiveMode()==='column'&&g.dataset.side==='l'&&L.hcAuto!==false){L.hc=Math.round($('#calPane').getBoundingClientRect().height);L.hcAuto=false}gdrag={side:g.dataset.side,mode:effectiveMode(),x:e.clientX,y:e.clientY,wl:L.wl,wr:L.wr,hc:L.hc,ht:L.ht};g.classList.add('on');g.setPointerCapture(e.pointerId);document.body.style.cursor=gdrag.mode==='column'?'row-resize':'col-resize';document.body.style.userSelect='none'});
   g.addEventListener('pointermove',e=>{if(!gdrag)return;const L=state.layout;
     if(gdrag.mode==='row'){const dx=e.clientX-gdrag.x;if(gdrag.side==='l')L.wl=Math.max(190,Math.min(innerWidth*0.45,gdrag.wl+dx));else L.wr=Math.max(240,Math.min(innerWidth*0.5,gdrag.wr-dx))}
     else{const dy=e.clientY-gdrag.y;const max=Math.max(160,$('#cols').clientHeight-180);
@@ -589,7 +592,7 @@ document.querySelectorAll('.gutter').forEach(g=>{g.addEventListener('pointerdown
       if(gdrag.side==='l')L.hc=Math.max(120,Math.min(max,gdrag.hc+dy));else L.ht=Math.max(120,Math.min(max,gdrag.ht-dy))}
     applyLayout()});
   g.addEventListener('pointerup',()=>{if(!gdrag)return;gdrag=null;g.classList.remove('on');document.body.style.cursor='';document.body.style.userSelect='';save()});
-  g.addEventListener('dblclick',()=>{const L=state.layout;if(effectiveMode()==='row'){if(g.dataset.side==='l')L.wl=240;else L.wr=320}else{if(g.dataset.side==='l')L.hc=300;else L.ht=320}save();applyLayout()})});
+  g.addEventListener('dblclick',()=>{const L=state.layout;if(effectiveMode()==='row'){if(g.dataset.side==='l')L.wl=240;else L.wr=320}else{if(g.dataset.side==='l')L.hcAuto=true;else L.ht=320}save();applyLayout()})});
 let rzTimer=null;addEventListener('resize',()=>{clearTimeout(rzTimer);rzTimer=setTimeout(applyLayout,120)});
 
 // ---------- desktop + AI helpers ----------

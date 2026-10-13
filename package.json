@@ -1,6 +1,6 @@
 {
   "name": "sundial",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Sundial: days, tasks, notes. Static UI in ./ui, desktop shell in ./src-tauri.",
   "scripts": {
