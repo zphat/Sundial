@@ -19,6 +19,7 @@ function applyDensity(){document.body.classList.toggle('compact',S().density==='
 function effectiveMode(){const m=state.layout.mode||'auto';if(m!=='auto')return m;return (innerHeight>innerWidth*1.05||innerWidth<760)?'column':'row'}
 function applyLayout(){
   const L=state.layout,mode=effectiveMode();
+  if(!L.sized){L.wl=Math.max(220,Math.min(440,Math.round(innerWidth*0.19)));L.wr=Math.max(300,Math.min(600,Math.round(innerWidth*0.26)));L.hc=Math.max(240,Math.min(460,Math.round(innerHeight*0.3)));L.ht=Math.max(260,Math.min(560,Math.round(innerHeight*0.3)));L.sized=true;save()}
   const cols=$('#cols'),cal=$('#calPane'),board=$('#boardPane'),tl=$('#tlPane'),gL=$('#gL'),gR=$('#gR');
   if(!L.cal&&!L.board&&!L.tl)L.board=true;
   cal.hidden=!L.cal;board.hidden=!L.board;tl.hidden=!L.tl;
@@ -124,6 +125,7 @@ function drawer(x){
   const rem=x.remind==null?'':String(x.remind);
   const opt=(v,l)=>`<option value="${v}" ${rem===v?'selected':''}>${l}</option>`;
   return `<div class="drawer"><div class="dw"><div class="in" data-drawer="${x.id}">
+    <div class="dh"><span class="eyebrow">Editing · changes save as you type</span><button class="min" data-act="close" title="Minimize this task (Esc)">▴ Minimize</button></div>
     <input class="ttl" id="edTitle" value="${esc(x.title)}" aria-label="Title">
     <div class="fields">
       <div class="f"><label>Day</label><input id="edDate" type="date" value="${x.date}"></div>
@@ -135,7 +137,7 @@ function drawer(x){
     <div class="rowx"><div class="colors">${COLORS.map(([k])=>`<button data-setcolor="${k}" aria-pressed="${k===x.color}" style="--sw:var(--c-${k})" title="${esc(state.labels[k])}"></button>`).join('')}</div>
       <div class="al"><button class="tog" id="edNotify" role="switch" aria-checked="${!!x.notify}" aria-label="Notify"></button><span>Notify${x.time==null?' (needs a time)':''}</span></div></div>
     <textarea id="edNotes" placeholder="Notes. Links, the address, what you actually need to say.">${esc(x.notes||'')}</textarea>
-    <div class="actions"><button data-act="done">${x.done?'Not done':'Done'}</button><button data-act="tomorrow">Tomorrow →</button><button data-act="nextweek">+1 week</button><button data-act="dup">Duplicate</button><button class="del" data-act="delete">Delete</button><span class="saved" id="saved">saved</span><button data-act="close">Close <span class="kbd">esc</span></button></div>
+    <div class="actions"><button class="primary" data-act="done">${x.done?'↺ Not done':'✓ Mark done'}</button><button data-act="tomorrow">Tomorrow →</button><button data-act="nextweek">+1 week</button><button data-act="dup">Duplicate</button><span class="saved" id="saved">saved</span><button class="del" data-act="delete" title="Delete this task (Undo appears afterwards)">Delete</button></div>
   </div></div></div>`;
 }
 function railHtml(){
@@ -205,12 +207,12 @@ function renderNotes(){
 function renderSide(){
   const side=$('#tlPane');const ts=dayTasks(sel);const timed=ts.filter(t=>t.time!=null),any=ts.filter(t=>t.time==null&&!t.done);
   const H0=0,H1=24,rows=H1-H0,hh=S().hh,m=nowMin(),today=sel===todayStr();
-  let h=`<div class="pane-hd"><b>${relDay(sel)}${!today?' '+fromYmd(sel).getDate():''}</b><span class="eyebrow">${timed.length} timed · ${any.length} anytime</span><span class="zoom"><button data-zoom="-1" title="Zoom out">−</button><button data-zoom="1" title="Zoom in">+</button></span><button class="x" data-pane="tl" title="Hide pane">×</button></div><div class="tl">`;
+  let h=`<div class="pane-hd"><b>${relDay(sel)}${!today?' '+fromYmd(sel).getDate():''}</b><span class="eyebrow">${timed.length} timed · ${any.length} anytime</span><span class="zoom"><button data-zoom="-1" title="Zoom out">−</button><button data-zoom="1" title="Zoom in">+</button><button data-zoom="fit" title="Fit the whole day in view">⤢</button></span><button class="x" data-pane="tl" title="Hide pane">×</button></div><div class="tl">`;
   if(any.length)h+=`<div class="anytime">${any.map(x=>`<span class="chip" data-id="${x.id}" data-act="open"><span class="swatch" style="--sw:var(--c-${x.color})"></span>${esc(x.title)}</span>`).join('')}</div>`;
   h+=`<div class="hours" style="--rows:${rows};--hh:${hh}px">`;
   for(let i=0;i<rows;i++)h+=`<div class="h" data-hour="${H0+i}" style="top:${i*hh}px"><span>${fmtTime((H0+i)*60)}</span></div>`;
   for(const x of timed){const top=(x.time-H0*60)/60*hh;const hgt=Math.max(18,(x.dur||30)/60*hh-3);if(top<0||top>rows*hh)continue;const live=today&&!x.done&&m>=x.time&&m<x.time+(x.dur||30);
-    h+=`<div class="blk ${x.done?'done':''} ${live?'live':''}" data-id="${x.id}" data-act="open" draggable="true" style="--sw:var(--c-${x.color});top:${top}px;height:${hgt}px">${esc(x.title)}${hgt>30?`<small>${fmtTime(x.time)}${x.dur?' · '+fmtDur(x.dur):''}</small>`:''}</div>`}
+    h+=`<div class="blk ${x.done?'done':''} ${live?'live':''} ${x.id===openId?'editing':''}" data-id="${x.id}" data-act="open" draggable="true" style="--sw:var(--c-${x.color});top:${top}px;height:${hgt}px">${esc(x.title)}${hgt>30?`<small>${fmtTime(x.time)}${x.dur?' · '+fmtDur(x.dur):''}</small>`:''}</div>`}
   if(today&&m>=H0*60&&m<=H1*60)h+=`<div class="now" style="top:${(m-H0*60)/60*hh}px"><i>☉ ${fmtTime(m)}</i></div>`;
   const prev=side.querySelector('.tl');const keep=prev&&prev.dataset.date===sel&&prev.dataset.hh===String(hh)?prev.scrollTop:null;
   side.innerHTML=h+'</div></div>';
@@ -396,10 +398,11 @@ async function toggleVoice(){
 }
 function resetMicUi(){const m=$('#mic');if(m)m.classList.remove('live');const w=$('#qaWrap');if(w)w.classList.remove('listening');SFX.play('ui.voice.off')}
 function voiceEnded(){resetMicUi();
-  const q=$('#qa');if(q&&q.value.trim()&&S().voice.autoAdd&&voiceHeard){const raw=q.value;const n=addTask(raw,sel);if(n){SFX.play('ui.add');if(n.date!==sel)goDay(n.date);render();toast('Added “'+n.title.slice(0,30)+'”');aiRefine(n,raw)}}else if(q)q.focus();voiceHeard=false}
+  const q=$('#qa');if(q&&q.value.trim()&&S().voice.autoAdd&&voiceHeard){const raw=q.value;const n=addTask(raw,sel);if(n){q.value='';previewParse();SFX.play('ui.add');if(n.date!==sel)goDay(n.date);render();toast('Added “'+n.title.slice(0,30)+'”');aiRefine(n,raw)}}else if(q)q.focus();voiceHeard=false}
 const comboOf=e=>{if(['Control','Shift','Alt','Meta'].includes(e.key))return null;const p=[];if(e.ctrlKey)p.push('Ctrl');if(e.altKey)p.push('Alt');if(e.shiftKey)p.push('Shift');if(e.metaKey)p.push('Meta');p.push(e.key===' '?'Space':e.key.length===1?e.key.toUpperCase():e.key);return p.join('+')};
 
 // ---------- events ----------
+function revealTask(id){setTimeout(()=>{const el=document.querySelector('.task[data-id="'+id+'"]');if(!el)return;el.scrollIntoView({block:'center',behavior:reduced()?'auto':'smooth'});el.classList.remove('flash');void el.offsetWidth;el.classList.add('flash')},40)}
 function closeDrawer(){const dr=$('.drawer');if(dr&&!reduced()){collapseDrawerEl(dr);setTimeout(()=>{openId=null;render()},240)}else{openId=null;render()}}
 function goDay(ds,dir){if(ds===sel)return;anim.slide=dir||(ds>sel?'slide-l':'slide-r');sel=ds;miniMonth=sel.slice(0,7);cursorId=null}
 function removeTask(id,animate){
@@ -431,7 +434,7 @@ document.addEventListener('click',e=>{
   if(b.id==='mic'){toggleVoice();return}
   if(b.id==='mPrev'||b.id==='mNext'){let[y,m]=miniMonth.split('-').map(Number);m+=b.id==='mNext'?1:-1;if(m<1){m=12;y--}if(m>12){m=1;y++}miniMonth=y+'-'+pad(m);renderMini();return}
   if(b.dataset.nav){const n=b.dataset.nav;let ds;if(n.startsWith('month:')){const d=fromYmd(sel);d.setDate(1);d.setMonth(d.getMonth()+(+n.slice(6)));ds=ymd(d)}else ds=addDays(sel,+n);goDay(ds,+n<0?'slide-r':'slide-l');render();return}
-  if(b.dataset.zoom){S().hh=Math.max(28,Math.min(96,S().hh+(+b.dataset.zoom)*12));save();renderSide();return}
+  if(b.dataset.zoom){if(b.dataset.zoom==='fit'){const tl=$('#tlPane .tl');S().hh=Math.max(20,Math.min(120,Math.floor(((tl?tl.clientHeight:600)-6)/24)))}else S().hh=Math.max(20,Math.min(120,S().hh+(+b.dataset.zoom)*12));save();renderSide();return}
   if(b.dataset.cmd){e.preventDefault();return}
   if(b.dataset.hl!=null)return;
   // settings sheet controls
@@ -452,7 +455,9 @@ document.addEventListener('click',e=>{
   if(!id)return;closeMenu();
   if(act==='done'){toggleDone(id);return}
   if(act==='color'){const x=get(id);const i=COLORS.findIndex(c=>c[0]===x.color);upd(id,{color:COLORS[(i+1)%COLORS.length][0]});render();return}
-  if(act==='open'){const x=get(id);if(!x)return;if(openId===id&&e.target.closest('.task')){closeDrawer();return}openId=id;cursorId=id;if(view!=='day')view='day';if(x.date!==sel)goDay(x.date);render();return}
+  if(act==='open'){const x=get(id);if(!x)return;if(openId===id){closeDrawer();return}openId=id;cursorId=id;if(view!=='day')view='day';if(x.date!==sel)goDay(x.date);
+    if(!state.layout.board){state.layout.board=true;save();applyLayout()}
+    render();revealTask(id);return}
   if(act==='tomorrow'){moveTo(id,addDays(get(id).date,1));render();toast('Moved to '+relDay(get(id).date).toLowerCase());return}
   if(act==='nextweek'){moveTo(id,addDays(get(id).date,7));render();toast('Moved a week out');return}
   if(act==='dup'){duplicate(id);render();return}
@@ -539,7 +544,7 @@ document.addEventListener('keydown',e=>{
   if(!globalHotkeys){
     if(combo&&combo===S().quick.hotkey){e.preventDefault();openQuickAdd();return}
     if(combo&&S().voice.enabled&&combo===S().voice.hotkey){e.preventDefault();toggleVoice();return}}
-  if(e.key==='Enter'&&t.id==='qa'){if(Voice.isActive()){Voice.stop();resetMicUi()}const raw=t.value;const n=addTask(raw,sel);if(n){SFX.play('ui.add');if(n.date!==sel)goDay(n.date);render();$('#qa').focus();aiRefine(n,raw)}return}
+  if(e.key==='Enter'&&t.id==='qa'){if(Voice.isActive()){Voice.stop();resetMicUi()}const raw=t.value;const n=addTask(raw,sel);if(n){t.value='';previewParse();SFX.play('ui.add');if(n.date!==sel)goDay(n.date);render();$('#qa').focus();aiRefine(n,raw)}return}
   if(e.key==='Enter'&&t.dataset.adddate){const n=addTask(t.value,t.dataset.adddate);if(n){SFX.play('ui.add');render();const i=document.querySelector(`[data-adddate="${n.date}"]`);if(i)i.focus()}return}
   if(e.key==='Escape'){if($('.menu')){closeMenu();return}if($('.scrim')){closeScrim();return}if(openId){closeDrawer();return}if(cursorId){cursorId=null;render();return}if(typing)t.blur();return}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();openSearch();return}
@@ -578,7 +583,7 @@ document.addEventListener('drop',e=>{if(!dragId)return;e.preventDefault();const 
 let gdrag=null;
 document.querySelectorAll('.gutter').forEach(g=>{g.addEventListener('pointerdown',e=>{const L=state.layout;gdrag={side:g.dataset.side,mode:effectiveMode(),x:e.clientX,y:e.clientY,wl:L.wl,wr:L.wr,hc:L.hc,ht:L.ht};g.classList.add('on');g.setPointerCapture(e.pointerId);document.body.style.cursor=gdrag.mode==='column'?'row-resize':'col-resize';document.body.style.userSelect='none'});
   g.addEventListener('pointermove',e=>{if(!gdrag)return;const L=state.layout;
-    if(gdrag.mode==='row'){const dx=e.clientX-gdrag.x;if(gdrag.side==='l')L.wl=Math.max(190,Math.min(520,gdrag.wl+dx));else L.wr=Math.max(240,Math.min(640,gdrag.wr-dx))}
+    if(gdrag.mode==='row'){const dx=e.clientX-gdrag.x;if(gdrag.side==='l')L.wl=Math.max(190,Math.min(innerWidth*0.45,gdrag.wl+dx));else L.wr=Math.max(240,Math.min(innerWidth*0.5,gdrag.wr-dx))}
     else{const dy=e.clientY-gdrag.y;const max=Math.max(160,$('#cols').clientHeight-180);
       // the top gutter sizes the calendar; the lower one sizes the timeline (the board takes what is left)
       if(gdrag.side==='l')L.hc=Math.max(120,Math.min(max,gdrag.hc+dy));else L.ht=Math.max(120,Math.min(max,gdrag.ht-dy))}
