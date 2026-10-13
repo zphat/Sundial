@@ -108,7 +108,7 @@ function renderUpnext(){
 }
 function renderLegend(){
   $('#legend').innerHTML=`<div class="eyebrow" style="margin-bottom:4px">Colors</div>`+COLORS.map(([k])=>`<div class="row"><span class="swatch" style="--sw:var(--c-${k})"></span><input data-color="${k}" value="${esc(state.labels[k])}" aria-label="Label for ${k}"></div>`).join('')+
-  `<div class="hint">Click a name to rename it. One line does it all: <code>dentist 10:15am 45m #health tmrw every week remind 1d</code></div>`;
+  `<div class="hint">Click a name to rename it. Type <code>#name</code> in a task line to use it.</div>`;
 }
 function taskRow(x){
   const open=x.id===openId,lead=remindLead(x);

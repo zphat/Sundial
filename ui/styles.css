@@ -464,6 +464,16 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .foot-tip{font-family:var(--f-mono);font-size:10px;color:var(--fg-3);text-align:center;position:relative;z-index:1}
 .foot-tip span{margin:0 8px}
 
+/* narrow windows (portrait monitors at high scaling): tighter top bar, shorter month cells */
+@media (max-width:900px){
+  .brand small{display:none}
+  .title{font-size:18px}
+  .kbd{display:none}
+  .seg button{padding:5px 9px;font-size:11.5px}
+  .btn{padding:6px 10px}
+  .top{gap:8px}
+}
+.cols.stack .grid7 .d{max-height:58px}
 @media (max-width:760px){
   .title{font-size:17px}
   .week{grid-template-columns:repeat(7,minmax(90px,1fr));overflow-x:auto}
