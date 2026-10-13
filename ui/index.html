@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Sundial</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=Syne:wght@600;700;800&family=Manrope:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+<style>[hidden]{display:none!important}</style>
+</head>
+<body>
+<div class="app" id="app">
+  <header class="top">
+    <div class="brand" title="The gnomon's shadow follows the real time of day">
+      <svg viewBox="0 0 28 28" aria-hidden="true" id="logo">
+        <circle cx="14" cy="14" r="12.5" fill="var(--accent)"/>
+        <circle cx="14" cy="14" r="12.5" fill="none" stroke="var(--on-accent)" stroke-width="1" opacity=".35"/>
+        <g stroke="var(--on-accent)" stroke-width="1" opacity=".35"><line x1="14" y1="3" x2="14" y2="5.5"/><line x1="14" y1="22.5" x2="14" y2="25"/><line x1="3" y1="14" x2="5.5" y2="14"/><line x1="22.5" y1="14" x2="25" y2="14"/></g>
+        <line id="shadow" x1="14" y1="14" x2="14" y2="4" stroke="var(--on-accent)" stroke-width="2.4" stroke-linecap="round"/>
+        <circle cx="14" cy="14" r="2.2" fill="var(--on-accent)"/>
+      </svg>
+      <div><h1>Sundial</h1><small>DAYS · TASKS · NOTES</small></div>
+    </div>
+    <div class="title" id="title"></div>
+    <div class="spacer"></div>
+    <div class="seg" role="group" aria-label="View">
+      <button data-view="day" aria-pressed="true">Day</button>
+      <button data-view="week" aria-pressed="false">Week</button>
+      <button data-view="month" aria-pressed="false">Month</button>
+      <button data-view="notes" aria-pressed="false">Notes</button>
+    </div>
+    <div class="seg icons" role="group" aria-label="Panes" id="paneSeg">
+      <button data-pane="cal" title="Calendar pane  [">▦</button>
+      <button data-pane="board" title="Board pane  \">☰</button>
+      <button data-pane="tl" title="Timeline pane  ]">▤</button>
+    </div>
+    <button class="btn" id="todayBtn">Today<span class="kbd">T</span></button>
+    <button class="btn icon" id="quickBtn" title="Quick add from anywhere" aria-label="Quick add">+</button>
+    <button class="btn icon" id="searchBtn" title="Search  /" aria-label="Search">⌕</button>
+    <button class="btn icon" id="settingsBtn" title="Settings, notifications, sounds, voice, data" aria-label="Settings">⋯</button>
+  </header>
+
+  <div class="cols" id="cols">
+    <aside class="panel" id="calPane">
+      <div class="pane-hd"><span class="eyebrow">Calendar</span><button class="x" data-pane="cal" title="Hide pane">×</button></div>
+      <div class="calwrap">
+        <div class="mini">
+          <div class="hd"><b id="miniTitle"></b><span class="nav"><button id="mPrev" aria-label="Previous month">‹</button><button id="mNext" aria-label="Next month">›</button></span></div>
+          <div class="grid7" id="mini"></div>
+        </div>
+        <div class="upnext" id="upnext"></div>
+        <div class="legend" id="legend"></div>
+      </div>
+    </aside>
+    <div class="gutter" data-side="l" id="gL"></div>
+    <main class="panel" id="boardPane"></main>
+    <div class="gutter" data-side="r" id="gR"></div>
+    <aside class="panel" id="tlPane"></aside>
+  </div>
+  <div class="foot-tip" id="footTip"></div>
+</div>
+
+<script src="desktop.js"></script>
+<script src="data.js"></script>
+<script src="audio.js"></script>
+<script src="ai.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>

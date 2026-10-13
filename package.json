@@ -1,0 +1,13 @@
+{
+  "name": "sundial",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sundial: days, tasks, notes. Static UI in ./ui, desktop shell in ./src-tauri.",
+  "scripts": {
+    "tauri": "tauri",
+    "build": "echo \"static ui, nothing to build\""
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}
