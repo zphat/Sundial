@@ -15,19 +15,35 @@ const reduced=()=>matchMedia('(prefers-reduced-motion: reduce)').matches||docume
 // ---------- theme / layout ----------
 function applyTheme(){const t=S().theme;if(t==='system')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',t)}
 function applyDensity(){document.body.classList.toggle('compact',S().density==='compact')}
+// Two arrangements: side by side (widths drag) or stacked (heights drag). Auto picks stacked for portrait screens and narrow windows.
+function effectiveMode(){const m=state.layout.mode||'auto';if(m!=='auto')return m;return (innerHeight>innerWidth*1.05||innerWidth<760)?'column':'row'}
 function applyLayout(){
-  const L=state.layout;
-  $('#calPane').hidden=!L.cal;$('#boardPane').hidden=!L.board;$('#tlPane').hidden=!L.tl;
-  $('#gL').hidden=!(L.cal&&(L.board||L.tl));$('#gR').hidden=!(L.tl&&L.board);
-  const cols=[];
-  if(L.cal)cols.push(L.board?L.wl+'px':'minmax(0,1fr)');
-  if(!$('#gL').hidden)cols.push('10px');
-  if(L.board)cols.push('minmax(0,1fr)');
-  if(!$('#gR').hidden)cols.push('10px');
-  if(L.tl)cols.push(L.board?L.wr+'px':'minmax(0,1fr)');
-  $('#cols').style.gridTemplateColumns=cols.join(' ');
-  document.querySelectorAll('#paneSeg button').forEach(b=>b.setAttribute('aria-pressed',String(!!L[b.dataset.pane])));
-  if(!L.cal&&!L.board&&!L.tl){L.board=true;applyLayout()}
+  const L=state.layout,mode=effectiveMode();
+  const cols=$('#cols'),cal=$('#calPane'),board=$('#boardPane'),tl=$('#tlPane'),gL=$('#gL'),gR=$('#gR');
+  if(!L.cal&&!L.board&&!L.tl)L.board=true;
+  cal.hidden=!L.cal;board.hidden=!L.board;tl.hidden=!L.tl;
+  gL.hidden=!(L.cal&&(L.board||L.tl));gR.hidden=!(L.tl&&L.board);
+  cols.classList.toggle('stack',mode==='column');
+  document.querySelectorAll('.gutter').forEach(g=>g.classList.toggle('h',mode==='column'));
+  [cal,board,tl].forEach(p=>{p.style.flex='';p.style.minHeight=''});
+  if(mode==='row'){
+    const c=[];
+    if(L.cal)c.push(L.board?L.wl+'px':'minmax(0,1fr)');
+    if(!gL.hidden)c.push('10px');
+    if(L.board)c.push('minmax(0,1fr)');
+    if(!gR.hidden)c.push('10px');
+    if(L.tl)c.push(L.board?L.wr+'px':'minmax(0,1fr)');
+    cols.style.gridTemplateColumns=c.join(' ');
+  }else{
+    cols.style.gridTemplateColumns='';
+    const vis=[L.cal&&cal,L.board&&board,L.tl&&tl].filter(Boolean);
+    const filler=L.board?board:vis[vis.length-1];
+    const maxH=Math.max(160,cols.clientHeight-180);
+    vis.forEach(p=>{if(p===filler){p.style.flex='1 1 auto';p.style.minHeight='140px'}else{const h=Math.min(maxH,p===cal?L.hc:L.ht);p.style.flex='0 0 '+h+'px';p.style.minHeight='0'}});
+  }
+  cal.classList.toggle('wide',mode==='column'&&cal.getBoundingClientRect().width>560);
+  document.querySelectorAll('#paneSeg button[data-pane]').forEach(b=>b.setAttribute('aria-pressed',String(!!L[b.dataset.pane])));
+  const lb=$('#layoutBtn');if(lb){lb.textContent=mode==='column'?'⇆':'⇅';lb.title=mode==='column'?'Side by side':'Stacked';lb.setAttribute('aria-pressed',String(mode==='column'))}
 }
 function togglePane(k){state.layout[k]=!state.layout[k];save();applyLayout();render()}
 function updateLogo(){const n=new Date();const a=((n.getHours()+n.getMinutes()/60)-12)/24*360;const s=$('#shadow');if(s)s.setAttribute('transform',`rotate(${a} 14 14)`)}
@@ -287,6 +303,7 @@ function renderSheet(){
     +opt('Week starts on','',seg('weekStart',[['1','Mon'],['0','Sun']]))
     +opt('Time format','',seg('h24',[['false','1:30pm'],['true','13:30']]))
     +opt('Density','Compact fits more rows on screen.',seg('density',[['comfortable','comfortable'],['compact','compact']]))
+    +`<div class="opt"><div>Layout<small>Auto stacks the panes on tall screens and narrow windows. Drag the bar between two panes to resize them either way; double-click it to reset.</small></div><div class="ctl"><div class="seg">${[['auto','auto'],['row','side by side'],['column','stacked']].map(([v,l])=>`<button data-set="layout.mode" data-val="${v}" aria-pressed="${(state.layout.mode||'auto')===v}">${l}</button>`).join('')}</div></div></div>`
     +opt('Quick add from anywhere','A floating add bar over whatever you are looking at; the + button does the same. System-wide in the desktop build.',`<button class="key" data-run="recQuick">${esc(st.quick.hotkey)}</button>`)
     +opt('Clear example tasks','Removes only the seeded examples.','<button class="btn" data-run="clearEx">Clear</button>')
     +(window.SundialDesktop?desktopGeneralRows():'')
@@ -327,6 +344,7 @@ function renderSheet(){
 const getPath=(o,p)=>p.split('.').reduce((a,k)=>a&&a[k],o);
 const setPath=(o,p,v)=>{const ks=p.split('.');const last=ks.pop();const t=ks.reduce((a,k)=>a[k],o);t[last]=v};
 function applySetting(key,val){
+  if(key.startsWith('layout.')){setPath(state,key,val);save();applyLayout();render();renderSheet();return}
   const st=S();
   if(key==='weekStart')val=+val;else if(key==='h24')val=val==='true';else if(key==='defaultRemind'||key==='sounds.repeat'||key==='bannerSecs')val=+val;else if(key==='sounds.volume')val=+val;
   setPath(st,key,val);save();
@@ -400,6 +418,7 @@ document.addEventListener('click',e=>{
   const inMenu=e.target.closest('.menu');if(!inMenu)closeMenu();
   const b=e.target.closest('button,[data-act],[data-date]');if(!b)return;
   if(b.dataset.view){view=b.dataset.view;openId=null;render();return}
+  if(b.id==='layoutBtn'){state.layout.mode=effectiveMode()==='column'?'row':'column';save();applyLayout();render();return}
   if(b.dataset.pane){togglePane(b.dataset.pane);return}
   if(b.id==='todayBtn'){goDay(todayStr());render();return}
   if(b.id==='settingsBtn'){settings();return}
@@ -555,12 +574,18 @@ document.addEventListener('drop',e=>{if(!dragId)return;e.preventDefault();const 
   else if(day)moveTo(dragId,day.dataset.date||day.dataset.dropdate);
   else if(hr){const y=e.clientY-hr.getBoundingClientRect().top;const mins=Math.round((y/S().hh*60)/15)*15;upd(dragId,{time:Math.max(0,Math.min(23*60+45,mins))});toast('Scheduled '+fmtTime(get(dragId).time))}
   dragId=null;render()});
-// gutters
+// gutters: widths in side-by-side mode, heights in stacked mode
 let gdrag=null;
-document.querySelectorAll('.gutter').forEach(g=>{g.addEventListener('pointerdown',e=>{gdrag={side:g.dataset.side,x:e.clientX,wl:state.layout.wl,wr:state.layout.wr};g.classList.add('on');g.setPointerCapture(e.pointerId);document.body.style.cursor='col-resize';document.body.style.userSelect='none'});
-  g.addEventListener('pointermove',e=>{if(!gdrag)return;const dx=e.clientX-gdrag.x;if(gdrag.side==='l')state.layout.wl=Math.max(190,Math.min(520,gdrag.wl+dx));else state.layout.wr=Math.max(240,Math.min(640,gdrag.wr-dx));applyLayout()});
+document.querySelectorAll('.gutter').forEach(g=>{g.addEventListener('pointerdown',e=>{const L=state.layout;gdrag={side:g.dataset.side,mode:effectiveMode(),x:e.clientX,y:e.clientY,wl:L.wl,wr:L.wr,hc:L.hc,ht:L.ht};g.classList.add('on');g.setPointerCapture(e.pointerId);document.body.style.cursor=gdrag.mode==='column'?'row-resize':'col-resize';document.body.style.userSelect='none'});
+  g.addEventListener('pointermove',e=>{if(!gdrag)return;const L=state.layout;
+    if(gdrag.mode==='row'){const dx=e.clientX-gdrag.x;if(gdrag.side==='l')L.wl=Math.max(190,Math.min(520,gdrag.wl+dx));else L.wr=Math.max(240,Math.min(640,gdrag.wr-dx))}
+    else{const dy=e.clientY-gdrag.y;const max=Math.max(160,$('#cols').clientHeight-180);
+      // the top gutter sizes the calendar; the lower one sizes the timeline (the board takes what is left)
+      if(gdrag.side==='l')L.hc=Math.max(120,Math.min(max,gdrag.hc+dy));else L.ht=Math.max(120,Math.min(max,gdrag.ht-dy))}
+    applyLayout()});
   g.addEventListener('pointerup',()=>{if(!gdrag)return;gdrag=null;g.classList.remove('on');document.body.style.cursor='';document.body.style.userSelect='';save()});
-  g.addEventListener('dblclick',()=>{if(g.dataset.side==='l')state.layout.wl=240;else state.layout.wr=320;save();applyLayout()})});
+  g.addEventListener('dblclick',()=>{const L=state.layout;if(effectiveMode()==='row'){if(g.dataset.side==='l')L.wl=240;else L.wr=320}else{if(g.dataset.side==='l')L.hc=300;else L.ht=320}save();applyLayout()})});
+let rzTimer=null;addEventListener('resize',()=>{clearTimeout(rzTimer);rzTimer=setTimeout(applyLayout,120)});
 
 // ---------- desktop + AI helpers ----------
 let globalHotkeys=false,autostartOn=false,aiKeySaved=false,appVersion='',updateInfo=null;

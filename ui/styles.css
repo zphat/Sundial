@@ -111,7 +111,9 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .grid7 .d.over{background:var(--accent-soft);box-shadow:inset 0 0 0 1.5px var(--accent-ink)}
 .grid7 .d .dots{position:absolute;bottom:3px;left:0;right:0;display:flex;justify-content:center;gap:2px}
 .grid7 .d .dots i{width:3px;height:3px;border-radius:50%;background:var(--dot)}
-.legend{padding:0 14px 14px;display:flex;flex-direction:column;gap:6px;margin-top:auto}
+.legend{padding:0 14px 10px;display:grid;grid-template-columns:1fr 1fr;gap:3px 10px;margin-top:0}
+.legend .eyebrow,.legend .hint{grid-column:1/-1}
+.legend .row{min-width:0}
 .legend .row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg-2)}
 .legend .row input{background:none;border:0;padding:2px 4px;border-radius:4px;min-width:0;width:100%;color:var(--fg-2)}
 .legend .row input:focus{background:var(--panel-2);color:var(--fg);outline:none}
@@ -446,18 +448,20 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .foot-tip span{margin:0 8px}
 
 @media (max-width:760px){
-  .cols{display:flex!important;flex-direction:column;overflow-y:auto;gap:10px}
-  .gutter{display:none!important}
-  #calPane{flex:none;max-height:none}
-  #calPane .calwrap{flex-direction:row;flex-wrap:wrap}
-  #calPane .mini{flex:1 1 240px}
-  #calPane .upnext,#calPane .legend{flex:1 1 180px;margin-top:0}
-  #tlPane{max-height:46vh;flex:none}
-  #boardPane{min-height:62vh;flex:none}
   .title{font-size:17px}
   .week{grid-template-columns:repeat(7,minmax(90px,1fr));overflow-x:auto}
   .foot-tip{display:none}
 }
+/* stacked layout (portrait screens, narrow windows, or by choice): panes in a column, horizontal bars drag heights */
+.cols.stack{display:flex!important;flex-direction:column;gap:0;overflow:hidden}
+.cols.stack .panel{min-height:0}
+.gutter.h{width:auto;height:10px;cursor:row-resize}
+.gutter.h::after{width:28px;height:2px}
+.gutter.h:hover::after,.gutter.h.on::after{width:48px;height:2px}
+#calPane.wide .calwrap{flex-direction:row;flex-wrap:wrap;align-items:flex-start}
+#calPane.wide .mini{flex:1 1 260px}
+#calPane.wide .legend,#calPane.wide .upnext{flex:1 1 200px;margin-top:0}
+#layoutBtn{font-size:13px}
 @media (prefers-reduced-motion: reduce){ *{transition:none!important;animation:none!important} }
 
 /* ---------- motion: view transitions, title swap, settings pop ---------- */
