@@ -37,7 +37,7 @@
 
   <div class="cols" id="cols">
     <aside class="panel" id="calPane">
-      <div class="pane-hd"><span class="eyebrow">Calendar</span><button class="x" data-pane="cal" title="Hide pane">×</button></div>
+      <div class="pane-hd"><span class="eyebrow">Calendar</span><span class="hd-acts"><button class="lk" data-lock="cal" aria-label="Lock height"></button><button class="x" data-pane="cal" title="Hide pane">×</button></span></div>
       <div class="calwrap">
         <div class="mini">
           <div class="hd"><b id="miniTitle"></b><span class="nav"><button id="mPrev" aria-label="Previous month">‹</button><button id="mNext" aria-label="Next month">›</button></span></div>
@@ -51,6 +51,7 @@
     <main class="panel" id="boardPane"></main>
     <div class="gutter" data-side="r" id="gR"></div>
     <aside class="panel" id="tlPane"></aside>
+    <div class="gutter" data-side="b" id="gB"></div>
   </div>
   <div class="foot-tip" id="footTip"></div>
 </div>

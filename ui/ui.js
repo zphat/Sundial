@@ -6,6 +6,11 @@ let lastDeleted=null, recordingHotkey=false, sheetTab='general';
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const CHECK='<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 6.5l2.6 2.6L10 3.5"/></svg>';
+const LOCK='<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="2" y="5.5" width="8" height="5.5" rx="1.2"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5"/></svg>';
+const UNLOCK='<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="2" y="5.5" width="8" height="5.5" rx="1.2"/><path d="M4 5.5V4a2 2 0 0 1 4 0"/></svg>';
+const HK={cal:'hc',board:'hb',tl:'ht'},PANE={cal:'#calPane',board:'#boardPane',tl:'#tlPane'};
+const lockBtn=k=>`<button class="lk" data-lock="${k}" aria-label="Lock height"></button>`;
+function syncLocks(){const L=state.layout.lock||{};document.querySelectorAll('[data-lock]').forEach(b=>{const on=!!L[b.dataset.lock];b.innerHTML=on?LOCK:UNLOCK;b.setAttribute('aria-pressed',String(on));b.title=on?'Height locked, scrolls inside. Click to let it grow to its content.':'Grows to its content, the column scrolls. Click to lock a height.'})}
 const MIC='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2M5.5 14.5h5"/></svg>';
 // "today" / "tomorrow" / "Fri 16" for toasts
 const dayLabel=d=>{const r=relDay(d);return ['Today','Tomorrow','Yesterday'].includes(r)?r.toLowerCase():r+' '+fromYmd(d).getDate()};
@@ -20,7 +25,8 @@ function effectiveMode(){const m=state.layout.mode||'auto';if(m!=='auto')return 
 function applyLayout(){
   const L=state.layout,mode=effectiveMode();
   if(!L.sized){L.wl=Math.max(220,Math.min(440,Math.round(innerWidth*0.19)));L.wr=Math.max(300,Math.min(600,Math.round(innerWidth*0.26)));L.hc=Math.max(240,Math.min(460,Math.round(innerHeight*0.3)));L.ht=Math.max(260,Math.min(560,Math.round(innerHeight*0.3)));L.sized=true;save()}
-  const cols=$('#cols'),cal=$('#calPane'),board=$('#boardPane'),tl=$('#tlPane'),gL=$('#gL'),gR=$('#gR');
+  const cols=$('#cols'),cal=$('#calPane'),board=$('#boardPane'),tl=$('#tlPane'),gL=$('#gL'),gR=$('#gR'),gB=$('#gB');
+  L.lock=L.lock||{cal:false,board:true,tl:true};if(!L.hb)L.hb=Math.max(360,Math.min(900,Math.round(innerHeight*0.5)));
   if(!L.cal&&!L.board&&!L.tl)L.board=true;
   cal.hidden=!L.cal;board.hidden=!L.board;tl.hidden=!L.tl;
   gL.hidden=!(L.cal&&(L.board||L.tl));gR.hidden=!(L.tl&&L.board);
@@ -37,14 +43,12 @@ function applyLayout(){
     cols.style.gridTemplateColumns=c.join(' ');
   }else{
     cols.style.gridTemplateColumns='';
-    const vis=[L.cal&&cal,L.board&&board,L.tl&&tl].filter(Boolean);
-    const filler=L.board?board:vis[vis.length-1];
-    const maxH=Math.max(160,cols.clientHeight-180);
-    // the calendar opens to its content (month, colors, up next) unless the user dragged it to a height
-    vis.forEach(p=>{if(p===filler){p.style.flex='1 1 auto';p.style.minHeight='140px'}else if(p===cal&&L.hcAuto!==false){p.style.flex='0 0 auto';p.style.minHeight='0'}else{const h=Math.min(maxH,p===cal?L.hc:L.ht);p.style.flex='0 0 '+h+'px';p.style.minHeight='0'}});
-    cal.classList.toggle('autoh',L.cal&&cal!==filler&&L.hcAuto!==false);
+    // locked section: the height you gave it, scrolls inside. Free section: as tall as its content; the column scrolls.
+    [['cal',cal],['board',board],['tl',tl]].forEach(([k,p])=>{if(!L[k])return;const locked=!!L.lock[k];p.classList.toggle('free',!locked);p.style.flex=locked?'0 0 '+L[HK[k]]+'px':'0 0 auto';p.style.minHeight='0'});
   }
-  if(mode!=='column')cal.classList.remove('autoh');
+  gB.hidden=mode!=='column'||!(L.cal||L.board||L.tl);
+  if(mode!=='column')[cal,board,tl].forEach(p=>p.classList.remove('free'));
+  syncLocks();
   cal.classList.toggle('wide',mode==='column'&&cal.getBoundingClientRect().width>560);
   document.querySelectorAll('#paneSeg button[data-pane]').forEach(b=>b.setAttribute('aria-pressed',String(!!L[b.dataset.pane])));
   const lb=$('#layoutBtn');if(lb){lb.textContent=mode==='column'?'⇆':'⇅';lb.title=mode==='column'?'Side by side':'Stacked';lb.setAttribute('aria-pressed',String(mode==='column'))}
@@ -90,6 +94,7 @@ function render(){
   if(state.layout.tl)renderSide();
   flip();
   const dr=document.querySelector('.drawer');if(dr)openDrawerEl(dr,wasOpen===openId);
+  syncLocks();
   $('#footTip').innerHTML=['↵ add','← → days','T today','N new','/ search','J K move','␣ done','⌫ delete','Ctrl+Z undo','1-4 views','[ \\ ] panes','right-click a task'].map(x=>`<span>${x}</span>`).join('');
   anim.enter=null;anim.pop=null;anim.slide=null;
 }
@@ -148,7 +153,7 @@ function railHtml(){
   let rail=`<div class="rail"><button class="arrow" data-nav="-7" aria-label="Previous week">‹</button>`;
   for(let i=0;i<7;i++){const ds=addDays(ws,i);const n=dayTasks(ds).filter(x=>!x.done).length;const note=!!state.notes[ds];
     rail+=`<button data-date="${ds}" class="${ds===sel?'sel':''} ${ds===t?'today':''} ${ds<t?'past':''}"><span class="w">${L[i]}</span><span class="n">${fromYmd(ds).getDate()}</span><span class="cnt">${n?n:''}${note?' ≡':''}</span></button>`}
-  return rail+`<button class="arrow" data-nav="7" aria-label="Next week">›</button></div>`;
+  return rail+`<button class="arrow" data-nav="7" aria-label="Next week">›</button>${lockBtn('board')}</div>`;
 }
 function nowStrip(){
   if(sel!==todayStr())return'';
@@ -180,7 +185,7 @@ function renderDay(){
 }
 function renderWeek(){
   const ws=weekStart(sel),L=dowLabels();
-  let h=`<div class="rail" style="padding-bottom:0"><button class="arrow" data-nav="-7" aria-label="Previous week">‹</button><span class="spacer"></span><button class="arrow" data-nav="7" aria-label="Next week">›</button></div><div class="week">`;
+  let h=`<div class="rail" style="padding-bottom:0"><button class="arrow" data-nav="-7" aria-label="Previous week">‹</button><span class="spacer"></span><button class="arrow" data-nav="7" aria-label="Next week">›</button>${lockBtn('board')}</div><div class="week">`;
   for(let i=0;i<7;i++){const ds=addDays(ws,i);const ts=dayTasks(ds);
     h+=`<div class="col ${ds===todayStr()?'today':''}" data-dropdate="${ds}"><div class="hd" data-date="${ds}" data-goto="day"><span class="n">${fromYmd(ds).getDate()}</span><span class="w">${L[i]}</span></div><div class="items">`+
     ts.map(x=>`<div class="mini-task ${x.done?'done':''} ${anim.enter===x.id?'enter':''}" draggable="true" data-id="${x.id}" data-act="open"><span class="swatch" style="--sw:var(--c-${x.color})"></span><span>${esc(x.title)}</span>${x.time!=null?`<span class="tm">${fmtTime(x.time)}</span>`:''}</div>`).join('')+
@@ -189,7 +194,7 @@ function renderWeek(){
 }
 function renderMonth(){
   const d=fromYmd(sel);const first=new Date(d.getFullYear(),d.getMonth(),1);const start=weekStart(ymd(first));
-  let h=`<div class="rail" style="padding-bottom:0"><button class="arrow" data-nav="month:-1" aria-label="Previous month">‹</button><span class="spacer"></span><button class="arrow" data-nav="month:1" aria-label="Next month">›</button></div><div class="month"><div class="dows">${dowLabels().map(x=>`<div>${x}</div>`).join('')}</div><div class="cells">`;
+  let h=`<div class="rail" style="padding-bottom:0"><button class="arrow" data-nav="month:-1" aria-label="Previous month">‹</button><span class="spacer"></span><button class="arrow" data-nav="month:1" aria-label="Next month">›</button>${lockBtn('board')}</div><div class="month"><div class="dows">${dowLabels().map(x=>`<div>${x}</div>`).join('')}</div><div class="cells">`;
   for(let i=0;i<42;i++){const ds=addDays(start,i);const dd=fromYmd(ds);const ts=dayTasks(ds);
     h+=`<button class="cell ${dd.getMonth()!==d.getMonth()?'out':''} ${ds===todayStr()?'today':''} ${ds===sel?'sel':''}" data-date="${ds}" data-goto="day" data-dropdate="${ds}"><span class="n">${dd.getDate()}</span>`+
     ts.slice(0,3).map(x=>`<span class="pill ${x.done?'done':''}"><span class="swatch" style="--sw:var(--c-${x.color})"></span><span>${esc(x.title)}</span></span>`).join('')+(ts.length>3?`<span class="more">+${ts.length-3}</span>`:'')+`</button>`}
@@ -210,7 +215,7 @@ function renderNotes(){
 function renderSide(){
   const side=$('#tlPane');const ts=dayTasks(sel);const timed=ts.filter(t=>t.time!=null),any=ts.filter(t=>t.time==null&&!t.done);
   const H0=0,H1=24,rows=H1-H0,hh=S().hh,m=nowMin(),today=sel===todayStr();
-  let h=`<div class="pane-hd"><b>${relDay(sel)}${!today?' '+fromYmd(sel).getDate():''}</b><span class="eyebrow">${timed.length} timed · ${any.length} anytime</span><span class="zoom"><button data-zoom="-1" title="Zoom out">−</button><button data-zoom="1" title="Zoom in">+</button><button data-zoom="fit" title="Fit the whole day in view">⤢</button></span><button class="x" data-pane="tl" title="Hide pane">×</button></div><div class="tl">`;
+  let h=`<div class="pane-hd"><b>${relDay(sel)}${!today?' '+fromYmd(sel).getDate():''}</b><span class="eyebrow">${timed.length} timed · ${any.length} anytime</span><span class="hd-acts"><span class="zoom"><button data-zoom="-1" title="Zoom out">−</button><button data-zoom="1" title="Zoom in">+</button><button data-zoom="fit" title="Fit the whole day in view">⤢</button></span>${lockBtn('tl')}<button class="x" data-pane="tl" title="Hide pane">×</button></span></div><div class="tl">`;
   if(any.length)h+=`<div class="anytime">${any.map(x=>`<span class="chip" data-id="${x.id}" data-act="open"><span class="swatch" style="--sw:var(--c-${x.color})"></span>${esc(x.title)}</span>`).join('')}</div>`;
   h+=`<div class="hours" style="--rows:${rows};--hh:${hh}px">`;
   for(let i=0;i<rows;i++)h+=`<div class="h" data-hour="${H0+i}" style="top:${i*hh}px"><span>${fmtTime((H0+i)*60)}</span></div>`;
@@ -308,7 +313,8 @@ function renderSheet(){
     +opt('Week starts on','',seg('weekStart',[['1','Mon'],['0','Sun']]))
     +opt('Time format','',seg('h24',[['false','1:30pm'],['true','13:30']]))
     +opt('Density','Compact fits more rows on screen.',seg('density',[['comfortable','comfortable'],['compact','compact']]))
-    +`<div class="opt"><div>Layout<small>Auto stacks the panes on tall screens and narrow windows. Drag the bar between two panes to resize them either way; double-click it to reset.</small></div><div class="ctl"><div class="seg">${[['auto','auto'],['row','side by side'],['column','stacked']].map(([v,l])=>`<button data-set="layout.mode" data-val="${v}" aria-pressed="${(state.layout.mode||'auto')===v}">${l}</button>`).join('')}</div></div></div>`
+    +`<div class="opt"><div>Layout<small>Auto stacks the panes on tall screens and narrow windows. Drag the bar between two panes to resize them either way; double-click it to reset.</small></div><div class="ctl"><div class="seg">${[['auto','auto'],['row','side by side'],['column','stacked']].map(([v,l])=>`<button data-set="layout.mode" data-val="${v}" aria-pressed="${(state.layout.mode||'auto')===v}">${l}</button>`).join('')}</div>${effectiveMode()==='column'?'<button class="btn" data-run="fitWindow">Fit to window</button>':''}</div></div>`
+    +(effectiveMode()==='column'?`<div class="opt"><div>Stacked sections<small>Each box has a padlock by its ×. Locked: it keeps the height you gave it and scrolls inside. Unlocked: it grows to its content and the whole column scrolls. Drag a bar to set a height (locks it); double-click a bar to unlock.</small></div></div>`:'')
     +opt('Quick add from anywhere','A floating add bar over whatever you are looking at; the + button does the same. System-wide in the desktop build.',`<button class="key" data-run="recQuick">${esc(st.quick.hotkey)}</button>`)
     +opt('Clear example tasks','Removes only the seeded examples.','<button class="btn" data-run="clearEx">Clear</button>')
     +(window.SundialDesktop?desktopGeneralRows():'')
@@ -425,6 +431,7 @@ document.addEventListener('click',e=>{
   const b=e.target.closest('button,[data-act],[data-date]');if(!b)return;
   if(b.dataset.view){view=b.dataset.view;openId=null;render();return}
   if(b.id==='layoutBtn'){state.layout.mode=effectiveMode()==='column'?'row':'column';save();applyLayout();render();return}
+  if(b.dataset.lock){const L=state.layout,k=b.dataset.lock;L.lock=L.lock||{};if(!L.lock[k])L[HK[k]]=Math.round($(PANE[k]).getBoundingClientRect().height);L.lock[k]=!L.lock[k];save();applyLayout();return}
   if(b.dataset.pane){togglePane(b.dataset.pane);return}
   if(b.id==='todayBtn'){goDay(todayStr());render();return}
   if(b.id==='settingsBtn'){settings();return}
@@ -481,6 +488,7 @@ function runSetting(k,b){
   if(k==='rtNew'){newRoutine();renderSheet();const ta=[...document.querySelectorAll('.rt-name')].pop();if(ta){ta.focus();ta.select()}}
   if(k==='rtReset'){resetRoutines();renderSheet();render();toast('Starter routines restored')}
   if(k==='revealData'){window.SundialDesktop?.reveal().catch(e=>toast(String(e)))}
+  if(k==='fitWindow'){closeScrim();setTimeout(fitToWindow,260)}
   if(k==='updateCheck'){b.textContent='Checking…';checkUpdates(true).finally(()=>{b.textContent='Check now'})}
   if(k==='updateInstall'){installUpdate(null)}
   if(k==='aiSaveKey'){const v=($('#aiKey')?.value||'').trim();if(!v){toast('Paste a key first');return}const D=window.SundialDesktop;
@@ -584,15 +592,24 @@ document.addEventListener('drop',e=>{if(!dragId)return;e.preventDefault();const 
   dragId=null;render()});
 // gutters: widths in side-by-side mode, heights in stacked mode
 let gdrag=null;
-document.querySelectorAll('.gutter').forEach(g=>{g.addEventListener('pointerdown',e=>{const L=state.layout;if(effectiveMode()==='column'&&g.dataset.side==='l'&&L.hcAuto!==false){L.hc=Math.round($('#calPane').getBoundingClientRect().height);L.hcAuto=false}gdrag={side:g.dataset.side,mode:effectiveMode(),x:e.clientX,y:e.clientY,wl:L.wl,wr:L.wr,hc:L.hc,ht:L.ht};g.classList.add('on');g.setPointerCapture(e.pointerId);document.body.style.cursor=gdrag.mode==='column'?'row-resize':'col-resize';document.body.style.userSelect='none'});
+// which section sits above a bar in stacked mode
+function paneAbove(side){const L=state.layout;if(side==='l')return L.cal?'cal':null;if(side==='r')return L.board?'board':null;return L.tl?'tl':L.board?'board':L.cal?'cal':null}
+document.querySelectorAll('.gutter').forEach(g=>{g.addEventListener('pointerdown',e=>{const L=state.layout;const mode=effectiveMode();let key=null,start=0;
+    if(mode==='column'){key=paneAbove(g.dataset.side);if(!key)return;start=Math.round($(PANE[key]).getBoundingClientRect().height);L[HK[key]]=start;L.lock[key]=true}
+    gdrag={side:g.dataset.side,mode,key,start,x:e.clientX,y:e.clientY,wl:L.wl,wr:L.wr};g.classList.add('on');try{g.setPointerCapture(e.pointerId)}catch(_){}document.body.style.cursor=mode==='column'?'row-resize':'col-resize';document.body.style.userSelect='none'});
   g.addEventListener('pointermove',e=>{if(!gdrag)return;const L=state.layout;
     if(gdrag.mode==='row'){const dx=e.clientX-gdrag.x;if(gdrag.side==='l')L.wl=Math.max(190,Math.min(innerWidth*0.45,gdrag.wl+dx));else L.wr=Math.max(240,Math.min(innerWidth*0.5,gdrag.wr-dx))}
-    else{const dy=e.clientY-gdrag.y;const max=Math.max(160,$('#cols').clientHeight-180);
-      // the top gutter sizes the calendar; the lower one sizes the timeline (the board takes what is left)
-      if(gdrag.side==='l')L.hc=Math.max(120,Math.min(max,gdrag.hc+dy));else L.ht=Math.max(120,Math.min(max,gdrag.ht-dy))}
+    else if(gdrag.key){L[HK[gdrag.key]]=Math.max(90,gdrag.start+(e.clientY-gdrag.y))}
     applyLayout()});
   g.addEventListener('pointerup',()=>{if(!gdrag)return;gdrag=null;g.classList.remove('on');document.body.style.cursor='';document.body.style.userSelect='';save()});
-  g.addEventListener('dblclick',()=>{const L=state.layout;if(effectiveMode()==='row'){if(g.dataset.side==='l')L.wl=240;else L.wr=320}else{if(g.dataset.side==='l')L.hcAuto=true;else L.ht=320}save();applyLayout()})});
+  // double-click: side by side resets the width; stacked lets that section grow to its content again
+  g.addEventListener('dblclick',()=>{const L=state.layout;if(effectiveMode()==='row'){if(g.dataset.side==='l')L.wl=240;else L.wr=320}else{const key=paneAbove(g.dataset.side);if(key)L.lock[key]=false}save();applyLayout()})});
+// size all three sections to the window and lock them
+function fitToWindow(){const L=state.layout;if(effectiveMode()!=='column')return;const cols=$('#cols');const vis=['cal','board','tl'].filter(k=>L[k]);let avail=cols.clientHeight-vis.length*10-2;
+  if(L.cal){const natural=$('#calPane .calwrap').scrollHeight+46;L.hc=Math.max(90,vis.length===1?avail:Math.min(natural,Math.round(avail*0.42)));L.lock.cal=true;avail-=L.hc}
+  const rest=vis.filter(k=>k!=='cal');
+  if(rest.length===2){L.hb=Math.max(90,Math.round(avail*0.58));L.ht=Math.max(90,avail-L.hb);L.lock.board=true;L.lock.tl=true}else if(rest[0]==='board'){L.hb=Math.max(90,avail);L.lock.board=true}else if(rest[0]==='tl'){L.ht=Math.max(90,avail);L.lock.tl=true}
+  save();applyLayout();toast('Fitted to the window')}
 let rzTimer=null;addEventListener('resize',()=>{clearTimeout(rzTimer);rzTimer=setTimeout(applyLayout,120)});
 
 // ---------- desktop + AI helpers ----------

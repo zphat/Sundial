@@ -35,12 +35,12 @@
   color-scheme:light;
 }
 body.compact{--pad:6px;--row-gap:2px}
-::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar{width:8px;height:8px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-corner{background:transparent}
-::-webkit-scrollbar-thumb{background:transparent;border-radius:999px;border:2px solid transparent;background-clip:padding-box}
-:hover::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--fg-3) 55%,transparent);background-clip:padding-box}
-::-webkit-scrollbar-thumb:hover{background:var(--fg-3);background-clip:padding-box}
+::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--fg-3) 40%,transparent);border-radius:999px;border:2px solid transparent;background-clip:padding-box;min-height:28px}
+::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--fg-3) 75%,transparent);background-clip:padding-box}
+::-webkit-scrollbar-thumb:active{background:var(--accent-ink);background-clip:padding-box}
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:14px;line-height:1.4;-webkit-font-smoothing:antialiased;overflow:hidden}
 *{box-sizing:border-box}
@@ -480,13 +480,21 @@ input[type=range]{accent-color:var(--accent);width:120px}
   .foot-tip{display:none}
 }
 /* stacked layout (portrait screens, narrow windows, or by choice): panes in a column, horizontal bars drag heights */
-.cols.stack{display:flex!important;flex-direction:column;gap:0;overflow:hidden}
+.cols.stack{display:flex!important;flex-direction:column;gap:0;overflow-y:auto;overflow-x:hidden;padding-right:2px}
 .cols.stack .panel{min-height:0}
 .gutter.h{width:auto;height:10px;cursor:row-resize}
 .gutter.h::after{width:28px;height:2px}
 .gutter.h:hover::after,.gutter.h.on::after{width:48px;height:2px}
-#calPane.autoh{max-height:max(220px,calc(100% - 300px))}
-#calPane.autoh .calwrap{flex:0 1 auto;min-height:0}
+.panel.free{flex-shrink:0}
+.panel.free .calwrap,.panel.free .list,.panel.free .tl{overflow:visible;flex:none}
+/* lock buttons: only meaningful when stacked */
+.hd-acts{display:flex;align-items:center;gap:2px}
+.lk{width:22px;height:22px;border-radius:50%;color:var(--fg-3);display:grid;place-items:center;transition:color .15s,background .15s}
+.lk svg{width:12px;height:12px}
+.lk:hover{background:var(--line-2);color:var(--fg)}
+.lk[aria-pressed="true"]{color:var(--accent-ink)}
+.cols:not(.stack) .lk{display:none}
+.rail .lk{flex:0 0 24px;align-self:center;padding:0;border:0}
 #calPane.wide .calwrap{flex-direction:row;flex-wrap:wrap;align-items:flex-start}
 #calPane.wide .mini{flex:1 1 260px}
 #calPane.wide .legend,#calPane.wide .upnext{flex:1 1 200px;margin-top:0}

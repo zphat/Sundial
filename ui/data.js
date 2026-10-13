@@ -24,7 +24,7 @@ const ROUTINE_TEMPLATE=[
   {name:'Evening',lines:['Tidy the desk 6pm 10m #admin','Plan tomorrow 9pm 10m #admin','Screens off 10pm #health silent']},
 ];
 let state={tasks:[],labels:Object.fromEntries(COLORS),notes:{},notesTs:{},tombstones:{},fired:{},oplog:[],routines:[],device:null,schema:SCHEMA,
-  layout:{cal:true,board:true,tl:true,wl:240,wr:320,hc:300,ht:320,mode:'auto'},settings:JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),carryDismissed:null};
+  layout:{cal:true,board:true,tl:true,wl:240,wr:320,hc:300,hb:0,ht:320,mode:'auto',lock:{cal:false,board:true,tl:true}},settings:JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),carryDismissed:null};
 const uid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36);
 const save=()=>{const j=JSON.stringify(state);try{localStorage.setItem(KEY,j)}catch(e){}if(window.SundialDesktop)window.SundialDesktop.save(j)};
 const deepMerge=(a,b)=>{for(const k in b){if(b[k]&&typeof b[k]==='object'&&!Array.isArray(b[k])){a[k]=deepMerge(a[k]&&typeof a[k]==='object'?a[k]:{},b[k])}else a[k]=b[k]}return a};
@@ -70,7 +70,7 @@ function bootState(rawJson){
 }
 bootState(null);
 // desktop: replace the in-memory state with the data file's contents (before the first render)
-function hydrate(rawJson){state={tasks:[],labels:Object.fromEntries(COLORS),notes:{},notesTs:{},tombstones:{},fired:{},oplog:[],routines:[],device:null,schema:SCHEMA,layout:{cal:true,board:true,tl:true,wl:240,wr:320,hc:300,ht:320,mode:'auto'},settings:JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),carryDismissed:null};bootState(rawJson)}
+function hydrate(rawJson){state={tasks:[],labels:Object.fromEntries(COLORS),notes:{},notesTs:{},tombstones:{},fired:{},oplog:[],routines:[],device:null,schema:SCHEMA,layout:{cal:true,board:true,tl:true,wl:240,wr:320,hc:300,hb:0,ht:320,mode:'auto',lock:{cal:false,board:true,tl:true}},settings:JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),carryDismissed:null};bootState(rawJson)}
 const S=()=>state.settings;
 
 // ---------- dates ----------
