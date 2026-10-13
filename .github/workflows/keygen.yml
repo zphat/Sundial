@@ -5,6 +5,7 @@ name: keygen
 
 on:
   push:
+    branches: [main]   # paths filters are ignored on tag pushes; without this, every release tag re-ran keygen
     paths: [".keygen"]
   workflow_dispatch:
 
