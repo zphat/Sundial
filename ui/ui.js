@@ -48,9 +48,12 @@ function openDrawerEl(dr,instant){
   dr.addEventListener('transitionend',release,{once:true});setTimeout(release,320);
 }
 function collapseDrawerEl(dr){dr.classList.add('instant');dr.style.height=dr.offsetHeight+'px';void dr.offsetHeight;dr.classList.remove('instant','on');dr.style.height='0px'}
+let lastView=null,lastSel=null,sheetAnim=false;
 function render(){
   snap();
   const wasOpen=document.querySelector('.drawer.on [data-drawer]')?.dataset.drawer;
+  const bp=$('#boardPane');if(view!==lastView){bp.classList.remove('view-in');void bp.offsetWidth;bp.classList.add('view-in');lastView=view}
+  if(sel!==lastSel){const te=$('#title');te.classList.remove('swap');void te.offsetWidth;te.classList.add('swap');lastSel=sel}
   const d=fromYmd(sel),ws=fromYmd(weekStart(sel));
   const ts=dayTasks(sel),done=ts.filter(x=>x.done).length;
   $('#title').innerHTML=view==='month'?`${MON[d.getMonth()]} <span class="y">${d.getFullYear()}</span>`
@@ -85,7 +88,7 @@ function renderUpnext(){
 }
 function renderLegend(){
   $('#legend').innerHTML=`<div class="eyebrow" style="margin-bottom:4px">Colors</div>`+COLORS.map(([k])=>`<div class="row"><span class="swatch" style="--sw:var(--c-${k})"></span><input data-color="${k}" value="${esc(state.labels[k])}" aria-label="Label for ${k}"></div>`).join('')+
-  `<div class="hint">One line does it all: <code>dentist 10:15am 45m #health tmrw every week remind 1d</code></div>`;
+  `<div class="hint">Click a name to rename it. One line does it all: <code>dentist 10:15am 45m #health tmrw every week remind 1d</code></div>`;
 }
 function taskRow(x){
   const open=x.id===openId,lead=remindLead(x);
@@ -269,7 +272,7 @@ function previewNotify(kind){const t=dayTasks(sel).find(x=>x.time!=null)||{title
 function settings(){
   if($('.scrim.sheet-host')){closeScrim($('.scrim.sheet-host'));return}
   const s=scrim(`<button class="x" data-close>×</button><h2>Settings</h2><div class="tabs" id="stabs"></div><div id="sbody"></div>`,'sheet');s.classList.add('sheet-host');
-  s.querySelector('[data-close]').onclick=closeScrim;renderSheet();
+  s.querySelector('[data-close]').onclick=()=>closeScrim(s);sheetAnim=true;renderSheet();
   const D=window.SundialDesktop;if(D)D.autostart.get().then(v=>{autostartOn=!!v;if(sheetTab==='general')renderSheet()}).catch(()=>{});refreshAiKey();
 }
 function renderSheet(){
@@ -286,7 +289,9 @@ function renderSheet(){
     +opt('Density','Compact fits more rows on screen.',seg('density',[['comfortable','comfortable'],['compact','compact']]))
     +opt('Quick add from anywhere','A floating add bar over whatever you are looking at; the + button does the same. System-wide in the desktop build.',`<button class="key" data-run="recQuick">${esc(st.quick.hotkey)}</button>`)
     +opt('Clear example tasks','Removes only the seeded examples.','<button class="btn" data-run="clearEx">Clear</button>')
-    +(window.SundialDesktop?desktopGeneralRows():'');
+    +(window.SundialDesktop?desktopGeneralRows():'')
+    +`<h3>Colors</h3><div class="opt" style="border:0;padding-top:0"><div><small>Six colors, your names. Type <code>#name</code> in a task line to pick one. The names are also editable right in the calendar pane.</small></div></div>`
+    +COLORS.map(([k])=>`<div class="opt colorrow"><div class="rowx"><span class="swatch" style="--sw:var(--c-${k})"></span><input class="key" style="text-align:left;min-width:200px" data-color="${k}" value="${esc(state.labels[k])}" aria-label="Name for the ${k} color" spellcheck="false"></div><div class="ctl"><small class="mono">#${esc(state.labels[k].toLowerCase().replace(/\s+/g,''))}</small></div></div>`).join('');
   if(sheetTab==='notify')h=opt('Notify by default','New timed tasks get a reminder and a start alert. Per-task override lives in the task drawer.',tog('notifyDefault'))
     +opt('Default reminder','How far ahead the reminder fires.',`<select data-sel="defaultRemind">${[[5,'5m before'],[15,'15m before'],[30,'30m before'],[60,'1h before'],[120,'2h before'],[1440,'1 day before']].map(([v,l])=>`<option value="${v}" ${st.defaultRemind===v?'selected':''}>${l}</option>`).join('')}</select>`)
     +opt('Reminder style','',seg('remindStyle',[['banner','banner'],['off','off']]))
@@ -317,7 +322,7 @@ function renderSheet(){
     +opt('Import JSON','Paste a backup and press Import. Merges by id, newest wins.','<button class="btn" data-run="impJson">Import</button>')
     +`<textarea id="impBox" placeholder="{ &quot;tasks&quot;: [ … ] }"></textarea>`
     +`<h3>Input</h3>`+opt('AI parsing','“lunch with Kai next thursday, same place” → task with time and notes.','<span class="soon">PLANNED</span>');
-  body.innerHTML=h;s.querySelector('.card').scrollTop=sc;
+  body.innerHTML=h;if(sheetAnim){sheetAnim=false;body.classList.add('tab-in');s.querySelector('.card').scrollTop=0}else{body.classList.remove('tab-in');s.querySelector('.card').scrollTop=sc}
 }
 const getPath=(o,p)=>p.split('.').reduce((a,k)=>a&&a[k],o);
 const setPath=(o,p,v)=>{const ks=p.split('.');const last=ks.pop();const t=ks.reduce((a,k)=>a[k],o);t[last]=v};
@@ -411,7 +416,7 @@ document.addEventListener('click',e=>{
   if(b.dataset.cmd){e.preventDefault();return}
   if(b.dataset.hl!=null)return;
   // settings sheet controls
-  if(b.dataset.tab){sheetTab=b.dataset.tab;renderSheet();return}
+  if(b.dataset.tab){sheetTab=b.dataset.tab;sheetAnim=true;renderSheet();return}
   if(b.dataset.set){applySetting(b.dataset.set,b.dataset.val);return}
   if(b.dataset.tog){applySetting(b.dataset.tog,!getPath(S(),b.dataset.tog));return}
   if(b.dataset.play){const st=S();const nm=b.dataset.play==='remind'?'remind.'+st.sounds.remind:b.dataset.play==='start'?'start.'+st.sounds.start:b.dataset.play;SFX.play(nm,true);return}
@@ -449,6 +454,8 @@ function runSetting(k,b){
   if(k==='rtNew'){newRoutine();renderSheet();const ta=[...document.querySelectorAll('.rt-name')].pop();if(ta){ta.focus();ta.select()}}
   if(k==='rtReset'){resetRoutines();renderSheet();render();toast('Starter routines restored')}
   if(k==='revealData'){window.SundialDesktop?.reveal().catch(e=>toast(String(e)))}
+  if(k==='updateCheck'){b.textContent='Checking…';checkUpdates(true).finally(()=>{b.textContent='Check now'})}
+  if(k==='updateInstall'){installUpdate(null)}
   if(k==='aiSaveKey'){const v=($('#aiKey')?.value||'').trim();if(!v){toast('Paste a key first');return}const D=window.SundialDesktop;
     if(D)D.secret.set('ai:'+S().ai.provider,v).then(()=>{aiKeySaved=true;renderSheet();toast('Key saved to Windows Credential Manager')}).catch(e=>toast('Could not save: '+e));
     else{S().ai.keyInBrowser=v;save();aiKeySaved=true;renderSheet();toast('Key saved in this browser')}}
@@ -486,7 +493,7 @@ document.addEventListener('input',e=>{
   const t=e.target;
   if(t.id==='qa'){previewParse();return}
   if(t.id==='page'){const html=t.innerHTML;if(html==='<br>'||(!t.textContent.trim()&&!html.includes('<mark')))delete state.notes[sel];else state.notes[sel]=html;state.notesTs[sel]=Date.now();save();return}
-  if(t.dataset.color){state.labels[t.dataset.color]=t.value;save();return}
+  if(t.dataset.color){state.labels[t.dataset.color]=t.value;save();const tag=t.closest('.colorrow')?.querySelector('.mono');if(tag)tag.textContent='#'+t.value.toLowerCase().replace(/\s+/g,'');if(t.closest('.sheet')&&state.layout.cal)renderLegend();return}
   if(t.dataset.range){const v=+t.value;setPath(S(),t.dataset.range,v);save();if(t.dataset.range==='sounds.volume')SFX.setVolume(v);const l=$('#secsLbl');if(l&&t.dataset.range==='bannerSecs')l.textContent=v+'s';return}
   if(t.dataset.sel){applySetting(t.dataset.sel,t.value);return}
   if(t.dataset.ai){setPath(S(),'ai.'+t.dataset.ai,t.value.trim());save();return}
@@ -556,10 +563,20 @@ document.querySelectorAll('.gutter').forEach(g=>{g.addEventListener('pointerdown
   g.addEventListener('dblclick',()=>{if(g.dataset.side==='l')state.layout.wl=240;else state.layout.wr=320;save();applyLayout()})});
 
 // ---------- desktop + AI helpers ----------
-let globalHotkeys=false,autostartOn=false,aiKeySaved=false;
+let globalHotkeys=false,autostartOn=false,aiKeySaved=false,appVersion='',updateInfo=null;
+// Updater: quiet unless something is actually ready. A failed check (offline, not configured yet) is silent unless the user asked.
+async function checkUpdates(manual){const D=window.SundialDesktop;if(!D)return;if(!manual&&!S().updates.auto)return;
+  try{const u=await D.updateCheck();if(u&&u.version){updateInfo=u;updateBanner(u);if($('.sheet-host'))renderSheet()}else if(manual)toast('You have the latest version')}
+  catch(e){if(manual)toast('Update check failed: '+(e.message||e))}}
+function updateBanner(u){const host=bannerHost();if(host.querySelector('.banner.update'))return;const el=document.createElement('div');el.className='banner update start';
+  el.innerHTML=`<div class="ic">↻</div><div class="tx"><span class="k">Update ready</span><b>Sundial ${esc(u.version)}</b><small>${esc((u.notes||'').split('\n')[0].slice(0,90))||'Downloaded in the background. Restart whenever you like.'}</small></div><div class="bt"><button data-b="later">Later</button><button class="ok" data-b="go">Restart now</button></div>`;
+  el.querySelector('[data-b="later"]').onclick=()=>dismissBanner(el);el.querySelector('[data-b="go"]').onclick=()=>installUpdate(el);host.appendChild(el)}
+async function installUpdate(el){const D=window.SundialDesktop;if(!D)return;const b=el?.querySelector('[data-b="go"]');if(b){b.textContent='Installing…';b.disabled=true}
+  try{await D.flush();await D.updateInstall()}catch(e){toast('Update failed: '+(e.message||e));if(b){b.textContent='Restart now';b.disabled=false}}}
 function syncHotkeys(){const D=window.SundialDesktop;if(!D)return;D.setHotkeys({quick:S().quick.hotkey,voice:S().voice.enabled?S().voice.hotkey:null}).then(failed=>{globalHotkeys=!(failed&&failed.length);if(failed&&failed.length)toast('Hotkey taken by another app: '+failed.join(', '))}).catch(()=>{globalHotkeys=false})}
 function refreshAiKey(){const D=window.SundialDesktop;if(D)D.secret.get('ai:'+S().ai.provider).then(v=>{aiKeySaved=!!v;if(sheetTab==='ai')renderSheet()}).catch(()=>{});else aiKeySaved=!!S().ai.keyInBrowser}
-function desktopGeneralRows(){return `<div class="opt"><div>Start with Windows<small>Launches hidden in the tray at sign-in.</small></div><div class="ctl"><button class="tog" role="switch" data-autostart="1" aria-checked="${autostartOn}"></button></div></div>`
+function desktopGeneralRows(){return `<div class="opt"><div>Updates<small>Sundial ${esc(appVersion||'')}. Checks on launch and every six hours, downloads in the background, and asks before restarting.${updateInfo?' <b>'+esc(updateInfo.version)+' is ready.</b>':''}</small></div><div class="ctl"><button class="tog" role="switch" data-tog="updates.auto" aria-checked="${!!S().updates.auto}"></button>${updateInfo?'<button class="btn" data-run="updateInstall">Restart to update</button>':'<button class="btn" data-run="updateCheck">Check now</button>'}</div></div>`
+  +`<div class="opt"><div>Start with Windows<small>Launches hidden in the tray at sign-in.</small></div><div class="ctl"><button class="tog" role="switch" data-autostart="1" aria-checked="${autostartOn}"></button></div></div>`
   +`<div class="opt"><div>Closing the window<small>Hides Sundial to the tray so reminders keep firing. Quit is in the tray icon menu.</small></div><div class="ctl"><span class="soon">TRAY</span></div></div>`
   +`<div class="opt"><div>Your data<small>One JSON file on this PC, plus a daily backup folder beside it.</small></div><div class="ctl"><button class="btn" data-run="revealData">Show folder</button></div></div>`}
 function aiTab(st,opt,tog){const a=st.ai,D=window.SundialDesktop;
@@ -594,7 +611,8 @@ function tick(){
 async function init(){
   const D=window.SundialDesktop;
   if(D){try{const raw=await D.load();if(raw)hydrate(raw);else save()}catch(e){console.error('load failed',e)}
-    D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});syncHotkeys()}
+    D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});syncHotkeys();
+    D.appVersion().then(v=>{appVersion=v}).catch(()=>{});setTimeout(()=>checkUpdates(false),4000);setInterval(()=>checkUpdates(false),6*3600*1000)}
   applyTheme();applyDensity();applyLayout();SFX.setVolume(S().sounds.volume);render();updateLogo();
   // first gesture: unlock audio and (browser only) ask once for OS notifications
   const unlock=()=>{SFX.unlock();try{if(!D&&'Notification'in window&&Notification.permission==='default')Notification.requestPermission().catch(()=>{})}catch(_){}};

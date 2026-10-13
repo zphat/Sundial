@@ -19,6 +19,9 @@
     autostart:{get:()=>invoke('autostart_get'),set:on=>invoke('autostart_set',{on})},
     secret:{get:name=>invoke('secret_get',{name}),set:(name,value)=>invoke('secret_set',{name,value}),del:name=>invoke('secret_delete',{name})},
     aiParse:req=>invoke('ai_parse',{req}),
+    appVersion:()=>invoke('app_version'),
+    updateCheck:()=>invoke('update_check'),
+    updateInstall:()=>invoke('update_install'),
     on:(name,cb)=>listen(name,cb),
   };
   window.addEventListener('beforeunload',flush);

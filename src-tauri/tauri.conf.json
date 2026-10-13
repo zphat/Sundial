@@ -1,10 +1,19 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Sundial",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "app.sundial.desktop",
   "build": {
     "frontendDist": "../ui"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": ["https://github.com/zphat/Sundial/releases/latest/download/latest.json"],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   },
   "app": {
     "withGlobalTauri": true,

@@ -28,11 +28,25 @@ jobs:
 
       - run: npm install
 
+      # Updater artifacts (.sig + latest.json) are produced only when the signing key secret exists,
+      # so the build keeps working before the key is set up.
+      - name: Detect updater signing key
+        id: sig
+        shell: pwsh
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ($env:KEY) { "signed=true" >> $env:GITHUB_OUTPUT } else { "signed=false" >> $env:GITHUB_OUTPUT }
+
       - name: Build installer (and release on tags)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
+          args: ${{ steps.sig.outputs.signed == 'true' && '--config src-tauri/tauri.updater.conf.json' || '' }}
+          includeUpdaterJson: ${{ steps.sig.outputs.signed == 'true' }}
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: ${{ github.ref_type == 'tag' && format('Sundial {0}', github.ref_name) || '' }}
           releaseBody: "Windows installer. Unsigned for now: if Windows shows 'unrecognized app', choose More info, then Run anyway."

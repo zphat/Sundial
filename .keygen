@@ -1,0 +1,2 @@
+Changing this file triggers .github/workflows/keygen.yml, which generates the updater signing keypair.
+generation: 1

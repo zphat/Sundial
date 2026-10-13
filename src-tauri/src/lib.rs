@@ -5,7 +5,8 @@
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, sync::Mutex};
+use tauri_plugin_updater::UpdaterExt;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -347,6 +348,47 @@ async fn ai_parse(req: AiReq) -> Result<Value, String> {
     }
 }
 
+// ---------- updates ----------
+
+/// The update found by the last check, kept so "Restart now" can install it without checking again.
+pub struct PendingUpdate(Mutex<Option<tauri_plugin_updater::Update>>);
+
+#[tauri::command]
+fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
+async fn update_check(app: AppHandle, pending: tauri::State<'_, PendingUpdate>) -> Result<Option<Value>, String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await {
+        Ok(Some(u)) => {
+            let info = json!({
+                "version": u.version,
+                "notes": u.body,
+                "date": u.date.map(|d| d.to_string()),
+            });
+            *pending.0.lock().map_err(|e| e.to_string())? = Some(u);
+            Ok(Some(info))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn update_install(app: AppHandle, pending: tauri::State<'_, PendingUpdate>) -> Result<(), String> {
+    let update = pending.0.lock().map_err(|e| e.to_string())?.take();
+    let Some(update) = update else {
+        return Err("No update has been checked yet".to_string());
+    };
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+    app.restart()
+}
+
 // ---------- window / tray ----------
 
 fn show_main(app: &AppHandle) {
@@ -396,6 +438,8 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(PendingUpdate(Mutex::new(None)))
         .setup(|app| {
             build_tray(app)?;
             if std::env::args().any(|a| a == "--minimized") {
@@ -415,7 +459,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_db, save_db, data_path, reveal_data, open_url, notify,
             autostart_get, autostart_set, secret_set, secret_get, secret_delete,
-            set_hotkeys, ai_parse
+            set_hotkeys, ai_parse, app_version, update_check, update_install
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sundial");

@@ -19,6 +19,7 @@
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
     "opener:default",
-    "window-state:default"
+    "window-state:default",
+    "updater:default"
   ]
 }
