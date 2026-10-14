@@ -365,8 +365,7 @@ function renderSheet(){
   if(sheetTab==='data')h=`<h3>Calendars</h3>`+opt('Apple / Google Calendar','Copies this day as .ics text. Paste into a file named day.ics and open it; both calendars import it, reminders included.','<button class="btn" data-run="icsDay">Copy day</button>')
     +opt('Everything as .ics','All tasks, all days, repeats as RRULEs.','<button class="btn" data-run="icsAll">Copy all</button>')
     +opt('Live two-way sync','CalDAV / Google Calendar API in the desktop build.','<span class="soon">PLANNED</span>')
-    +`<h3>Sync</h3>`+opt('How sync will work','Sundial keeps a diary of every change: what changed, when, and on which device. When a phone or web version exists, your devices swap diaries and replay them. If two devices edit the same task, the later edit wins; deleted tasks leave a marker so they stay deleted. Nothing for you to set up now.',`<span class="soon">${state.oplog.length} CHANGES</span>`)
-    +opt('This device',`<code>${esc(state.device)}</code>`,'<span class="soon">LOCAL-FIRST</span>')
+    +syncRows(st,opt)
     +opt('Export JSON','Tasks, notes, labels, change log.','<button class="btn" data-run="expJson">Copy</button>')
     +opt('Import JSON','Paste a backup and press Import. Merges by id, newest wins.','<button class="btn" data-run="impJson">Import</button>')
     +`<textarea id="impBox" placeholder="{ &quot;tasks&quot;: [ … ] }"></textarea>`
@@ -475,6 +474,7 @@ document.addEventListener('click',e=>{
   if(b.dataset.play){const st=S();const nm=b.dataset.play==='remind'?'remind.'+st.sounds.remind:b.dataset.play==='start'?'start.'+st.sounds.start:b.dataset.play;SFX.play(nm,true);return}
   if(b.dataset.autostart){const D=window.SundialDesktop;if(D)D.autostart.set(!autostartOn).then(()=>{autostartOn=!autostartOn;renderSheet()}).catch(e=>toast('Could not change: '+e));return}
   if(b.dataset.style){document.querySelectorAll('.ob-card').forEach(c=>c.setAttribute('aria-pressed',String(c===b)));return}
+  if(b.dataset.syncmode){syncSetup.mode=b.dataset.syncmode;renderSheet();return}
   if(b.dataset.run){runSetting(b.dataset.run,b);return}
   const idSrc=e.target.closest('[data-id],[data-drawer]');const id=b.dataset.id||(idSrc&&(idSrc.dataset.id||idSrc.dataset.drawer))||(inMenu&&inMenu.dataset.id)||openId;
   if(b.dataset.setcolor){const tid=b.dataset.id||id;if(tid){upd(tid,{color:b.dataset.setcolor});closeMenu();render()}return}
@@ -510,6 +510,12 @@ function runSetting(k,b){
   if(k==='rtNew'){newRoutine();renderSheet();const ta=[...document.querySelectorAll('.rt-name')].pop();if(ta){ta.focus();ta.select()}}
   if(k==='rtReset'){resetRoutines();renderSheet();render();toast('Starter routines restored')}
   if(k==='revealData'){window.SundialDesktop?.reveal().catch(e=>toast(String(e)))}
+  if(k==='syncConnect'){const url=($('#syncUrl')?.value||'').trim(),tok=$('#syncToken')?.value||'';if(!url||!tok){toast('Server URL and token, please');return}b.textContent='…';Sync.connectSelf(url,tok).then(()=>{renderSheet();toast('Connected. Now set the passphrase.')}).catch(e=>{b.textContent='Connect';toast('Could not connect: '+(e.message||e))})}
+  if(k==='syncCode'){const url=($('#syncUrl')?.value||'').trim(),em=($('#syncEmail')?.value||'').trim();if(!url||!em){toast('Server and email, please');return}syncSetup.url=url;syncSetup.email=em;b.textContent='…';Sync.requestCode(url,em).then(()=>{syncSetup.codeSent=true;renderSheet();toast('Code sent. Check your mail.')}).catch(e=>{b.textContent='Send code';toast('Could not send: '+(e.message||e))})}
+  if(k==='syncVerify'){const code=$('#syncCodeIn')?.value||'';Sync.verifyCode(syncSetup.email,code).then(()=>{syncSetup.codeSent=false;renderSheet();toast('Signed in. Now set the passphrase.')}).catch(e=>toast(e.message||String(e)))}
+  if(k==='syncPass'){const p=$('#syncPass')?.value||'';b.textContent='…';Sync.setPassphrase(p).then(created=>{renderSheet();toast(created?'Passphrase set. Syncing.':'Unlocked. Syncing.')}).catch(e=>{b.textContent='Unlock';toast(e.message||String(e))})}
+  if(k==='syncNow'){b.textContent='…';Sync.syncNow().finally(()=>renderSheet())}
+  if(k==='syncOut'){Sync.signOut().then(()=>{renderSheet();toast('Signed out of sync. Local data kept.')})}
   if(k==='obDone'){const pick=document.querySelector('.ob-card[aria-pressed="true"]')?.dataset.style||'quick';finishOnboarding(pick)}
   if(k==='obCustom'){S().onboarded=true;save();closeScrim();setTimeout(()=>{sheetTab='general';settings();setTimeout(()=>{const kb=document.querySelector('[data-run="recQuick"]');if(kb)kb.click()},250)},260)}
   if(k==='onboard'){closeScrim();setTimeout(onboarding,260)}
@@ -529,7 +535,7 @@ document.addEventListener('mousedown',e=>{
   const b=e.target.closest('.nb .tools button');if(!b)return;e.preventDefault();
   if(b.dataset.cmd)document.execCommand(b.dataset.cmd,false,b.dataset.val||null);
   if(b.dataset.hl){document.execCommand('styleWithCSS',false,true);document.execCommand('hiliteColor',false,b.dataset.hl==='none'?'transparent':HL[b.dataset.hl])}
-  const p=$('#page');if(p){state.notes[sel]=p.innerHTML;state.notesTs[sel]=Date.now();save()}
+  const p=$('#page');if(p){state.notes[sel]=p.innerHTML;state.notesTs[sel]=Date.now();touch('note:'+sel);save()}
 });
 function chipsHtml(value){const p=parse(value,sel);return value.trim()?p.hits.map(h=>typeof h==='string'?`<span class="chip">${h}</span>`:`<span class="chip"><span class="swatch" style="--sw:var(--c-${h.sw})"></span>${esc(h.label)}</span>`).join('')+(p.hits.length?'':'<span class="chip ghost">try “3pm”, “45m”, “#work”, “tmrw”, “every mon”, “remind 1d”</span>'):''}
 function previewParse(){const t=$('#qa'),box=$('#parse');if(!t||!box)return;const html=chipsHtml(t.value);if(box.innerHTML!==html)box.innerHTML=html}
@@ -552,13 +558,14 @@ document.addEventListener('keyup',e=>{if(e.target.id==='qa')previewParse()});
 document.addEventListener('input',e=>{
   const t=e.target;
   if(t.id==='qa'){previewParse();return}
-  if(t.id==='page'){const html=t.innerHTML;if(html==='<br>'||(!t.textContent.trim()&&!html.includes('<mark')))delete state.notes[sel];else state.notes[sel]=html;state.notesTs[sel]=Date.now();save();return}
-  if(t.dataset.color){state.labels[t.dataset.color]=t.value;save();const tag=t.closest('.colorrow')?.querySelector('.mono');if(tag)tag.textContent='#'+t.value.toLowerCase().replace(/\s+/g,'');if(t.closest('.sheet')&&state.layout.cal)renderLegend();return}
+  if(t.id==='page'){const html=t.innerHTML;if(html==='<br>'||(!t.textContent.trim()&&!html.includes('<mark')))delete state.notes[sel];else state.notes[sel]=html;state.notesTs[sel]=Date.now();touch('note:'+sel);save();return}
+  if(t.dataset.color){state.labels[t.dataset.color]=t.value;state.labelsTs=Date.now();touch('labels');save();const tag=t.closest('.colorrow')?.querySelector('.mono');if(tag)tag.textContent='#'+t.value.toLowerCase().replace(/\s+/g,'');if(t.closest('.sheet')&&state.layout.cal)renderLegend();return}
   if(t.dataset.range){const v=+t.value;setPath(S(),t.dataset.range,v);save();if(t.dataset.range==='sounds.volume')SFX.setVolume(v);const l=$('#secsLbl');if(l&&t.dataset.range==='bannerSecs')l.textContent=v+'s';return}
   if(t.dataset.sel){applySetting(t.dataset.sel,t.value);return}
   if(t.dataset.ai){setPath(S(),'ai.'+t.dataset.ai,t.value.trim());save();return}
-  if(t.dataset.rtName){const r=state.routines.find(x=>x.id===t.dataset.rtName);if(r){r.name=t.value;save()}return}
-  if(t.dataset.rtLines){const r=state.routines.find(x=>x.id===t.dataset.rtLines);if(r){r.lines=t.value.split('\n');save()}return}
+  if(t.dataset.rtName){const r=state.routines.find(x=>x.id===t.dataset.rtName);if(r){r.name=t.value;touchRoutines();save()}return}
+  if(t.dataset.rtLines){const r=state.routines.find(x=>x.id===t.dataset.rtLines);if(r){r.lines=t.value.split('\n');touchRoutines();save()}return}
+  if(t.id==='syncUrl')syncSetup.url=t.value;if(t.id==='syncEmail')syncSetup.email=t.value;
   if(!openId)return;const x=get(openId);if(!x)return;
   if(t.id==='edTitle'){upd(openId,{title:t.value},true);const row=document.querySelector(`.task[data-id="${openId}"] .t`);if(row)row.textContent=t.value}
   if(t.id==='edNotes')upd(openId,{notes:t.value},true);
@@ -651,6 +658,20 @@ function onboarding(){
 }
 function finishOnboarding(style){const st=S();if(HOTKEY_STYLES[style]){st.quick.hotkey=HOTKEY_STYLES[style].quick;st.voice.hotkey=HOTKEY_STYLES[style].voice}st.onboarded=true;save();syncHotkeys();closeScrim();toast('Quick add: '+st.quick.hotkey)}
 
+// ---------- sync settings ----------
+const syncSetup={mode:'self',url:'',email:'',codeSent:false};
+function syncRows(st,opt){const s=Sync.st();const D=window.SundialDesktop;let h=`<h3>Sync</h3>`;
+  if(s.mode==='off'){
+    h+=opt('Sync between devices','End-to-end encrypted: every task is sealed on this device before it leaves, and the server only ever stores ciphertext. Local data keeps working either way.',`<div class="seg">${[['self','My own server'],['hosted','Sundial Sync']].map(([v,l])=>`<button data-syncmode="${v}" aria-pressed="${syncSetup.mode===v}">${l}</button>`).join('')}</div>`);
+    if(syncSetup.mode==='self')h+=opt('Your server','A Sundial Sync server you run (see server/README in the repo). The token is whatever you started it with.',`<input class="key" style="text-align:left;min-width:220px" id="syncUrl" placeholder="http://localhost:8768" value="${esc(syncSetup.url||s.server||'')}" spellcheck="false"><input class="key" style="text-align:left;min-width:150px" id="syncToken" type="password" placeholder="token" autocomplete="off"><button class="btn" data-run="syncConnect">Connect</button>`);
+    else{h+=opt('Sundial Sync','Not live yet. When it is: your email, a six-digit code, done.',`<input class="key" style="text-align:left;min-width:200px" id="syncUrl" placeholder="https://sync.sundial.app" value="${esc(syncSetup.url||'')}" spellcheck="false"><input class="key" style="text-align:left;min-width:190px" id="syncEmail" type="email" placeholder="you@example.com" value="${esc(syncSetup.email||'')}"><button class="btn" data-run="syncCode">Send code</button>`);
+      if(syncSetup.codeSent)h+=opt('Code from the email','',`<input class="key" style="min-width:110px" id="syncCodeIn" inputmode="numeric" placeholder="482913"><button class="btn" data-run="syncVerify">Sign in</button>`)}
+    return h}
+  h+=opt('Connected',`${s.mode==='hosted'?esc(s.email):'your server'} · <code>${esc(s.server)}</code> · this device <code>${esc(state.device)}</code>`,'<button class="btn" data-run="syncOut">Sign out</button>');
+  if(!s.keyOk)h+=opt('Passphrase','Seals everything before it leaves this device. New account: choose one. Existing account: enter the one you already use. Lose it and the synced copy is unreadable; local data stays.',`<input class="key" style="text-align:left;min-width:220px" id="syncPass" type="password" placeholder="passphrase, 8+ characters" autocomplete="new-password"><button class="btn" data-run="syncPass">Unlock</button>`);
+  else h+=opt('Status',`${s.lastError?'Last error: '+esc(s.lastError):(s.lastSync?'Last synced '+new Date(s.lastSync).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'Not synced yet')} · ${Sync.pending()} waiting${Sync.isRunning()?' · syncing…':''}${D?'':' · key kept in this browser'}`,`<button class="btn" data-run="syncNow">Sync now</button>`);
+  return h}
+
 // ---------- desktop + AI helpers ----------
 let globalHotkeys=false,autostartOn=false,aiKeySaved=false,appVersion='',updateInfo=null;
 // Updater: quiet unless something is actually ready. A failed check (offline, not configured yet) is silent unless the user asked.
@@ -704,6 +725,7 @@ async function init(){
     D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});syncHotkeys();
     D.appVersion().then(v=>{appVersion=v}).catch(()=>{});setTimeout(()=>checkUpdates(false),4000);setInterval(()=>checkUpdates(false),6*3600*1000)}
   applyTheme();applyDensity();applyLayout();SFX.setVolume(S().sounds.volume);render();updateLogo();
+  Sync.on(()=>{if($('.sheet-host')&&sheetTab==='data')renderSheet()});Sync.start();
   if(!S().onboarded)setTimeout(onboarding,500);
   // first gesture: unlock audio and (browser only) ask once for OS notifications
   const unlock=()=>{SFX.unlock();try{if(!D&&'Notification'in window&&Notification.permission==='default')Notification.requestPermission().catch(()=>{})}catch(_){}};

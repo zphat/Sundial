@@ -25,7 +25,7 @@ const ROUTINE_TEMPLATE=[
   {name:'Deep work',lines:['Deep work block 10am 2h #work silent','Lunch away from the desk 12:30pm 45m #health','Second block 2pm 90m #work']},
   {name:'Evening',lines:['Tidy the desk 6pm 10m #admin','Plan tomorrow 9pm 10m #admin','Screens off 10pm #health silent']},
 ];
-let state={tasks:[],labels:Object.fromEntries(COLORS),notes:{},notesTs:{},tombstones:{},fired:{},oplog:[],routines:[],device:null,schema:SCHEMA,
+let state={tasks:[],labels:Object.fromEntries(COLORS),notes:{},notesTs:{},labelsTs:0,routinesTs:0,tombstones:{},fired:{},oplog:[],routines:[],device:null,schema:SCHEMA,
   layout:{cal:true,board:true,tl:true,wl:240,wr:320,hc:300,hb:0,ht:320,mode:'auto',lock:{cal:false,board:true,tl:true}},settings:JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),carryDismissed:null};
 const uid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36);
 const save=()=>{const j=JSON.stringify(state);try{localStorage.setItem(KEY,j)}catch(e){}if(window.SundialDesktop)window.SundialDesktop.save(j)};
@@ -72,7 +72,7 @@ function bootState(rawJson){
 }
 bootState(null);
 // desktop: replace the in-memory state with the data file's contents (before the first render)
-function hydrate(rawJson){state={tasks:[],labels:Object.fromEntries(COLORS),notes:{},notesTs:{},tombstones:{},fired:{},oplog:[],routines:[],device:null,schema:SCHEMA,layout:{cal:true,board:true,tl:true,wl:240,wr:320,hc:300,hb:0,ht:320,mode:'auto',lock:{cal:false,board:true,tl:true}},settings:JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),carryDismissed:null};bootState(rawJson)}
+function hydrate(rawJson){state={tasks:[],labels:Object.fromEntries(COLORS),notes:{},notesTs:{},labelsTs:0,routinesTs:0,tombstones:{},fired:{},oplog:[],routines:[],device:null,schema:SCHEMA,layout:{cal:true,board:true,tl:true,wl:240,wr:320,hc:300,hb:0,ht:320,mode:'auto',lock:{cal:false,board:true,tl:true}},settings:JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),carryDismissed:null};bootState(rawJson)}
 const S=()=>state.settings;
 
 // ---------- dates ----------
@@ -135,10 +135,17 @@ function guessColor(title){
 const history=[],future=[];
 function pushUndo(){history.push(JSON.stringify(state.tasks));if(history.length>80)history.shift();future.length=0}
 // Undo/redo swap the whole task list; tombstones for anything brought back are lifted, and the log notes the rewind so a sync layer re-diffs.
-function undo(){if(!history.length)return false;future.push(JSON.stringify(state.tasks));state.tasks=JSON.parse(history.pop());state.tasks.forEach(t=>delete state.tombstones[t.id]);op('undo',null,{tasks:state.tasks.length});save();return true}
-function redo(){if(!future.length)return false;history.push(JSON.stringify(state.tasks));state.tasks=JSON.parse(future.pop());state.tasks.forEach(t=>delete state.tombstones[t.id]);op('redo',null,{tasks:state.tasks.length});save();return true}
+function swapTasks(nextJson,kind){const before=state.tasks,after=JSON.parse(nextJson),now=Date.now();const bm=new Map(before.map(t=>[t.id,t])),am=new Map(after.map(t=>[t.id,t]));
+  for(const id of bm.keys()){if(!am.has(id)){state.tombstones[id]=now;touch('task:'+id)}}
+  for(const [id,t] of am){const b=bm.get(id);if(!b||JSON.stringify(b)!==JSON.stringify(t)){t.updatedAt=now;touch('task:'+id)}delete state.tombstones[id]}
+  state.tasks=after;op(kind,null,{tasks:after.length})}
+function undo(){if(!history.length)return false;future.push(JSON.stringify(state.tasks));swapTasks(history.pop(),'undo');save();return true}
+function redo(){if(!future.length)return false;history.push(JSON.stringify(state.tasks));swapTasks(future.pop(),'redo');save();return true}
 // Append-only change log, one entry per mutation. This is what a sync layer ships between devices.
-function op(kind,ref,patch){state.oplog.push({id:uid(),ts:Date.now(),dev:state.device,kind,ref,patch:patch||null});if(state.oplog.length>3000)state.oplog.splice(0,state.oplog.length-3000)}
+function op(kind,ref,patch){state.oplog.push({id:uid(),ts:Date.now(),dev:state.device,kind,ref,patch:patch||null});if(state.oplog.length>3000)state.oplog.splice(0,state.oplog.length-3000);
+  if(kind==='add'||kind==='upd'||kind==='del')touch('task:'+ref);else if(kind==='reorder'&&Array.isArray(patch))patch.forEach(id=>touch('task:'+id))}
+function touch(docId){if(typeof Sync!=='undefined')Sync.markDirty(docId)}
+function touchRoutines(){state.routinesTs=Date.now();touch('routines')}
 
 // ---------- mutations ----------
 const get=id=>state.tasks.find(t=>t.id===id);
@@ -176,10 +183,10 @@ function undoneBefore(date){return state.tasks.filter(t=>!t.done&&t.date<date).s
 function carryAll(toDate){pushUndo();const ts=undoneBefore(toDate);ts.forEach(t=>{Object.assign(t,{date:toDate,order:nextOrder(toDate),updatedAt:Date.now()});op('upd',t.id,{date:toDate})});save();return ts.length}
 
 // ---------- routines ----------
-function ensureRoutines(){if(!state.routines.length)state.routines=ROUTINE_TEMPLATE.map(r=>({id:uid(),name:r.name,lines:[...r.lines]}));save()}
-function resetRoutines(){state.routines=ROUTINE_TEMPLATE.map(r=>({id:uid(),name:r.name,lines:[...r.lines]}));save()}
-function newRoutine(){const r={id:uid(),name:'New routine',lines:[]};state.routines.push(r);save();return r}
-function deleteRoutine(id){state.routines=state.routines.filter(r=>r.id!==id);save()}
+function ensureRoutines(){if(!state.routines.length){state.routines=ROUTINE_TEMPLATE.map(r=>({id:uid(),name:r.name,lines:[...r.lines]}));touchRoutines()}save()}
+function resetRoutines(){state.routines=ROUTINE_TEMPLATE.map(r=>({id:uid(),name:r.name,lines:[...r.lines]}));touchRoutines();save()}
+function newRoutine(){const r={id:uid(),name:'New routine',lines:[]};state.routines.push(r);touchRoutines();save();return r}
+function deleteRoutine(id){state.routines=state.routines.filter(r=>r.id!==id);touchRoutines();save()}
 // one undo step for the whole routine; lines that name a day go to that day, the rest to `date`
 function applyRoutine(id,date){const r=state.routines.find(x=>x.id===id);if(!r)return 0;pushUndo();let n=0;for(const line of r.lines){if(line.trim()&&addTask(line,date,null,true))n++}return n}
 
@@ -224,5 +231,6 @@ function importJSON(text){
   for(const d in j.notes||{}){const mine=state.notesTs[d]||0,theirs=(j.notesTs||{})[d]||0;if(!state.notes[d]||theirs>mine||(theirs===mine&&(j.notes[d]||'').length>state.notes[d].length)){state.notes[d]=j.notes[d];state.notesTs[d]=theirs||mine}}
   Object.assign(state.labels,j.labels||{});
   const seen=new Set(state.oplog.map(o=>o.id));for(const o of j.oplog||[])if(!seen.has(o.id))state.oplog.push(o);state.oplog.sort((a,b)=>a.ts-b.ts);
+  if(typeof Sync!=='undefined')Sync.markAllDirty();
   save();return n;
 }

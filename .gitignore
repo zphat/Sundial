@@ -1,5 +1,9 @@
 node_modules/
 src-tauri/target/
+server/target/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 src-tauri/gen/schemas/
 *.log
 .DS_Store

@@ -61,3 +61,38 @@ jobs:
           name: Sundial-windows-installer
           path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
+
+  # The sync server: a Linux binary on every push, attached to the release on tags.
+  sync-server:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - name: Build
+        run: cargo build --release --manifest-path server/Cargo.toml
+      - name: Smoke test (self mode)
+        run: |
+          SUNDIAL_TOKENS=smoke SUNDIAL_DB=/tmp/smoke.sqlite SUNDIAL_BIND=127.0.0.1:8768 ./server/target/release/sundial-sync &
+          sleep 1
+          curl -fsS http://127.0.0.1:8768/v1/health
+          curl -fsS -H 'Authorization: Bearer smoke' http://127.0.0.1:8768/v1/account
+          curl -fsS -H 'Authorization: Bearer smoke' -H 'content-type: application/json' -d '{"protocol":1,"device_id":"ci","cursor":0,"docs":[{"id":"t1","kind":"task","updated_at":1,"deleted":false,"nonce":"AAAA","ct":"AAAA"}]}' http://127.0.0.1:8768/v1/sync
+          kill %1
+      - name: Package
+        run: |
+          mkdir -p dist && cp server/target/release/sundial-sync dist/sundial-sync-linux-x86_64 && cp server/README.md dist/
+          tar -C dist -czf sundial-sync-linux-x86_64.tar.gz sundial-sync-linux-x86_64 README.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sundial-sync-linux-x86_64
+          path: sundial-sync-linux-x86_64.tar.gz
+      - name: Attach to release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sundial-sync-linux-x86_64.tar.gz
