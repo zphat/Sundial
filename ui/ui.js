@@ -334,7 +334,7 @@ function renderSheet(){
     +opt('Density','Compact fits more rows on screen.',seg('density',[['comfortable','comfortable'],['compact','compact']]))
     +`<div class="opt"><div>Layout<small>Auto stacks the panes on tall screens and narrow windows. Drag the bar between two panes to resize them either way; double-click it to reset.</small></div><div class="ctl"><div class="seg">${[['auto','auto'],['row','side by side'],['column','stacked']].map(([v,l])=>`<button data-set="layout.mode" data-val="${v}" aria-pressed="${(state.layout.mode||'auto')===v}">${l}</button>`).join('')}</div>${effectiveMode()==='column'?'<button class="btn" data-run="fitWindow">Fit to window</button>':''}</div></div>`
     +(effectiveMode()==='column'?`<div class="opt"><div>Stacked sections<small>Each box has a padlock by its ×. Locked: it keeps the height you gave it and scrolls inside. Unlocked: it grows to its content and the whole column scrolls. Drag a bar to set a height (locks it); double-click a bar to unlock.</small></div></div>`:'')
-    +opt('Quick add from anywhere','A floating add bar over whatever you are looking at; the + button does the same. System-wide in the desktop app. Two modifiers plus a key (Ctrl+Alt+Space, Ctrl+Shift+Up…) stays out of games’ way; a system-wide shortcut cannot chord two regular keys.',`<button class="key" data-run="recQuick">${esc(st.quick.hotkey)}</button>`)
+    +opt('Quick add from anywhere',`A floating add bar over whatever you are looking at; the + button does the same. System-wide in the desktop app. Style: <b>${hotkeyStyle()}</b>. Two modifiers plus a key stays out of games’ way; Pause or Scroll Lock alone also works. A system-wide shortcut cannot chord two regular keys.`,`<button class="key" data-run="recQuick">${esc(st.quick.hotkey)}</button><button class="btn" data-run="onboard">Choose a style</button>`)
     +opt('Clear example tasks','Removes only the seeded examples.','<button class="btn" data-run="clearEx">Clear</button>')
     +(window.SundialDesktop?desktopGeneralRows():'')
     +`<h3>Colors</h3><div class="opt" style="border:0;padding-top:0"><div><small>Six colors, your names. Type <code>#name</code> in a task line to pick one. The names are also editable right in the calendar pane.</small></div></div>`
@@ -474,6 +474,7 @@ document.addEventListener('click',e=>{
   if(b.dataset.tog){applySetting(b.dataset.tog,!getPath(S(),b.dataset.tog));return}
   if(b.dataset.play){const st=S();const nm=b.dataset.play==='remind'?'remind.'+st.sounds.remind:b.dataset.play==='start'?'start.'+st.sounds.start:b.dataset.play;SFX.play(nm,true);return}
   if(b.dataset.autostart){const D=window.SundialDesktop;if(D)D.autostart.set(!autostartOn).then(()=>{autostartOn=!autostartOn;renderSheet()}).catch(e=>toast('Could not change: '+e));return}
+  if(b.dataset.style){document.querySelectorAll('.ob-card').forEach(c=>c.setAttribute('aria-pressed',String(c===b)));return}
   if(b.dataset.run){runSetting(b.dataset.run,b);return}
   const idSrc=e.target.closest('[data-id],[data-drawer]');const id=b.dataset.id||(idSrc&&(idSrc.dataset.id||idSrc.dataset.drawer))||(inMenu&&inMenu.dataset.id)||openId;
   if(b.dataset.setcolor){const tid=b.dataset.id||id;if(tid){upd(tid,{color:b.dataset.setcolor});closeMenu();render()}return}
@@ -509,6 +510,9 @@ function runSetting(k,b){
   if(k==='rtNew'){newRoutine();renderSheet();const ta=[...document.querySelectorAll('.rt-name')].pop();if(ta){ta.focus();ta.select()}}
   if(k==='rtReset'){resetRoutines();renderSheet();render();toast('Starter routines restored')}
   if(k==='revealData'){window.SundialDesktop?.reveal().catch(e=>toast(String(e)))}
+  if(k==='obDone'){const pick=document.querySelector('.ob-card[aria-pressed="true"]')?.dataset.style||'quick';finishOnboarding(pick)}
+  if(k==='obCustom'){S().onboarded=true;save();closeScrim();setTimeout(()=>{sheetTab='general';settings();setTimeout(()=>{const kb=document.querySelector('[data-run="recQuick"]');if(kb)kb.click()},250)},260)}
+  if(k==='onboard'){closeScrim();setTimeout(onboarding,260)}
   if(k==='fitWindow'){closeScrim();setTimeout(fitToWindow,260)}
   if(k==='updateCheck'){b.textContent='Checking…';checkUpdates(true).finally(()=>{b.textContent='Check now'})}
   if(k==='updateInstall'){installUpdate(null)}
@@ -569,7 +573,7 @@ document.addEventListener('keydown',e=>{
   const t=e.target;const typing=/INPUT|TEXTAREA|SELECT/.test(t.tagName)||t.isContentEditable;
   if(recordingHotkey){e.preventDefault();if(e.key==='Escape'){recordingHotkey=false;renderSheet();return}const c=comboOf(e);if(!c)return;
     // a bare letter would hijack typing; require a modifier or a function key
-    if(!(e.ctrlKey||e.altKey||e.metaKey)&&!/^F\d{1,2}$/.test(e.key)){toast('Use Ctrl, Alt or ⌘ with it (or an F-key)');return}
+    if(!(e.ctrlKey||e.altKey||e.metaKey)&&!/^F\d{1,2}$/.test(e.key)&&!['Pause','ScrollLock'].includes(e.key)){toast('Use Ctrl, Alt or ⌘ with it, or a key on its own like F9, Pause or Scroll Lock');return}
     const other=recordingHotkey==='voice.hotkey'?S().quick.hotkey:S().voice.hotkey;if(c===other){toast('That one is taken by the other hotkey');return}
     setPath(S(),recordingHotkey,c);save();recordingHotkey=false;renderSheet();syncHotkeys();toast('Hotkey set: '+c);return}
   const combo=comboOf(e);
@@ -633,6 +637,20 @@ function fitToWindow(){const L=state.layout;if(effectiveMode()!=='column')return
   save();applyLayout();toast('Fitted to the window')}
 let rzTimer=null;addEventListener('resize',()=>{clearTimeout(rzTimer);rzTimer=setTimeout(applyLayout,120)});
 
+// ---------- first-run setup: pick a hotkey style ----------
+const HOTKEY_STYLES={quick:{quick:'Ctrl+Space',voice:'Ctrl+Shift+Space'},gaming:{quick:'Ctrl+Alt+/',voice:'Ctrl+Alt+.'}};
+function hotkeyStyle(){const q=S().quick.hotkey,v=S().voice.hotkey;for(const k in HOTKEY_STYLES){if(HOTKEY_STYLES[k].quick===q&&HOTKEY_STYLES[k].voice===v)return k}return 'custom'}
+function onboarding(){
+  if($('.scrim'))closeScrim();
+  const sel0=hotkeyStyle();
+  const card=(k,title,sub,st)=>`<button class="ob-card" data-style="${k}" aria-pressed="${sel0===k}"><b>${title}</b><span class="combo">${esc(st.quick)}</span><small>${sub}<br>Voice: <span style="font-family:var(--f-mono)">${esc(st.voice)}</span></small></button>`;
+  const s=scrim(`<div class="ob"><h2>Welcome to Sundial</h2><p>One choice to make: how you summon the quick-add bar from anywhere. You can change it any time in Settings.</p>
+    <div class="ob-cards">${card('quick','Quick','Two keys. Best if you mostly type.',HOTKEY_STYLES.quick)}${card('gaming','Gaming','Three keys, out of the way of games.',HOTKEY_STYLES.gaming)}</div>
+    <div class="ob-foot"><button class="btn" data-run="obCustom">Record my own…</button><span class="spacer"></span><button class="btn primary" data-run="obDone">Start</button></div></div>`,'sheet');
+  s.classList.add('ob-host');
+}
+function finishOnboarding(style){const st=S();if(HOTKEY_STYLES[style]){st.quick.hotkey=HOTKEY_STYLES[style].quick;st.voice.hotkey=HOTKEY_STYLES[style].voice}st.onboarded=true;save();syncHotkeys();closeScrim();toast('Quick add: '+st.quick.hotkey)}
+
 // ---------- desktop + AI helpers ----------
 let globalHotkeys=false,autostartOn=false,aiKeySaved=false,appVersion='',updateInfo=null;
 // Updater: quiet unless something is actually ready. A failed check (offline, not configured yet) is silent unless the user asked.
@@ -686,6 +704,7 @@ async function init(){
     D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});syncHotkeys();
     D.appVersion().then(v=>{appVersion=v}).catch(()=>{});setTimeout(()=>checkUpdates(false),4000);setInterval(()=>checkUpdates(false),6*3600*1000)}
   applyTheme();applyDensity();applyLayout();SFX.setVolume(S().sounds.volume);render();updateLogo();
+  if(!S().onboarded)setTimeout(onboarding,500);
   // first gesture: unlock audio and (browser only) ask once for OS notifications
   const unlock=()=>{SFX.unlock();try{if(!D&&'Notification'in window&&Notification.permission==='default')Notification.requestPermission().catch(()=>{})}catch(_){}};
   document.addEventListener('pointerdown',unlock,{once:true});document.addEventListener('keydown',unlock,{once:true});

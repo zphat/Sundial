@@ -461,6 +461,19 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .rt .x:hover{background:var(--line-2);color:var(--cherry-ink)}
 .rt textarea{width:100%;min-height:72px;background:var(--panel-2);border:1px solid var(--line-2);border-radius:9px;padding:8px 10px;font-family:var(--f-body);font-size:12.5px;line-height:1.5;outline:none;resize:vertical}
 .rt textarea:focus{border-color:var(--accent-ink)}
+/* first-run setup */
+.ob p{color:var(--fg-2);font-size:13px;line-height:1.5;margin:0 0 14px}
+.ob-cards{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.ob-card{text-align:left;padding:14px 14px 12px;border:1px solid var(--line);border-radius:14px;background:var(--well);box-shadow:var(--well-shadow);transition:border-color .15s,box-shadow .2s,transform .15s var(--ease);display:flex;flex-direction:column;gap:6px;min-width:0}
+.ob-card:hover{border-color:var(--fg-3)}
+.ob-card:active{transform:scale(.985)}
+.ob-card[aria-pressed="true"]{border-color:var(--accent-ink);box-shadow:0 0 0 3px var(--accent-soft),var(--well-shadow)}
+.ob-card b{font-family:var(--f-display);font-size:15px}
+.ob-card .combo{font-family:var(--f-mono);font-size:12px;color:var(--accent-ink);background:var(--panel-2);border:1px solid var(--line-2);border-radius:7px;padding:3px 8px;align-self:flex-start}
+.ob-card small{color:var(--fg-3);font-size:11.5px;line-height:1.4}
+.ob-foot{display:flex;align-items:center;gap:10px;margin-top:6px}
+.ob-foot .spacer{flex:1}
+@media (max-width:560px){.ob-cards{grid-template-columns:1fr}}
 .foot-tip{font-family:var(--f-mono);font-size:10px;color:var(--fg-3);text-align:center;position:relative;z-index:1}
 .foot-tip span{margin:0 8px}
 
