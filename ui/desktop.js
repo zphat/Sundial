@@ -24,6 +24,8 @@
     toastShow:payload=>invoke('toast_show',{payload}),
     updateCheck:()=>invoke('update_check'),
     updateInstall:()=>invoke('update_install'),
+    // sundial://… link that opened or poked the app (see deepLink in ui.js)
+    deepLinkPending:()=>invoke('deep_link_pending'),
     on:(name,cb)=>listen(name,cb),
   };
   window.addEventListener('beforeunload',flush);

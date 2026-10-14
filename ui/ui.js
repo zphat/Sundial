@@ -658,6 +658,19 @@ function onboarding(){
 }
 function finishOnboarding(style){const st=S();if(HOTKEY_STYLES[style]){st.quick.hotkey=HOTKEY_STYLES[style].quick;st.voice.hotkey=HOTKEY_STYLES[style].voice}st.onboarded=true;save();syncHotkeys();closeScrim();toast('Quick add: '+st.quick.hotkey)}
 
+// sundial://signin?code=482913 (the Open Sundial button on the email's code page): Data & sync opens with the code
+// in place, and signs in at once when this is the device that asked for the code.
+function deepLink(url){let u;try{u=new URL(String(url))}catch(e){return}if(u.protocol!=='sundial:')return;
+  const what=(u.hostname||u.pathname.replace(/^\/+/,'')).toLowerCase();
+  if(what==='quick-add'){openQuickAdd();return}
+  if(what!=='signin')return;
+  const code=(u.searchParams.get('code')||'').replace(/\D/g,'').slice(0,6);if(code.length!==6)return;
+  if(Sync.st().mode!=='off'){toast('Sync is already signed in on this device');return}
+  syncSetup.mode='hosted';syncSetup.codeSent=true;sheetTab='data';if($('.scrim.sheet-host'))renderSheet();else settings();
+  const inp=$('#syncCodeIn');if(inp)inp.value=code;
+  if(/.+@.+\..+/.test(syncSetup.email||''))Sync.verifyCode(syncSetup.email,code).then(()=>{syncSetup.codeSent=false;renderSheet();toast('Signed in. Now set the passphrase.')}).catch(e=>toast(e.message||String(e)));
+  else{toast('Enter the email the code went to, then Sign in');$('#syncEmail')?.focus()}}
+
 // ---------- sync settings ----------
 const syncSetup={mode:'hosted',url:'',email:'',codeSent:false,advanced:false};
 function syncRows(st,opt){const s=Sync.st();const D=window.SundialDesktop;let h=`<h3>Sync</h3>`;
@@ -723,10 +736,11 @@ function tick(){
 async function init(){
   const D=window.SundialDesktop;
   if(D){try{const raw=await D.load();if(raw)hydrate(raw);else save()}catch(e){console.error('load failed',e)}
-    D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});syncHotkeys();
+    D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});D.on('sundial://deep-link',e=>deepLink(e.payload));syncHotkeys();
     D.appVersion().then(v=>{appVersion=v}).catch(()=>{});setTimeout(()=>checkUpdates(false),4000);setInterval(()=>checkUpdates(false),6*3600*1000)}
   applyTheme();applyDensity();applyLayout();SFX.setVolume(S().sounds.volume);render();updateLogo();
   Sync.on(()=>{if($('.sheet-host')&&sheetTab==='data')renderSheet()});Sync.start();
+  if(D&&D.deepLinkPending)D.deepLinkPending().then(u=>{if(u)deepLink(u)}).catch(()=>{});
   setTimeout(()=>{const s=Sync.st();if(s.mode!=='off'&&!s.keyOk&&!Sync.hasKey())toast('Sync is connected but not unlocked: set your passphrase',()=>{sheetTab='data';settings()},'Open')},2500);
   if(!S().onboarded)setTimeout(onboarding,500);
   // first gesture: unlock audio and (browser only) ask once for OS notifications

@@ -23,6 +23,7 @@ Environment:
 | `SUNDIAL_MODE`    | `self`                      | `hosted` turns on email sign-in                             |
 | `RESEND_API_KEY`  | unset                       | hosted mode: send codes through Resend; unset = print to log |
 | `SUNDIAL_FROM`    | `Sundial <sign-in@…>`       | hosted mode: sender address                                 |
+| `SUNDIAL_PUBLIC_URL` | `https://sync.sundial.services` | hosted mode: base of the email's button link (`GET /signin?code=`) |
 | `RUST_LOG`        | `info`                      | log level                                                   |
 
 Put it behind HTTPS (Caddy does this in two lines). The app refuses nothing over plain HTTP, but your sync

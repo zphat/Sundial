@@ -16,6 +16,7 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_deep_link::DeepLinkExt;
 
 const SERVICE: &str = "Sundial";
 const DB_FILE: &str = "sundial.json";
@@ -485,6 +486,26 @@ fn toast_action(app: AppHandle, state: tauri::State<'_, Toasts>, action: String)
 
 // ---------- window / tray ----------
 
+// ---------- deep links ----------
+// sundial://signin?code=482913 comes from the Open Sundial button on the sign-in email's code page.
+// The URL is kept until the UI asks for it: on a cold start it arrives before the webview is listening.
+pub struct DeepLinks(Mutex<Option<String>>);
+
+fn on_deep_link(app: &AppHandle, url: String) {
+    if let Some(st) = app.try_state::<DeepLinks>() {
+        if let Ok(mut g) = st.0.lock() {
+            *g = Some(url.clone());
+        }
+    }
+    let _ = app.emit("sundial://deep-link", url);
+    show_main(app);
+}
+
+#[tauri::command]
+fn deep_link_pending(state: tauri::State<'_, DeepLinks>) -> Result<Option<String>, String> {
+    Ok(state.0.lock().map_err(|e| e.to_string())?.take())
+}
+
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -527,6 +548,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
@@ -535,9 +557,25 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(PendingUpdate(Mutex::new(None)))
         .manage(Toasts(Mutex::new(ToastState::default())))
+        .manage(DeepLinks(Mutex::new(None)))
         .setup(|app| {
             build_tray(app)?;
-            if std::env::args().any(|a| a == "--minimized") {
+            // The installer registers sundial://; register_all covers dev runs and moved installs.
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                let _ = app.deep_link().register_all();
+            }
+            let handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                if let Some(url) = event.urls().into_iter().next() {
+                    on_deep_link(&handle, url.to_string());
+                }
+            });
+            // A link that started the app arrived before any listener existed; pick it up here.
+            let cold = app.deep_link().get_current().ok().flatten().and_then(|v| v.into_iter().next());
+            if let Some(url) = cold {
+                on_deep_link(app.handle(), url.to_string());
+            } else if std::env::args().any(|a| a == "--minimized") {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
                 }
@@ -555,7 +593,7 @@ pub fn run() {
             load_db, save_db, data_path, reveal_data, open_url, notify,
             autostart_get, autostart_set, secret_set, secret_get, secret_delete,
             set_hotkeys, ai_parse, app_version, update_check, update_install,
-            toast_show, toast_payload, toast_action
+            toast_show, toast_payload, toast_action, deep_link_pending
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sundial");

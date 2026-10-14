@@ -20,6 +20,7 @@
     "autostart:allow-is-enabled",
     "opener:default",
     "window-state:default",
-    "updater:default"
+    "updater:default",
+    "deep-link:default"
   ]
 }
