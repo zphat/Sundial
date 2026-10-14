@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sundial notification</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@700&family=Syne:wght@700&family=Manrope:wght@500;600;700&family=Space+Mono:wght@400&display=swap">
+<style>
+/* Corner toast: its own tiny window, so it only uses the dark tokens (it sits over any desktop). */
+:root{--well:#0B0D0A;--panel-2:#141714;--fg:#E9ECE2;--fg-2:#9BA392;--fg-3:#7E8679;--line:#262B24;--hair:rgba(255,255,255,.05);
+  --accent:#D1FF4A;--accent-ink:#D1FF4A;--on-accent:#0B0D06;--accent-soft:rgba(209,255,74,.14);--sun:#FFC56B;--sun-soft:rgba(255,197,107,.16);
+  --f-brand:"Silkscreen","Courier New",monospace;--f-display:"Syne","Manrope",system-ui,sans-serif;--f-body:"Manrope",system-ui,-apple-system,"Segoe UI",sans-serif;--f-mono:"Space Mono",ui-monospace,Consolas,monospace;
+  --ease:cubic-bezier(.2,.8,.2,1);--spring:cubic-bezier(.34,1.56,.64,1)}
+html,body{margin:0;height:100%;background:transparent;overflow:hidden;user-select:none;-webkit-user-select:none}
+body{font-family:var(--f-body);color:var(--fg);font-size:13px;padding:6px}
+.card{position:relative;height:calc(100% - 12px);background:var(--well);border:1px solid var(--line);border-radius:16px;box-shadow:0 18px 50px -18px rgba(0,0,0,.9),inset 0 1px 0 var(--hair);display:grid;grid-template-columns:4px 40px 1fr auto;gap:10px;align-items:center;padding:10px 12px 12px 0;overflow:hidden;animation:in .42s var(--spring) both}
+.card.left{animation-name:in}
+.card.right{animation-name:inR}
+@keyframes in{from{opacity:0;transform:translateX(-22px) scale(.97)}}
+@keyframes inR{from{opacity:0;transform:translateX(22px) scale(.97)}}
+.card.out{animation:out .22s var(--ease) forwards}
+@keyframes out{to{opacity:0;transform:translateY(8px) scale(.98)}}
+.stripe{align-self:stretch;background:var(--sun);border-radius:0 3px 3px 0;box-shadow:0 0 14px var(--sun-soft)}
+.card.start .stripe,.card.update .stripe{background:var(--accent);box-shadow:0 0 14px var(--accent-soft)}
+.ic{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:var(--sun-soft);color:var(--sun);font-size:17px;justify-self:center}
+.card.start .ic,.card.update .ic{background:var(--accent-soft);color:var(--accent)}
+.tx{min-width:0}
+.k{font-family:var(--f-brand);font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-3);display:block;margin-bottom:2px}
+b{font-family:var(--f-display);font-size:14.5px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:-.01em}
+small{font-family:var(--f-mono);font-size:10.5px;color:var(--fg-2);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.bt{display:flex;flex-direction:column;gap:5px;padding-right:2px}
+button{font:inherit;color:var(--fg-2);background:none;border:1px solid var(--line);border-radius:999px;padding:5px 11px;font-size:12px;font-weight:700;cursor:pointer;transition:color .15s,border-color .15s,transform .15s var(--ease);white-space:nowrap}
+button:hover{color:var(--fg);border-color:var(--fg-3)}
+button:active{transform:scale(.96)}
+button.primary{background:var(--accent);color:var(--on-accent);border-color:transparent}
+button.primary:hover{color:var(--on-accent);filter:brightness(1.05)}
+.x{position:absolute;top:6px;right:8px;width:20px;height:20px;border:0;padding:0;border-radius:50%;color:var(--fg-3);font-size:14px;line-height:1;display:grid;place-items:center}
+.x:hover{background:var(--line);color:var(--fg)}
+.bar{position:absolute;left:4px;right:0;bottom:0;height:3px;background:var(--sun);transform-origin:left;animation:drain var(--secs,30s) linear forwards}
+.card.start .bar,.card.update .bar{background:var(--accent)}
+.card:hover .bar{animation-play-state:paused}
+@keyframes drain{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+.brandmark{position:absolute;right:12px;bottom:7px;font-family:var(--f-brand);font-size:7px;letter-spacing:.16em;color:var(--fg-3);opacity:.7}
+</style>
+</head>
+<body>
+<div class="card" id="card" hidden></div>
+<script>
+(async()=>{
+  const T=window.__TAURI__;if(!T||!T.core)return;
+  const invoke=T.core.invoke;
+  const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  let p=null;try{p=await invoke('toast_payload')}catch(e){}
+  if(!p){try{await invoke('toast_action',{action:'timeout'})}catch(e){}return}
+  const card=document.getElementById('card');
+  const corner=p.corner||'bottom-left';
+  card.className='card '+(p.kind||'remind')+(corner.endsWith('right')?' right':' left');
+  const icon=p.kind==='update'?'↻':p.kind==='start'?'☉':'◔';
+  const acts=(p.actions||[{id:'ok',label:'OK',primary:true}]);
+  card.innerHTML=`<div class="stripe"></div><div class="ic">${icon}</div><div class="tx"><span class="k">${esc(p.label||'')}</span><b title="${esc(p.title)}">${esc(p.title)}</b>${p.meta?`<small>${esc(p.meta)}</small>`:''}</div>
+    <div class="bt">${acts.map(a=>`<button data-a="${esc(a.id)}" class="${a.primary?'primary':''}">${esc(a.label)}</button>`).join('')}</div>
+    <button class="x" data-a="dismiss" title="Dismiss">×</button>${p.sticky?'':`<div class="bar" style="--secs:${Math.max(3,+p.secs||30)}s"></div>`}<span class="brandmark">SUNDIAL</span>`;
+  card.hidden=false;
+  let done=false;
+  const finish=async(action)=>{if(done)return;done=true;card.classList.add('out');setTimeout(()=>invoke('toast_action',{action}).catch(()=>{}),200)};
+  card.addEventListener('click',e=>{const b=e.target.closest('[data-a]');if(b)finish(b.dataset.a)});
+  const bar=card.querySelector('.bar');
+  if(bar){bar.addEventListener('animationend',()=>finish('timeout'));
+    // belt and braces: if the animation never ends (hidden window), still go away
+    const secs=Math.max(3,+p.secs||30);const arm=ms=>setTimeout(()=>{if(done)return;if(card.matches(':hover'))arm(1000);else finish('timeout')},ms);arm(secs*1000+1500)}
+  document.addEventListener('contextmenu',e=>e.preventDefault());
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')finish('dismiss')});
+})();
+</script>
+</body>
+</html>

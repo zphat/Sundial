@@ -264,11 +264,21 @@ function notify(ev,demo){
   // sound and popup are independent switches; the sound only repeats when there is a Continue button to stop it
   let owner=null;
   if(st.sounds.enabled){const nm=start?'start.'+st.sounds.start:'remind.'+st.sounds.remind;SFX.play(nm);if(start&&st.sounds.repeat&&popup){document.querySelectorAll('.banner').forEach(b=>b._repeat=false);SFX.repeat(nm,st.sounds.repeat);owner=true}}
-  try{const body=(start?'Starting now':'In '+fmtLead(ev.lead).replace(' before',''))+(t.time!=null?' · '+fmtTime(t.time):'');const bg=document.hidden||!document.hasFocus();
-    if(bg&&window.SundialDesktop)window.SundialDesktop.notify('Sundial · '+t.title,body).catch(()=>{});
-    else if(document.hidden&&'Notification'in window&&Notification.permission==='granted')new Notification('Sundial · '+t.title,{body})}catch(_){}
+  const label=start?'Starting now':'In '+fmtLead(ev.lead||0).replace(' before','');
+  const meta=(t.time!=null?fmtTime(t.time):'')+(t.dur?' · '+fmtDur(t.dur):'')+(t.notes?' · '+t.notes.slice(0,60):'');
   if(!popup)return;
   if(start&&style==='takeover'){takeover(t,demo,owner);return}
+  // desktop: a corner toast window (Steam-style) instead of the in-app banner and the OS toast
+  if(window.SundialDesktop&&st.toasts.enabled){
+    window.SundialDesktop.toastShow({id:t.id||null,kind:start?'start':'remind',label:label+(demo?' · preview':''),title:t.title,meta,corner:st.toasts.corner,secs:st.bannerSecs,sticky:!!owner,
+      actions:start?[{id:'snooze',label:'10m'},{id:'continue',label:'Continue',primary:true}]:[{id:'open',label:'Open'},{id:'ok',label:'OK',primary:true}]}).catch(e=>{console.error('toast failed',e);inAppBanner()});
+    return;
+  }
+  try{const bg=document.hidden||!document.hasFocus();
+    if(bg&&window.SundialDesktop)window.SundialDesktop.notify('Sundial · '+t.title,label+(t.time!=null?' · '+fmtTime(t.time):'')).catch(()=>{});
+    else if(document.hidden&&'Notification'in window&&Notification.permission==='granted')new Notification('Sundial · '+t.title,{body:label})}catch(_){}
+  inAppBanner();
+  function inAppBanner(){
   const host=bannerHost();while(host.children.length>=3){const first=host.firstChild;if(first._repeat)SFX.stopRepeat();first.remove()}
   const sticky=!!owner;
   const el=document.createElement('div');el.className='banner '+(start?'start':'remind');el._repeat=sticky;
@@ -284,6 +294,15 @@ function notify(ev,demo){
     const arm=ms=>setTimeout(()=>{if(done)return;if(el.matches(':hover'))arm(1000);else fin()},ms);
     arm(reduced()?secs:secs+1500)}
   host.appendChild(el);
+  }
+}
+// what the user pressed on a corner toast
+function onToastAction(ev){const a=ev.action,p=ev.payload||{};const t=p.id?get(p.id):null;
+  if(a==='continue'||a==='dismiss'||a==='timeout'||a==='ok'){if(p.kind==='start')SFX.stopRepeat();return}
+  if(a==='snooze'){SFX.stopRepeat();if(t)snooze(t);return}
+  if(a==='open'){if(t){view='day';goDay(t.date);openId=t.id;render();revealTask(t.id)}return}
+  if(a==='install'){installUpdate(null);return}
+  if(a==='later')return;
 }
 function takeover(x,demo){
   if($('.scrim.alarm-host'))return;
@@ -324,7 +343,9 @@ function renderSheet(){
     +opt('Default reminder','How far ahead the reminder fires.',`<select data-sel="defaultRemind">${[[5,'5m before'],[15,'15m before'],[30,'30m before'],[60,'1h before'],[120,'2h before'],[1440,'1 day before']].map(([v,l])=>`<option value="${v}" ${st.defaultRemind===v?'selected':''}>${l}</option>`).join('')}</select>`)
     +opt('Reminder style','',seg('remindStyle',[['banner','banner'],['off','off']]))
     +opt('Start alert style','Banner stays until Continue when the sound repeats; otherwise it drains like a reminder.',seg('startStyle',[['banner','banner'],['takeover','full window'],['off','off']]))
-    +opt('Banner position','',seg('bannerPos',[['top','top'],['bottom','bottom']]))
+    +(window.SundialDesktop?opt('Corner notifications','Steam-style: a small Sundial window in a screen corner, over whatever you are doing, never taking focus. Off falls back to in-app banners and plain Windows toasts.',tog('toasts.enabled'))
+      +(st.toasts.enabled?opt('Corner','',`<select data-sel="toasts.corner">${[['bottom-left','bottom left'],['bottom-right','bottom right'],['top-left','top left'],['top-right','top right']].map(([v,l])=>`<option value="${v}" ${st.toasts.corner===v?'selected':''}>${l}</option>`).join('')}</select>`):''):'')
+    +opt('Banner position','In-app banners (browser, or corner notifications off).',seg('bannerPos',[['top','top'],['bottom','bottom']]))
     +opt('Banner stays for','Reminders dismiss themselves when the bar runs out. Hover pauses it.',`<input type="range" min="5" max="120" step="5" value="${st.bannerSecs}" data-range="bannerSecs"><span class="key" id="secsLbl">${st.bannerSecs}s</span>`)
     +opt('Preview','Hear and see both.','<button class="btn" data-run="prevRemind">Reminder</button><button class="btn" data-run="prevStart">Start</button>');
   if(sheetTab==='sound')h=opt('Sounds','',tog('sounds.enabled'))
@@ -618,7 +639,8 @@ let globalHotkeys=false,autostartOn=false,aiKeySaved=false,appVersion='',updateI
 async function checkUpdates(manual){const D=window.SundialDesktop;if(!D)return;if(!manual&&!S().updates.auto)return;
   try{const u=await D.updateCheck();if(u&&u.version){updateInfo=u;updateBanner(u);if($('.sheet-host'))renderSheet()}else if(manual)toast('You have the latest version')}
   catch(e){if(manual)toast('Update check failed: '+(e.message||e))}}
-function updateBanner(u){const host=bannerHost();if(host.querySelector('.banner.update'))return;const el=document.createElement('div');el.className='banner update start';
+function updateBanner(u){const st=S();if(window.SundialDesktop&&st.toasts.enabled){window.SundialDesktop.toastShow({kind:'update',label:'Update ready',title:'Sundial '+u.version,meta:(u.notes||'').split('\n')[0].slice(0,80)||'Downloaded in the background. Restart whenever you like.',corner:st.toasts.corner,secs:45,sticky:false,actions:[{id:'later',label:'Later'},{id:'install',label:'Restart now',primary:true}]}).catch(()=>{});return}
+  const host=bannerHost();if(host.querySelector('.banner.update'))return;const el=document.createElement('div');el.className='banner update start';
   el.innerHTML=`<div class="ic">↻</div><div class="tx"><span class="k">Update ready</span><b>Sundial ${esc(u.version)}</b><small>${esc((u.notes||'').split('\n')[0].slice(0,90))||'Downloaded in the background. Restart whenever you like.'}</small></div><div class="bt"><button data-b="later">Later</button><button class="ok" data-b="go">Restart now</button></div>`;
   el.querySelector('[data-b="later"]').onclick=()=>dismissBanner(el);el.querySelector('[data-b="go"]').onclick=()=>installUpdate(el);host.appendChild(el)}
 async function installUpdate(el){const D=window.SundialDesktop;if(!D)return;const b=el?.querySelector('[data-b="go"]');if(b){b.textContent='Installing…';b.disabled=true}
@@ -661,7 +683,7 @@ function tick(){
 async function init(){
   const D=window.SundialDesktop;
   if(D){try{const raw=await D.load();if(raw)hydrate(raw);else save()}catch(e){console.error('load failed',e)}
-    D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});syncHotkeys();
+    D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});syncHotkeys();
     D.appVersion().then(v=>{appVersion=v}).catch(()=>{});setTimeout(()=>checkUpdates(false),4000);setInterval(()=>checkUpdates(false),6*3600*1000)}
   applyTheme();applyDensity();applyLayout();SFX.setVolume(S().sounds.volume);render();updateLogo();
   // first gesture: unlock audio and (browser only) ask once for OS notifications

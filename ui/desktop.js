@@ -20,6 +20,8 @@
     secret:{get:name=>invoke('secret_get',{name}),set:(name,value)=>invoke('secret_set',{name,value}),del:name=>invoke('secret_delete',{name})},
     aiParse:req=>invoke('ai_parse',{req}),
     appVersion:()=>invoke('app_version'),
+    // corner toast window; actions come back through the 'sundial://toast-action' event
+    toastShow:payload=>invoke('toast_show',{payload}),
     updateCheck:()=>invoke('update_check'),
     updateInstall:()=>invoke('update_install'),
     on:(name,cb)=>listen(name,cb),

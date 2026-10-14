@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS={
   routinesEnabled:false,
   ai:{enabled:false, provider:'anthropic', model:'claude-opus-5-5', baseUrl:'', keyInBrowser:''},
   updates:{auto:true},
+  toasts:{enabled:true, corner:'bottom-left'},
   hh:44,
 };
 // Starter routines, written in the same one-line syntax as the quick-add. Users edit these; new users never see them unless they turn routines on.

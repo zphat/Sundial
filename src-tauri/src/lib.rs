@@ -389,6 +389,100 @@ async fn update_install(app: AppHandle, pending: tauri::State<'_, PendingUpdate>
     app.restart()
 }
 
+// ---------- corner toasts (Steam-style notification window) ----------
+
+#[derive(Default)]
+pub struct ToastState {
+    current: Option<Value>,
+    queue: std::collections::VecDeque<Value>,
+}
+pub struct Toasts(Mutex<ToastState>);
+
+const TOAST_W: f64 = 384.0;
+const TOAST_H: f64 = 126.0;
+
+/// A frameless, transparent, always-on-top window in a screen corner. Created per notification so it
+/// never takes focus from whatever the user is doing; closed by the page when dismissed or timed out.
+fn open_toast_window(app: &AppHandle, payload: &Value) -> Result<(), String> {
+    let corner = payload["corner"].as_str().unwrap_or("bottom-left");
+    let mon = app
+        .primary_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no monitor".to_string())?;
+    let scale = mon.scale_factor();
+    let ms = mon.size().to_logical::<f64>(scale);
+    let mp = mon.position().to_logical::<f64>(scale);
+    let margin = 14.0;
+    let taskbar = 52.0; // room for a bottom taskbar; the toast sits just above it
+    let x = if corner.ends_with("left") { mp.x + margin } else { mp.x + ms.width - TOAST_W - margin };
+    let y = if corner.starts_with("top") { mp.y + margin } else { mp.y + ms.height - TOAST_H - taskbar - margin };
+    tauri::WebviewWindowBuilder::new(app, "toast", tauri::WebviewUrl::App("toast.html".into()))
+        .title("Sundial notification")
+        .inner_size(TOAST_W, TOAST_H)
+        .position(x, y)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .focused(false)
+        .shadow(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn toast_show(app: AppHandle, state: tauri::State<'_, Toasts>, payload: Value) -> Result<(), String> {
+    {
+        let mut st = state.0.lock().map_err(|e| e.to_string())?;
+        if app.get_webview_window("toast").is_some() {
+            st.queue.push_back(payload);
+            return Ok(());
+        }
+        st.current = Some(payload.clone());
+    }
+    open_toast_window(&app, &payload)
+}
+
+#[tauri::command]
+fn toast_payload(state: tauri::State<'_, Toasts>) -> Result<Option<Value>, String> {
+    Ok(state.0.lock().map_err(|e| e.to_string())?.current.clone())
+}
+
+/// The toast page reports what the user did; the main window gets the event, the window closes,
+/// and the next queued toast (if any) opens after a beat.
+#[tauri::command]
+fn toast_action(app: AppHandle, state: tauri::State<'_, Toasts>, action: String) -> Result<(), String> {
+    let (current, next) = {
+        let mut st = state.0.lock().map_err(|e| e.to_string())?;
+        let current = st.current.take();
+        let next = st.queue.pop_front();
+        st.current = next.clone();
+        (current, next)
+    };
+    if action == "open" || action == "install" {
+        show_main(&app);
+    }
+    if let Some(p) = current {
+        let _ = app.emit_to("main", "sundial://toast-action", json!({ "action": action, "payload": p }));
+    }
+    if let Some(w) = app.get_webview_window("toast") {
+        let _ = w.close();
+    }
+    if let Some(n) = next {
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let app3 = app2.clone();
+            let _ = app2.run_on_main_thread(move || {
+                let _ = open_toast_window(&app3, &n);
+            });
+        });
+    }
+    Ok(())
+}
+
 // ---------- window / tray ----------
 
 fn show_main(app: &AppHandle) {
@@ -440,6 +534,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(PendingUpdate(Mutex::new(None)))
+        .manage(Toasts(Mutex::new(ToastState::default())))
         .setup(|app| {
             build_tray(app)?;
             if std::env::args().any(|a| a == "--minimized") {
@@ -459,7 +554,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_db, save_db, data_path, reveal_data, open_url, notify,
             autostart_get, autostart_set, secret_set, secret_get, secret_delete,
-            set_hotkeys, ai_parse, app_version, update_check, update_install
+            set_hotkeys, ai_parse, app_version, update_check, update_install,
+            toast_show, toast_payload, toast_action
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sundial");
