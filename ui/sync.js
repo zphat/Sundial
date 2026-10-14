@@ -4,6 +4,7 @@
 'use strict';
 const Sync=(()=>{
   const PROTO=1;
+  const HOSTED_URL='https://sync.sundial.services';
   let key=null,timer=null,running=false,queued=false,applying=false;const listeners=[];
   const fresh=()=>({mode:'off',server:'',token:'',accountId:'',email:'',salt:'',cursor:0,dirty:{},lastSync:0,lastError:'',keyOk:false});
   const st=()=>{if(!state.sync)state.sync=fresh();if(!state.sync.dirty)state.sync.dirty={};return state.sync};
@@ -74,11 +75,11 @@ const Sync=(()=>{
 
   // ----- setup flows -----
   async function health(server){const s=st();const keep=s.server;s.server=server;try{return await api('/v1/health',null,'GET','')}finally{s.server=keep}}
-  async function requestCode(server,email){const s=st();s.server=server.trim();save();await api('/v1/auth/request',{email},'POST','')}
+  async function requestCode(server,email){const s=st();s.server=(server||HOSTED_URL).trim();save();try{await api('/v1/auth/request',{email},'POST','')}catch(e){if(/self-hosted|HTTP 404/.test(e.message||''))throw new Error('Email sign-in is not switched on for this server yet');throw e}}
   async function verifyCode(email,code){const s=st();const r=await api('/v1/auth/verify',{email,code:String(code).trim(),device:{id:state.device,name:deviceName(),platform:navigator.platform}},'POST','');
-    Object.assign(s,{token:r.token,accountId:r.account_id,salt:r.salt,email,mode:'hosted',cursor:0,keyOk:false,lastError:''});save()}
+    Object.assign(s,{token:r.token,accountId:r.account_id,salt:r.salt,email,mode:'hosted',plan:r.plan||'beta',cursor:0,keyOk:false,lastError:''});save()}
   async function connectSelf(server,token){const s=st();s.server=server.trim();const r=await api('/v1/account',null,'GET',token.trim());
-    Object.assign(s,{token:token.trim(),accountId:r.account_id,salt:r.salt,email:'',mode:'self',cursor:0,keyOk:false,lastError:''});save()}
+    Object.assign(s,{token:token.trim(),accountId:r.account_id,salt:r.salt,email:'',mode:'self',plan:r.plan||'',cursor:0,keyOk:false,lastError:''});save()}
   // First device: creates the keycheck. Later devices: must decrypt it, or the passphrase is wrong.
   async function setPassphrase(pass){const s=st();if(!pass||pass.length<8)throw new Error('Use at least 8 characters');key=await deriveKey(pass,s.salt);
     const res=await api('/v1/sync',{protocol:PROTO,device_id:state.device,cursor:0,docs:[]});const kc=(res.docs||[]).find(d=>d.kind==='keycheck');
@@ -90,6 +91,6 @@ const Sync=(()=>{
   function deviceName(){return (navigator.userAgentData&&navigator.userAgentData.platform||navigator.platform||'device')+' · '+(window.SundialDesktop?'desktop':'browser')}
   const emit=ev=>listeners.forEach(f=>{try{f(ev)}catch(e){}});
   function start(){st();loadKey().then(ok=>{if(ok&&st().mode!=='off'){schedule(1500);setInterval(()=>schedule(0),5*60*1000);addEventListener('online',()=>schedule(0))}})}
-  return {st,markDirty,markAllDirty,syncNow,schedule,health,requestCode,verifyCode,connectSelf,setPassphrase,signOut,deleteAccount,start,
+  return {st,markDirty,markAllDirty,syncNow,schedule,health,requestCode,verifyCode,connectSelf,setPassphrase,signOut,deleteAccount,start,HOSTED_URL,
     hasKey:()=>!!key,isRunning:()=>running,pending:()=>Object.keys(st().dirty).length,on:f=>listeners.push(f)};
 })();

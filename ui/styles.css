@@ -461,6 +461,12 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .rt .x:hover{background:var(--line-2);color:var(--cherry-ink)}
 .rt textarea{width:100%;min-height:72px;background:var(--panel-2);border:1px solid var(--line-2);border-radius:9px;padding:8px 10px;font-family:var(--f-body);font-size:12.5px;line-height:1.5;outline:none;resize:vertical}
 .rt textarea:focus{border-color:var(--accent-ink)}
+/* sync: the passphrase step must not be missed */
+.sheet .opt.attention{border:1px solid var(--accent-ink);border-radius:12px;padding:12px;margin:8px 0;box-shadow:0 0 0 4px var(--accent-soft);animation:attn 1.6s ease-in-out 3}
+@keyframes attn{50%{box-shadow:0 0 0 8px var(--accent-soft)}}
+.sheet .opt.attention>div:first-child{font-weight:700}
+.sheet .opt.attention small{color:var(--fg-2)}
+.plan{font-family:var(--f-brand);font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--on-accent);background:var(--accent);border-radius:999px;padding:3px 8px;white-space:nowrap;display:inline-block;vertical-align:middle;margin-left:4px}
 /* first-run setup */
 .ob p{color:var(--fg-2);font-size:13px;line-height:1.5;margin:0 0 14px}
 .ob-cards{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}

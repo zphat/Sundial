@@ -87,7 +87,9 @@ fn open_db(path: &str, hosted: bool, tokens: &[String]) -> rusqlite::Result<Conn
     db.pragma_update(None, "synchronous", "NORMAL")?;
     db.busy_timeout(std::time::Duration::from_secs(5))?;
     db.execute_batch(SCHEMA)?;
-    if !hosted {
+    // Static tokens are accepted in both modes (the operator's own devices, a household on a self-hosted box).
+    let _ = hosted;
+    {
         for t in tokens {
             let acct = format!("acct_{}", &t.chars().take(8).collect::<String>());
             db.execute(
@@ -255,7 +257,7 @@ async fn auth_verify(State(app): State<App>, Json(body): Json<VerifyReq>) -> Res
     )
     .map_err(internal)?;
     let salt = salt_for(&db, &account).map_err(internal)?;
-    Ok(Json(json!({ "token": token, "account_id": account, "salt": salt })))
+    Ok(Json(json!({ "token": token, "account_id": account, "salt": salt, "plan": "beta" })))
 }
 
 async fn account(State(app): State<App>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
@@ -263,7 +265,7 @@ async fn account(State(app): State<App>, headers: HeaderMap) -> Result<Json<Valu
     let db = app.db.lock().unwrap();
     let acct = account_for(&db, &token).map_err(internal)?.ok_or_else(unauthorized)?;
     let salt = salt_for(&db, &acct).map_err(internal)?;
-    Ok(Json(json!({ "account_id": acct, "salt": salt })))
+    Ok(Json(json!({ "account_id": acct, "salt": salt, "plan": "beta" })))
 }
 
 async fn delete_account(State(app): State<App>, headers: HeaderMap) -> Result<StatusCode, ApiError> {
@@ -395,6 +397,9 @@ async fn main() {
     if !hosted && tokens.is_empty() {
         eprintln!("self-hosted mode needs SUNDIAL_TOKENS=\"some-long-secret\" (or SUNDIAL_MODE=hosted)");
         std::process::exit(2);
+    }
+    if hosted && std::env::var("RESEND_API_KEY").map(|s| s.is_empty()).unwrap_or(true) {
+        tracing::warn!("hosted mode without RESEND_API_KEY: sign-in codes are printed to this log instead of emailed");
     }
     let db_path = std::env::var("SUNDIAL_DB").unwrap_or_else(|_| "sundial-sync.sqlite".into());
     let db = open_db(&db_path, hosted, &tokens).expect("open database");

@@ -231,9 +231,9 @@ function renderSide(){
 
 // ---------- overlays ----------
 let toastT=null;
-function toast(msg,undoFn){
+function toast(msg,undoFn,label){
   document.querySelectorAll('.toast').forEach(x=>x.remove());clearTimeout(toastT);
-  const el=document.createElement('div');el.className='toast';el.innerHTML=`<span>${esc(msg)}</span>${undoFn?'<button>Undo</button>':''}`;
+  const el=document.createElement('div');el.className='toast';el.innerHTML=`<span>${esc(msg)}</span>${undoFn?'<button>'+esc(label||'Undo')+'</button>':''}`;
   if(undoFn)el.querySelector('button').onclick=()=>{undoFn();el.remove()};
   document.body.appendChild(el);toastT=setTimeout(()=>{el.classList.add('out');setTimeout(()=>el.remove(),260)},5000);
 }
@@ -362,10 +362,9 @@ function renderSheet(){
     if(st.routinesEnabled)h+=`<div class="routines">`+state.routines.map(r=>`<div class="rt"><div class="rt-hd"><input class="rt-name" data-rt-name="${r.id}" value="${esc(r.name)}" aria-label="Routine name"><button class="btn" data-rt-apply="${r.id}" data-to="${todayStr()}">Add to today</button>${sel!==todayStr()?`<button class="btn" data-rt-apply="${r.id}" data-to="${sel}">Add to ${esc(relDay(sel))} ${fromYmd(sel).getDate()}</button>`:''}<button class="x" data-rt-del="${r.id}" title="Delete routine">×</button></div><textarea data-rt-lines="${r.id}" spellcheck="false" placeholder="Coffee and plan the day 8am 15m #admin">${esc(r.lines.join('\n'))}</textarea></div>`).join('')
       +`</div><div class="ctl" style="gap:8px;padding-top:8px"><button class="btn" data-run="rtNew">New routine</button><button class="btn" data-run="rtReset">Reset to starter set</button></div>`}
   if(sheetTab==='ai')h=aiTab(st,opt,tog);
-  if(sheetTab==='data')h=`<h3>Calendars</h3>`+opt('Apple / Google Calendar','Copies this day as .ics text. Paste into a file named day.ics and open it; both calendars import it, reminders included.','<button class="btn" data-run="icsDay">Copy day</button>')
+  if(sheetTab==='data')h=syncRows(st,opt)+`<h3>Calendars</h3>`+opt('Apple / Google Calendar','Copies this day as .ics text. Paste into a file named day.ics and open it; both calendars import it, reminders included.','<button class="btn" data-run="icsDay">Copy day</button>')
     +opt('Everything as .ics','All tasks, all days, repeats as RRULEs.','<button class="btn" data-run="icsAll">Copy all</button>')
     +opt('Live two-way sync','CalDAV / Google Calendar API in the desktop build.','<span class="soon">PLANNED</span>')
-    +syncRows(st,opt)
     +opt('Export JSON','Tasks, notes, labels, change log.','<button class="btn" data-run="expJson">Copy</button>')
     +opt('Import JSON','Paste a backup and press Import. Merges by id, newest wins.','<button class="btn" data-run="impJson">Import</button>')
     +`<textarea id="impBox" placeholder="{ &quot;tasks&quot;: [ … ] }"></textarea>`
@@ -511,7 +510,8 @@ function runSetting(k,b){
   if(k==='rtReset'){resetRoutines();renderSheet();render();toast('Starter routines restored')}
   if(k==='revealData'){window.SundialDesktop?.reveal().catch(e=>toast(String(e)))}
   if(k==='syncConnect'){const url=($('#syncUrl')?.value||'').trim(),tok=$('#syncToken')?.value||'';if(!url||!tok){toast('Server URL and token, please');return}b.textContent='…';Sync.connectSelf(url,tok).then(()=>{renderSheet();toast('Connected. Now set the passphrase.')}).catch(e=>{b.textContent='Connect';toast('Could not connect: '+(e.message||e))})}
-  if(k==='syncCode'){const url=($('#syncUrl')?.value||'').trim(),em=($('#syncEmail')?.value||'').trim();if(!url||!em){toast('Server and email, please');return}syncSetup.url=url;syncSetup.email=em;b.textContent='…';Sync.requestCode(url,em).then(()=>{syncSetup.codeSent=true;renderSheet();toast('Code sent. Check your mail.')}).catch(e=>{b.textContent='Send code';toast('Could not send: '+(e.message||e))})}
+  if(k==='syncAdvanced'){syncSetup.advanced=!syncSetup.advanced;renderSheet()}
+  if(k==='syncCode'){const url=($('#syncUrl')?.value||'').trim()||Sync.HOSTED_URL,em=($('#syncEmail')?.value||'').trim();if(!/.+@.+\..+/.test(em)){toast('Enter your email address');return}syncSetup.url=url;syncSetup.email=em;b.textContent='…';Sync.requestCode(url,em).then(()=>{syncSetup.codeSent=true;renderSheet();toast('Code sent. Check your mail.')}).catch(e=>{b.textContent='Send code';toast(e.message||String(e))})}
   if(k==='syncVerify'){const code=$('#syncCodeIn')?.value||'';Sync.verifyCode(syncSetup.email,code).then(()=>{syncSetup.codeSent=false;renderSheet();toast('Signed in. Now set the passphrase.')}).catch(e=>toast(e.message||String(e)))}
   if(k==='syncPass'){const p=$('#syncPass')?.value||'';b.textContent='…';Sync.setPassphrase(p).then(created=>{renderSheet();toast(created?'Passphrase set. Syncing.':'Unlocked. Syncing.')}).catch(e=>{b.textContent='Unlock';toast(e.message||String(e))})}
   if(k==='syncNow'){b.textContent='…';Sync.syncNow().finally(()=>renderSheet())}
@@ -659,16 +659,17 @@ function onboarding(){
 function finishOnboarding(style){const st=S();if(HOTKEY_STYLES[style]){st.quick.hotkey=HOTKEY_STYLES[style].quick;st.voice.hotkey=HOTKEY_STYLES[style].voice}st.onboarded=true;save();syncHotkeys();closeScrim();toast('Quick add: '+st.quick.hotkey)}
 
 // ---------- sync settings ----------
-const syncSetup={mode:'self',url:'',email:'',codeSent:false};
+const syncSetup={mode:'hosted',url:'',email:'',codeSent:false,advanced:false};
 function syncRows(st,opt){const s=Sync.st();const D=window.SundialDesktop;let h=`<h3>Sync</h3>`;
   if(s.mode==='off'){
-    h+=opt('Sync between devices','End-to-end encrypted: every task is sealed on this device before it leaves, and the server only ever stores ciphertext. Local data keeps working either way.',`<div class="seg">${[['self','My own server'],['hosted','Sundial Sync']].map(([v,l])=>`<button data-syncmode="${v}" aria-pressed="${syncSetup.mode===v}">${l}</button>`).join('')}</div>`);
+    h+=opt('Sync between devices','End-to-end encrypted: every task is sealed on this device before it leaves, and the server only ever stores ciphertext. Local data keeps working either way.',`<div class="seg">${[['hosted','Sundial Sync'],['self','My own server']].map(([v,l])=>`<button data-syncmode="${v}" aria-pressed="${syncSetup.mode===v}">${l}</button>`).join('')}</div>`);
     if(syncSetup.mode==='self')h+=opt('Your server','A Sundial Sync server you run (see server/README in the repo). The token is whatever you started it with.',`<input class="key" style="text-align:left;min-width:220px" id="syncUrl" placeholder="http://localhost:8768" value="${esc(syncSetup.url||s.server||'')}" spellcheck="false"><input class="key" style="text-align:left;min-width:150px" id="syncToken" type="password" placeholder="token" autocomplete="off"><button class="btn" data-run="syncConnect">Connect</button>`);
-    else{h+=opt('Sundial Sync','Not live yet. When it is: your email, a six-digit code, done.',`<input class="key" style="text-align:left;min-width:200px" id="syncUrl" placeholder="https://sync.sundial.app" value="${esc(syncSetup.url||'')}" spellcheck="false"><input class="key" style="text-align:left;min-width:190px" id="syncEmail" type="email" placeholder="you@example.com" value="${esc(syncSetup.email||'')}"><button class="btn" data-run="syncCode">Send code</button>`);
-      if(syncSetup.codeSent)h+=opt('Code from the email','',`<input class="key" style="min-width:110px" id="syncCodeIn" inputmode="numeric" placeholder="482913"><button class="btn" data-run="syncVerify">Sign in</button>`)}
+    else{h+=opt('Sundial Sync <span class="plan">free while in beta</span>','Hosted in Switzerland, end-to-end encrypted, nothing to run. Your email, a six-digit code, done. A small subscription later; beta users keep a discount.',`<input class="key" style="text-align:left;min-width:200px" id="syncEmail" type="email" placeholder="you@example.com" value="${esc(syncSetup.email||'')}" autocomplete="email"><button class="btn primary" data-run="syncCode">Send code</button>`);
+      if(syncSetup.codeSent)h+=opt('Code from the email','Six digits, good for 10 minutes.',`<input class="key" style="min-width:110px" id="syncCodeIn" inputmode="numeric" placeholder="482913"><button class="btn primary" data-run="syncVerify">Sign in</button>`);
+      h+=`<div class="opt" style="border:0;padding-top:0"><div><small><button class="btn" style="padding:2px 8px;font-size:11px" data-run="syncAdvanced">${syncSetup.advanced?'Hide':'Advanced'}</button>${syncSetup.advanced?` <input class="key" style="text-align:left;min-width:220px;margin-left:6px" id="syncUrl" placeholder="${esc(Sync.HOSTED_URL)}" value="${esc(syncSetup.url||'')}" spellcheck="false"> another Sundial Sync server (email mode)`:''}</small></div></div>`}
     return h}
-  h+=opt('Connected',`${s.mode==='hosted'?esc(s.email):'your server'} · <code>${esc(s.server)}</code> · this device <code>${esc(state.device)}</code>`,'<button class="btn" data-run="syncOut">Sign out</button>');
-  if(!s.keyOk)h+=opt('Passphrase','Seals everything before it leaves this device. New account: choose one. Existing account: enter the one you already use. Lose it and the synced copy is unreadable; local data stays.',`<input class="key" style="text-align:left;min-width:220px" id="syncPass" type="password" placeholder="passphrase, 8+ characters" autocomplete="new-password"><button class="btn" data-run="syncPass">Unlock</button>`);
+  h+=opt('Connected',`${s.mode==='hosted'?esc(s.email)+' · <span class="plan">'+esc(s.plan||'beta')+'</span>':'your server'} · <code>${esc(s.server)}</code> · this device <code>${esc(state.device)}</code>`,'<button class="btn" data-run="syncOut">Sign out</button>');
+  if(!s.keyOk)h+=`<div class="opt attention"><div>One more step: your passphrase<small>This is what seals your data before it leaves this device; the server never gets it. New to Sundial Sync: make one up (8+ characters) and write it down somewhere safe. Already using it elsewhere: enter the same one. If it is lost, the synced copy cannot be read by anyone, including me; what is on this device stays.</small></div><div class="ctl"><input class="key" style="text-align:left;min-width:220px" id="syncPass" type="password" placeholder="passphrase, 8+ characters" autocomplete="new-password"><button class="btn primary" data-run="syncPass">Unlock sync</button></div></div>`;
   else h+=opt('Status',`${s.lastError?'Last error: '+esc(s.lastError):(s.lastSync?'Last synced '+new Date(s.lastSync).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'Not synced yet')} · ${Sync.pending()} waiting${Sync.isRunning()?' · syncing…':''}${D?'':' · key kept in this browser'}`,`<button class="btn" data-run="syncNow">Sync now</button>`);
   return h}
 
@@ -726,6 +727,7 @@ async function init(){
     D.appVersion().then(v=>{appVersion=v}).catch(()=>{});setTimeout(()=>checkUpdates(false),4000);setInterval(()=>checkUpdates(false),6*3600*1000)}
   applyTheme();applyDensity();applyLayout();SFX.setVolume(S().sounds.volume);render();updateLogo();
   Sync.on(()=>{if($('.sheet-host')&&sheetTab==='data')renderSheet()});Sync.start();
+  setTimeout(()=>{const s=Sync.st();if(s.mode!=='off'&&!s.keyOk&&!Sync.hasKey())toast('Sync is connected but not unlocked: set your passphrase',()=>{sheetTab='data';settings()},'Open')},2500);
   if(!S().onboarded)setTimeout(onboarding,500);
   // first gesture: unlock audio and (browser only) ask once for OS notifications
   const unlock=()=>{SFX.unlock();try{if(!D&&'Notification'in window&&Notification.permission==='default')Notification.requestPermission().catch(()=>{})}catch(_){}};
