@@ -74,7 +74,14 @@ jobs:
         with:
           workspaces: server
       - name: Build
-        run: cargo build --release --manifest-path server/Cargo.toml
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo build --release --manifest-path server/Cargo.toml 2>&1 | tee build.log; then
+            # surface the compiler's complaints as annotations (readable through the public API)
+            grep -nE "^(error|warning: unused)" -A 14 build.log | head -160 | paste -sd '|' - | fold -w 1200 | head -8 | while IFS= read -r chunk; do echo "::error::${chunk}"; done
+            exit 1
+          fi
       - name: Smoke test (self mode)
         run: |
           SUNDIAL_TOKENS=smoke SUNDIAL_DB=/tmp/smoke.sqlite SUNDIAL_BIND=127.0.0.1:8768 ./server/target/release/sundial-sync &

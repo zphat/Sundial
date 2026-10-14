@@ -83,7 +83,9 @@ CREATE INDEX IF NOT EXISTS docs_seq ON docs(account, seq);
 
 fn open_db(path: &str, hosted: bool, tokens: &[String]) -> rusqlite::Result<Connection> {
     let db = Connection::open(path)?;
-    db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;")?;
+    let _ = db.pragma_update(None, "journal_mode", "WAL");
+    db.pragma_update(None, "synchronous", "NORMAL")?;
+    db.busy_timeout(std::time::Duration::from_secs(5))?;
     db.execute_batch(SCHEMA)?;
     if !hosted {
         for t in tokens {
@@ -214,9 +216,9 @@ async fn auth_verify(State(app): State<App>, Json(body): Json<VerifyReq>) -> Res
     if expires < now_ms() || tries >= 5 {
         return Err(unauthorized());
     }
-    let ok = {
+    let ok: bool = {
         use subtle::ConstantTimeEq;
-        code.as_bytes().ct_eq(body.code.trim().as_bytes()).into()
+        bool::from(code.as_bytes().ct_eq(body.code.trim().as_bytes()))
     };
     if !ok {
         db.execute("UPDATE codes SET tries=tries+1 WHERE email=?1", params![email]).map_err(internal)?;
