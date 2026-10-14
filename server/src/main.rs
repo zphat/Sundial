@@ -8,9 +8,9 @@
 //!                      otherwise printed to the log (development).
 
 use axum::{
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Query, State},
     http::{header, HeaderMap, Method, StatusCode},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -40,6 +40,7 @@ struct App {
     limits: Arc<Mutex<HashMap<String, (Instant, u32)>>>,
     resend_key: Option<String>,
     from: String,
+    public_url: String,
     http: reqwest::Client,
 }
 
@@ -176,8 +177,28 @@ async fn auth_request(State(app): State<App>, Json(body): Json<EmailReq>) -> Res
     Ok(StatusCode::NO_CONTENT)
 }
 
+fn pretty_code(code: &str) -> String {
+    if code.len() == 6 { format!("{} {}", &code[..3], &code[3..]) } else { code.to_string() }
+}
+
+/// The sign-in email: the code large and copyable, a button that opens the app (or the /signin page), plain-text fallback.
+fn email_html(public_url: &str, code: &str) -> String {
+    let link = format!("{public_url}/signin?code={code}");
+    let shown = pretty_code(code);
+    format!(r##"<!doctype html><html><body style="margin:0;padding:0;background:#0B0C0B;font-family:'Segoe UI',Helvetica,Arial,sans-serif;color:#E9ECE2">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0B0C0B;padding:36px 16px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#121412;border:1px solid #262B24;border-radius:18px">
+<tr><td style="padding:26px 30px 6px;font-family:'Courier New',Courier,monospace;font-size:12px;letter-spacing:.22em;color:#D1FF4A;font-weight:bold">&#9680;&nbsp; SUNDIAL</td></tr>
+<tr><td style="padding:6px 30px 0;font-size:22px;font-weight:bold;color:#E9ECE2">Your sign-in code</td></tr>
+<tr><td style="padding:18px 30px 6px"><div style="display:inline-block;background:#0B0C0B;border:1px solid #2A3027;border-radius:14px;padding:16px 24px;font-family:'Courier New',Courier,monospace;font-size:36px;line-height:1;letter-spacing:.22em;color:#D1FF4A;font-weight:bold">{shown}</div></td></tr>
+<tr><td style="padding:10px 30px 4px;color:#9BA392;font-size:14px;line-height:1.55">Type it into Sundial within 10 minutes. The button below shows the code with a copy button and opens the app where that is supported.</td></tr>
+<tr><td style="padding:14px 30px 26px"><a href="{link}" style="display:inline-block;background:#D1FF4A;color:#0B0D06;text-decoration:none;font-weight:bold;padding:12px 22px;border-radius:999px;font-size:14px">Open Sundial</a></td></tr>
+<tr><td style="padding:0 30px 26px;color:#7E8679;font-size:12px;line-height:1.55;border-top:1px solid #1F241B;padding-top:16px">If you didn&#8217;t ask for this, ignore it; nothing happens without the code.<br>Sundial Sync &middot; end-to-end encrypted &middot; hosted in Switzerland</td></tr>
+</table></td></tr></table></body></html>"##)
+}
+
 async fn send_code(app: &App, email: &str, code: &str) {
-    let link = format!("sundial://signin?email={}&code={}", email, code);
+    let link = format!("{}/signin?code={}", app.public_url, code);
     let Some(key) = app.resend_key.as_ref() else {
         tracing::info!("[sign-in] {email}: code {code} ({link})");
         return;
@@ -185,8 +206,9 @@ async fn send_code(app: &App, email: &str, code: &str) {
     let body = json!({
         "from": app.from,
         "to": [email],
-        "subject": format!("{code} is your Sundial sign-in code"),
-        "text": format!("Your Sundial sign-in code is {code}. It works for 10 minutes.\n\nOn a phone or in a browser you can also tap: {link}\n\nIf you did not ask for this, ignore it."),
+        "subject": format!("{} is your Sundial sign-in code", pretty_code(code)),
+        "text": format!("Your Sundial sign-in code is {code}. It works for 10 minutes.\n\nOpen the code page (copy button, opens the app where supported): {link}\n\nIf you did not ask for this, ignore it."),
+        "html": email_html(&app.public_url, code),
     });
     let r = app.http.post("https://api.resend.com/emails").bearer_auth(key).json(&body).send().await;
     match r {
@@ -220,7 +242,8 @@ async fn auth_verify(State(app): State<App>, Json(body): Json<VerifyReq>) -> Res
     }
     let ok: bool = {
         use subtle::ConstantTimeEq;
-        bool::from(code.as_bytes().ct_eq(body.code.trim().as_bytes()))
+        let typed: String = body.code.chars().filter(|c| c.is_ascii_digit()).collect();
+        bool::from(code.as_bytes().ct_eq(typed.as_bytes()))
     };
     if !ok {
         db.execute("UPDATE codes SET tries=tries+1 WHERE email=?1", params![email]).map_err(internal)?;
@@ -382,6 +405,25 @@ async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncR
     Ok(Json(json!({ "protocol": PROTOCOL, "cursor": last_seq, "docs": out, "more": more })))
 }
 
+/// Landing page for the email button: shows the code large with a copy button and tries the app's deep link.
+async fn signin_page(Query(q): Query<HashMap<String, String>>) -> Html<String> {
+    let code: String = q.get("code").map(|c| c.chars().filter(|ch| ch.is_ascii_digit()).take(6).collect()).unwrap_or_default();
+    let shown = if code.len() == 6 { pretty_code(&code) } else { "no code".to_string() };
+    Html(format!(r##"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sundial sign-in</title>
+<style>body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#0B0C0B;color:#E9ECE2;font-family:'Segoe UI',Helvetica,Arial,sans-serif}}
+.card{{width:min(440px,calc(100% - 32px));background:#121412;border:1px solid #262B24;border-radius:20px;padding:28px 30px;box-shadow:0 30px 80px -30px #000}}
+.brand{{font-family:'Courier New',monospace;font-size:12px;letter-spacing:.22em;color:#D1FF4A;font-weight:bold}}h1{{font-size:22px;margin:10px 0 14px}}
+.code{{display:inline-block;background:#0B0C0B;border:1px solid #2A3027;border-radius:14px;padding:16px 24px;font-family:'Courier New',monospace;font-size:38px;letter-spacing:.22em;color:#D1FF4A;font-weight:bold;user-select:all}}
+p{{color:#9BA392;font-size:14px;line-height:1.55}}.row{{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}}
+button,a.btn{{font:inherit;font-weight:bold;font-size:14px;border-radius:999px;padding:11px 20px;cursor:pointer;text-decoration:none;border:1px solid #2A3027;background:#1B2117;color:#E9ECE2}}
+.primary{{background:#D1FF4A;color:#0B0D06;border-color:transparent}}small{{color:#7E8679;font-size:12px;display:block;margin-top:18px;line-height:1.5}}</style></head>
+<body><div class="card"><div class="brand">&#9680;&nbsp; SUNDIAL</div><h1>Your sign-in code</h1><div class="code" id="c">{shown}</div>
+<p>Type it into Sundial within 10 minutes, or copy it.</p>
+<div class="row"><button class="primary" id="cp">Copy code</button><a class="btn" href="sundial://signin?code={code}">Open Sundial</a></div>
+<small>If you didn&#8217;t ask for this, close this page; nothing happens without the code.</small></div>
+<script>document.getElementById('cp').onclick=function(){{navigator.clipboard.writeText('{code}').then(function(){{document.getElementById('cp').textContent='Copied'}},function(){{}})}}</script></body></html>"##))
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -408,7 +450,8 @@ async fn main() {
         hosted,
         limits: Arc::new(Mutex::new(HashMap::new())),
         resend_key: std::env::var("RESEND_API_KEY").ok().filter(|s| !s.is_empty()),
-        from: std::env::var("SUNDIAL_FROM").unwrap_or_else(|_| "Sundial <sign-in@sundial.app>".into()),
+        from: std::env::var("SUNDIAL_FROM").unwrap_or_else(|_| "Sundial <sign-in@sundial.services>".into()),
+        public_url: std::env::var("SUNDIAL_PUBLIC_URL").unwrap_or_else(|_| "https://sync.sundial.services".into()).trim_end_matches('/').to_string(),
         http: reqwest::Client::new(),
     };
     let cors = CorsLayer::new()
@@ -421,6 +464,7 @@ async fn main() {
         .route("/v1/auth/verify", post(auth_verify))
         .route("/v1/account", get(account).delete(delete_account))
         .route("/v1/sync", post(sync))
+        .route("/signin", get(signin_page))
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(cors)
         .with_state(app);
