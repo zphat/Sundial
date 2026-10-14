@@ -11,7 +11,7 @@ const DEFAULT_SETTINGS={
   startStyle:'banner', remindStyle:'banner', bannerPos:'top', bannerSecs:30,
   sounds:{enabled:true, volume:.7, remind:'tick2', start:'chord', repeat:0, ui:true},
   voice:{enabled:true, hotkey:'Ctrl+Shift+Space', autoAdd:false},
-  quick:{hotkey:'Ctrl+Space'},
+  quick:{hotkey:'Ctrl+Alt+Space'},
   routinesEnabled:false,
   ai:{enabled:false, provider:'anthropic', model:'claude-opus-5-5', baseUrl:'', keyInBrowser:''},
   updates:{auto:true},
@@ -44,6 +44,8 @@ function bootState(rawJson){
     s.settings.sounds.remind=({ticks:'tick2',glass:'glass2',single:'glass1'})[s.settings.sounds.remind]||s.settings.sounds.remind;
     s.settings.sounds.start=({marimba:'chord',marimba3:'chord'})[s.settings.sounds.start]||s.settings.sounds.start;
     if(!Array.isArray(s.routines))s.routines=[];
+    // 0.1.8: the old default Ctrl+Space collided with games; move it once, keep anything the user chose themselves
+    if(s.settings.quick.hotkey==='Ctrl+Space'&&!s.settings.quick.moved){s.settings.quick.hotkey='Ctrl+Alt+Space';s.settings.quick.moved=true}
     s.tasks=s.tasks.map(t=>{const n={...t};n.color=COLOR_MAP[n.color]||n.color;if(!COLORS.some(c=>c[0]===n.color))n.color='acid';
       if(ver<3){n.notify=!!t.alert;delete n.alert;if(n.remind===undefined)n.remind=null;if(n.repeat===undefined)n.repeat=null}return n});
     if(ver<3){const L={};for(const k in s.labels){L[COLOR_MAP[k]||k]=s.labels[k]}s.labels={...Object.fromEntries(COLORS),...L}}
