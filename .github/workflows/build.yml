@@ -31,15 +31,19 @@ jobs:
 
       - run: npm install
 
-      # Updater artifacts (.sig + latest.json) are produced only when the signing key secret exists,
-      # so the build keeps working before the key is set up.
-      - name: Detect updater signing key
+      # Updates are signed with src-tauri/updater.key, which is stored encrypted (see keygen.yml) and
+      # unlocked with the TAURI_UPDATER_KEY_PASSWORD secret. Without both, the build still works but
+      # produces no .sig / latest.json, so nothing unsigned can ever reach the updater.
+      - name: Load the updater signing key
         id: sig
         shell: pwsh
         env:
-          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PASS: ${{ secrets.TAURI_UPDATER_KEY_PASSWORD }}
         run: |
-          if ($env:KEY) { "signed=true" >> $env:GITHUB_OUTPUT } else { "signed=false" >> $env:GITHUB_OUTPUT }
+          if ((Test-Path src-tauri/updater.key) -and $env:PASS) {
+            "TAURI_SIGNING_PRIVATE_KEY=$((Get-Content src-tauri/updater.key -Raw).Trim())" >> $env:GITHUB_ENV
+            "signed=true" >> $env:GITHUB_OUTPUT
+          } else { "signed=false" >> $env:GITHUB_OUTPUT }
 
       # Same command tauri-action runs, but with the compiler's complaints turned into annotations
       # (readable through the public API; the web log viewer needs a login). tauri-action then
@@ -47,8 +51,7 @@ jobs:
       - name: Compile (errors as annotations)
         shell: bash
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_UPDATER_KEY_PASSWORD }}
         run: |
           set -o pipefail
           if ! npm run tauri build -- ${{ steps.sig.outputs.signed == 'true' && '--config src-tauri/tauri.updater.conf.json' || '' }} 2>&1 | tee build.log; then
@@ -62,8 +65,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_UPDATER_KEY_PASSWORD }}
         with:
           args: ${{ steps.sig.outputs.signed == 'true' && '--config src-tauri/tauri.updater.conf.json' || '' }}
           includeUpdaterJson: ${{ steps.sig.outputs.signed == 'true' }}
