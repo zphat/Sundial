@@ -422,7 +422,8 @@ async fn update_install(app: AppHandle, pending: tauri::State<'_, PendingUpdate>
                 let _ = finish_app.emit("sundial://update-progress", json!({ "pct": 100, "installing": true }));
                 // From here on nothing may keep the process alive: the installer has to replace the exe.
                 QUITTING.store(true, Ordering::SeqCst);
-                drop(finish_app.remove_tray_by_id("main"));
+                let h = finish_app.clone();
+                let _ = finish_app.run_on_main_thread(move || drop(h.remove_tray_by_id("main")));
             },
         )
         .await;
@@ -431,7 +432,7 @@ async fn update_install(app: AppHandle, pending: tauri::State<'_, PendingUpdate>
             // On Windows the updater normally ends the process itself once the installer is running. If it did not,
             // leave now: the installer relaunches Sundial when it is done, and a restarted old copy would only get killed.
             ulog(&app, "installer launched; exiting so it can replace the files");
-            quit(&app);
+            quit_app(&app);
             Ok(())
         }
         Err(e) => {
@@ -492,8 +493,10 @@ fn open_toast_window(app: &AppHandle, payload: &Value) -> Result<(), String> {
     Ok(())
 }
 
+// Async on purpose: creating a webview window from inside a synchronous command deadlocks on Windows
+// (the main thread waits for WebView2 while WebView2 waits for the main thread). 0.1.10 froze exactly there.
 #[tauri::command]
-fn toast_show(app: AppHandle, state: tauri::State<'_, Toasts>, payload: Value) -> Result<(), String> {
+async fn toast_show(app: AppHandle, state: tauri::State<'_, Toasts>, payload: Value) -> Result<(), String> {
     {
         let mut st = state.0.lock().map_err(|e| e.to_string())?;
         if app.get_webview_window("toast").is_some() {
@@ -513,7 +516,7 @@ fn toast_payload(state: tauri::State<'_, Toasts>) -> Result<Option<Value>, Strin
 /// The toast page reports what the user did; the main window gets the event, the window closes,
 /// and the next queued toast (if any) opens after a beat.
 #[tauri::command]
-fn toast_action(app: AppHandle, state: tauri::State<'_, Toasts>, action: String) -> Result<(), String> {
+async fn toast_action(app: AppHandle, state: tauri::State<'_, Toasts>, action: String) -> Result<(), String> {
     let (current, next) = {
         let mut st = state.0.lock().map_err(|e| e.to_string())?;
         let current = st.current.take();
@@ -527,19 +530,18 @@ fn toast_action(app: AppHandle, state: tauri::State<'_, Toasts>, action: String)
     if let Some(p) = current {
         let _ = app.emit_to("main", "sundial://toast-action", json!({ "action": action, "payload": p }));
     }
-    if let Some(w) = app.get_webview_window("toast") {
-        let _ = w.close();
-    }
-    if let Some(n) = next {
-        let app2 = app.clone();
-        std::thread::spawn(move || {
+    // Off the toast's own call: tearing a webview down from inside its IPC handler is another Windows deadlock.
+    // destroy() skips the close-request round trip; building from a plain thread hands creation to the event loop.
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        if let Some(w) = app2.get_webview_window("toast") {
+            let _ = w.destroy();
+        }
+        if let Some(n) = next {
             std::thread::sleep(std::time::Duration::from_millis(300));
-            let app3 = app2.clone();
-            let _ = app2.run_on_main_thread(move || {
-                let _ = open_toast_window(&app3, &n);
-            });
-        });
-    }
+            let _ = open_toast_window(&app2, &n);
+        }
+    });
     Ok(())
 }
 
@@ -570,15 +572,21 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 
 /// Quit for real: tray icon gone (Windows otherwise keeps a ghost icon until the next mouse-over), every window
 /// destroyed without a close request, the event loop asked to stop, and a watchdog in case it does not.
-fn quit(app: &AppHandle) {
+fn quit_app(app: &AppHandle) {
     QUITTING.store(true, Ordering::SeqCst);
-    drop(app.remove_tray_by_id("main"));
-    for (_, w) in app.webview_windows() {
-        let _ = w.destroy();
-    }
-    app.exit(0);
-    std::thread::spawn(|| {
+    // Tray removal destroys a hidden window, which Windows only allows from the thread that owns it.
+    let h = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        drop(h.remove_tray_by_id("main"));
+        for (_, w) in h.webview_windows() {
+            let _ = w.destroy();
+        }
+        h.exit(0);
+    });
+    let h2 = app.clone();
+    std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(1500));
+        h2.cleanup_before_exit();
         std::process::exit(0);
     });
 }
@@ -610,7 +618,7 @@ fn build_tray_handle(app: &AppHandle) -> tauri::Result<()> {
                 show_main(app);
                 let _ = app.emit("sundial://quick-add", ());
             }
-            "quit" => quit(app),
+            "quit" => quit_app(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -678,6 +686,13 @@ pub fn run() {
             set_hotkeys, ai_parse, app_version, update_check, update_install,
             toast_show, toast_payload, toast_action, deep_link_pending
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Sundial");
+        .build(tauri::generate_context!())
+        .expect("error while building Sundial")
+        .run(|_app, event| {
+            // A tray app: losing the last window (a toast closing while the main window is hidden) must not end
+            // the process. Quit and the updater exit with a code, which this does not touch.
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
+                api.prevent_exit();
+            }
+        });
 }
