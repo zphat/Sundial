@@ -52,7 +52,9 @@ jobs:
         run: |
           set -o pipefail
           if ! npm run tauri build -- ${{ steps.sig.outputs.signed == 'true' && '--config src-tauri/tauri.updater.conf.json' || '' }} 2>&1 | tee build.log; then
-            grep -nE "^(error|warning: unused)|^Error|failed to bundle|panicked" -A 14 build.log | head -200 | paste -sd '|' - | fold -w 1200 | head -8 | while IFS= read -r chunk; do echo "::error::${chunk}"; done
+            # strip colour codes, then annotate the compiler errors and the end of the log
+            sed -r "s/$(printf \'\033')\[[0-9;?]*[ -\/]*[@-~]//g" build.log > plain.log
+            { grep -nE "^(error|warning: unused)" -A 14 plain.log | head -160; echo "----- tail -----"; tail -n 70 plain.log; } | paste -sd '|' - | fold -w 1200 | head -10 | while IFS= read -r chunk; do echo "::error::${chunk}"; done
             exit 1
           fi
 
