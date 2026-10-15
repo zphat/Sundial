@@ -79,6 +79,16 @@ jobs:
           path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
 
+      # Pin what this build resolved, so releases stop drifting with the day's newest crates.
+      - name: Commit Cargo.lock
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/Cargo.lock
+          if git diff --cached --quiet; then echo "Cargo.lock unchanged"; else git commit -m "Cargo.lock from the CI build [skip ci]" && git push; fi
+
   # The sync server: a Linux binary on every push, attached to the release on tags.
   sync-server:
     runs-on: ubuntu-latest
@@ -115,8 +125,19 @@ jobs:
         with:
           name: sundial-sync-linux-x86_64
           path: sundial-sync-linux-x86_64.tar.gz
-      - name: Attach to release
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+
+  # Attaches the server tarball only once the Windows job has published the installer: a release must never
+  # exist without latest.json, or every installed copy's update check breaks.
+  attach-server:
+    if: github.ref_type == 'tag'
+    needs: [windows, sync-server]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sundial-sync-linux-x86_64
+      - uses: softprops/action-gh-release@v2
         with:
           files: sundial-sync-linux-x86_64.tar.gz
