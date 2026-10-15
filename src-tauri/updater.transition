@@ -1,0 +1,2 @@
+While this file exists, build.yml signs releases with the previous updater key (key rotation).
+Remove it right after the transition release is published.

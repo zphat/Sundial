@@ -34,14 +34,26 @@ jobs:
       # Updates are signed with src-tauri/updater.key, which is stored encrypted (see keygen.yml) and
       # unlocked with the TAURI_UPDATER_KEY_PASSWORD secret. Without both, the build still works but
       # produces no .sig / latest.json, so nothing unsigned can ever reach the updater.
+      #
+      # Key rotation: while src-tauri/updater.transition exists, the build signs with the previous key
+      # (TAURI_SIGNING_PRIVATE_KEY secret) so installed copies accept the release that carries the new
+      # public key. The switch lives here, not on a side branch, because GitHub refuses to publish a
+      # release whose commit has workflow files that differ from the default branch.
       - name: Load the updater signing key
         id: sig
         shell: pwsh
         env:
           PASS: ${{ secrets.TAURI_UPDATER_KEY_PASSWORD }}
+          OLDKEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          if ((Test-Path src-tauri/updater.key) -and $env:PASS) {
+          if ((Test-Path src-tauri/updater.transition) -and $env:OLDKEY) {
+            Write-Host "Signing with the previous key (rotation transition release)"
+            "TAURI_SIGNING_PRIVATE_KEY=$($env:OLDKEY.Trim())" >> $env:GITHUB_ENV
+            "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> $env:GITHUB_ENV
+            "signed=true" >> $env:GITHUB_OUTPUT
+          } elseif ((Test-Path src-tauri/updater.key) -and $env:PASS) {
             "TAURI_SIGNING_PRIVATE_KEY=$((Get-Content src-tauri/updater.key -Raw).Trim())" >> $env:GITHUB_ENV
+            "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$env:PASS" >> $env:GITHUB_ENV
             "signed=true" >> $env:GITHUB_OUTPUT
           } else { "signed=false" >> $env:GITHUB_OUTPUT }
 
@@ -50,8 +62,6 @@ jobs:
       # rebuilds from the warm cache and does the release.
       - name: Compile (errors as annotations)
         shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_UPDATER_KEY_PASSWORD }}
         run: |
           set -o pipefail
           if ! npm run tauri build -- ${{ steps.sig.outputs.signed == 'true' && '--config src-tauri/tauri.updater.conf.json' || '' }} 2>&1 | tee build.log; then
@@ -65,7 +75,6 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_UPDATER_KEY_PASSWORD }}
         with:
           args: ${{ steps.sig.outputs.signed == 'true' && '--config src-tauri/tauri.updater.conf.json' || '' }}
           includeUpdaterJson: ${{ steps.sig.outputs.signed == 'true' }}
