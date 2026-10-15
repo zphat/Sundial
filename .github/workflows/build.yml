@@ -41,6 +41,21 @@ jobs:
         run: |
           if ($env:KEY) { "signed=true" >> $env:GITHUB_OUTPUT } else { "signed=false" >> $env:GITHUB_OUTPUT }
 
+      # Same command tauri-action runs, but with the compiler's complaints turned into annotations
+      # (readable through the public API; the web log viewer needs a login). tauri-action then
+      # rebuilds from the warm cache and does the release.
+      - name: Compile (errors as annotations)
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          set -o pipefail
+          if ! npm run tauri build -- ${{ steps.sig.outputs.signed == 'true' && '--config src-tauri/tauri.updater.conf.json' || '' }} 2>&1 | tee build.log; then
+            grep -nE "^(error|warning: unused)|^Error|failed to bundle|panicked" -A 14 build.log | head -200 | paste -sd '|' - | fold -w 1200 | head -8 | while IFS= read -r chunk; do echo "::error::${chunk}"; done
+            exit 1
+          fi
+
       - name: Build installer (and release on tags)
         uses: tauri-apps/tauri-action@v0
         env:
