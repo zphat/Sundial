@@ -196,6 +196,7 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .task.open{border-color:var(--accent-ink);border-bottom-left-radius:0;border-bottom-right-radius:0;background:var(--panel-3)}
 .task.dragging{opacity:.35}
 .task.drop-before::before{content:"";position:absolute;left:8px;right:8px;top:-3px;height:2px;border-radius:2px;background:var(--accent-ink)}
+.task.drop-after::after{content:"";position:absolute;left:8px;right:8px;bottom:-3px;height:2px;border-radius:2px;background:var(--accent-ink)}
 .task.enter{animation:enter .3s var(--ease)}
 .task.flash{animation:flash 1.2s var(--ease)}
 @keyframes flash{0%{box-shadow:0 0 0 0 var(--accent-soft),inset 0 1px 0 var(--hair)}25%{box-shadow:0 0 0 7px var(--accent-soft),inset 0 1px 0 var(--hair)}100%{box-shadow:0 0 0 0 transparent,inset 0 1px 0 var(--hair)}}

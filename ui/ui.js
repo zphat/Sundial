@@ -617,12 +617,27 @@ function moveCursor(d){if(view!=='day'){view='day';render()}const ids=[...docume
 // drag: reorder within list, drop on a day to move, drop on a timeline hour to schedule
 document.addEventListener('dragstart',e=>{const r=e.target.closest('[data-id]');if(!r||!get(r.dataset.id))return;dragId=r.dataset.id;r.classList.add('dragging');e.dataTransfer.effectAllowed='move';try{e.dataTransfer.setData('text/plain',dragId)}catch(_){}});
 document.addEventListener('dragend',()=>{dragId=null;document.querySelectorAll('.dragging,.over,.drop-before').forEach(x=>x.classList.remove('dragging','over','drop-before'))});
-document.addEventListener('dragover',e=>{if(!dragId)return;const day=e.target.closest('[data-date],[data-dropdate]');const row=e.target.closest('.task');const hr=e.target.closest('.hours');if(day||row||hr){e.preventDefault();e.dataTransfer.dropEffect='move'}
-  document.querySelectorAll('.over,.drop-before').forEach(x=>x.classList.remove('over','drop-before'));
-  if(row&&row.dataset.id!==dragId)row.classList.add('drop-before');else if(day)day.classList.add('over')});
+// Where a dragged row would land. Timed tasks keep their time order (the timeline is where a time changes), so a
+// drop among them means "top of the anytime group"; the lower half of a row means "after it".
+function dropTarget(row,y){const d=get(dragId),t=row?get(row.dataset.id):null;if(!d)return {};
+  if(d.time!=null)return {blocked:true};
+  const rows=[...document.querySelectorAll('#list .task')].filter(r=>r.dataset.id!==d.id);
+  if(!row){const last=rows[rows.length-1];return last?{row:last,after:true,beforeId:null}:{beforeId:null}}
+  if(!t)return {};
+  if(t.time!=null){const first=rows.find(r=>{const x=get(r.dataset.id);return x&&x.time==null&&!x.done});return first?{row:first,after:false,beforeId:first.dataset.id}:{row,after:true,beforeId:null}}
+  const rc=row.getBoundingClientRect();const after=y>rc.top+rc.height/2;
+  if(!after)return {row,after:false,beforeId:t.id};
+  const next=rows[rows.indexOf(row)+1];return {row,after:true,beforeId:next?next.dataset.id:null}}
+document.addEventListener('dragover',e=>{if(!dragId)return;const day=e.target.closest('[data-date],[data-dropdate]');const row=e.target.closest('.task');const hr=e.target.closest('.hours');const list=e.target.closest('#list');
+  if(day||row||hr||list){e.preventDefault();e.dataTransfer.dropEffect='move'}
+  document.querySelectorAll('.over,.drop-before,.drop-after').forEach(x=>x.classList.remove('over','drop-before','drop-after'));
+  if(day&&!row){day.classList.add('over');return}
+  if(row&&row.dataset.id===dragId)return;
+  if(row||list){const tgt=dropTarget(row,e.clientY);if(tgt.blocked){e.dataTransfer.dropEffect='none';return}if(tgt.row)tgt.row.classList.add(tgt.after?'drop-after':'drop-before')}});
 document.addEventListener('drop',e=>{if(!dragId)return;e.preventDefault();const row=e.target.closest('.task');const day=e.target.closest('[data-date],[data-dropdate]');const hr=e.target.closest('.hours');
-  if(row&&row.dataset.id!==dragId)reorder(dragId,row.dataset.id);
-  else if(day)moveTo(dragId,day.dataset.date||day.dataset.dropdate);
+  const list=e.target.closest('#list');
+  if((row&&row.dataset.id!==dragId)||(list&&!row)){const tgt=dropTarget(row,e.clientY);if(tgt.blocked)toast('Timed tasks keep their time order. Drop it on the timeline to change the time, or clear the time first.');else if(!(row&&row.dataset.id===dragId))reorder(dragId,tgt.beforeId)}
+  else if(day&&!row)moveTo(dragId,day.dataset.date||day.dataset.dropdate);
   else if(hr){const y=e.clientY-hr.getBoundingClientRect().top;const mins=Math.round((y/S().hh*60)/15)*15;upd(dragId,{time:Math.max(0,Math.min(23*60+45,mins))});toast('Scheduled '+fmtTime(get(dragId).time))}
   dragId=null;render()});
 // gutters: widths in side-by-side mode, heights in stacked mode
