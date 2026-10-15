@@ -478,6 +478,12 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .ob-card .combo{font-family:var(--f-mono);font-size:12px;color:var(--accent-ink);background:var(--panel-2);border:1px solid var(--line-2);border-radius:7px;padding:3px 8px;align-self:flex-start}
 .ob-card small{color:var(--fg-3);font-size:11.5px;line-height:1.4}
 .ob-foot{display:flex;align-items:center;gap:10px;margin-top:6px}
+.ob-step{font-family:var(--f-brand);font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-3);margin:-6px 0 10px}
+.ob-cards.three{grid-template-columns:1fr;gap:8px}
+.ob-cards.three .ob-card{padding:11px 14px 10px}
+.ob-cards.three .ob-card b{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ob-sync{margin:2px 0 10px;padding:0 2px}
+.ob-sync .opt:last-child{border-bottom:0}
 .ob-foot .spacer{flex:1}
 @media (max-width:560px){.ob-cards{grid-template-columns:1fr}}
 .foot-tip{font-family:var(--f-mono);font-size:10px;color:var(--fg-3);text-align:center;position:relative;z-index:1}

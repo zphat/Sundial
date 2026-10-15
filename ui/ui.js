@@ -472,8 +472,9 @@ document.addEventListener('click',e=>{
   if(b.dataset.tog){applySetting(b.dataset.tog,!getPath(S(),b.dataset.tog));return}
   if(b.dataset.play){const st=S();const nm=b.dataset.play==='remind'?'remind.'+st.sounds.remind:b.dataset.play==='start'?'start.'+st.sounds.start:b.dataset.play;SFX.play(nm,true);return}
   if(b.dataset.autostart){const D=window.SundialDesktop;if(D)D.autostart.set(!autostartOn).then(()=>{autostartOn=!autostartOn;renderSheet()}).catch(e=>toast('Could not change: '+e));return}
-  if(b.dataset.style){document.querySelectorAll('.ob-card').forEach(c=>c.setAttribute('aria-pressed',String(c===b)));return}
-  if(b.dataset.syncmode){syncSetup.mode=b.dataset.syncmode;renderSheet();return}
+  if(b.dataset.style){obStyle=b.dataset.style;document.querySelectorAll('.ob-card[data-style]').forEach(c=>c.setAttribute('aria-pressed',String(c===b)));return}
+  if(b.dataset.sync){obSync=b.dataset.sync;if(obSync!=='local')syncSetup.mode=obSync;renderOnboarding();return}
+  if(b.dataset.syncmode){syncSetup.mode=b.dataset.syncmode;syncRefresh();return}
   if(b.dataset.run){runSetting(b.dataset.run,b);return}
   const idSrc=e.target.closest('[data-id],[data-drawer]');const id=b.dataset.id||(idSrc&&(idSrc.dataset.id||idSrc.dataset.drawer))||(inMenu&&inMenu.dataset.id)||openId;
   if(b.dataset.setcolor){const tid=b.dataset.id||id;if(tid){upd(tid,{color:b.dataset.setcolor});closeMenu();render()}return}
@@ -509,14 +510,16 @@ function runSetting(k,b){
   if(k==='rtNew'){newRoutine();renderSheet();const ta=[...document.querySelectorAll('.rt-name')].pop();if(ta){ta.focus();ta.select()}}
   if(k==='rtReset'){resetRoutines();renderSheet();render();toast('Starter routines restored')}
   if(k==='revealData'){window.SundialDesktop?.reveal().catch(e=>toast(String(e)))}
-  if(k==='syncConnect'){const url=($('#syncUrl')?.value||'').trim(),tok=$('#syncToken')?.value||'';if(!url||!tok){toast('Server URL and token, please');return}b.textContent='…';Sync.connectSelf(url,tok).then(()=>{renderSheet();toast('Connected. Now set the passphrase.')}).catch(e=>{b.textContent='Connect';toast('Could not connect: '+(e.message||e))})}
-  if(k==='syncAdvanced'){syncSetup.advanced=!syncSetup.advanced;renderSheet()}
-  if(k==='syncCode'){const url=($('#syncUrl')?.value||'').trim()||Sync.HOSTED_URL,em=($('#syncEmail')?.value||'').trim();if(!/.+@.+\..+/.test(em)){toast('Enter your email address');return}syncSetup.url=url;syncSetup.email=em;b.textContent='…';Sync.requestCode(url,em).then(()=>{syncSetup.codeSent=true;renderSheet();toast('Code sent. Check your mail.')}).catch(e=>{b.textContent='Send code';toast(e.message||String(e))})}
-  if(k==='syncVerify'){const code=$('#syncCodeIn')?.value||'';Sync.verifyCode(syncSetup.email,code).then(()=>{syncSetup.codeSent=false;renderSheet();toast('Signed in. Now set the passphrase.')}).catch(e=>toast(e.message||String(e)))}
-  if(k==='syncPass'){const p=$('#syncPass')?.value||'';b.textContent='…';Sync.setPassphrase(p).then(created=>{renderSheet();toast(created?'Passphrase set. Syncing.':'Unlocked. Syncing.')}).catch(e=>{b.textContent='Unlock';toast(e.message||String(e))})}
-  if(k==='syncNow'){b.textContent='…';Sync.syncNow().finally(()=>renderSheet())}
-  if(k==='syncOut'){Sync.signOut().then(()=>{renderSheet();toast('Signed out of sync. Local data kept.')})}
-  if(k==='obDone'){const pick=document.querySelector('.ob-card[aria-pressed="true"]')?.dataset.style||'quick';finishOnboarding(pick)}
+  if(k==='syncConnect'){const url=($('#syncUrl')?.value||'').trim(),tok=$('#syncToken')?.value||'';if(!url||!tok){toast('Server URL and token, please');return}b.textContent='…';Sync.connectSelf(url,tok).then(()=>{syncRefresh();toast('Connected. Now set the passphrase.')}).catch(e=>{b.textContent='Connect';toast('Could not connect: '+(e.message||e))})}
+  if(k==='syncAdvanced'){syncSetup.advanced=!syncSetup.advanced;syncRefresh()}
+  if(k==='syncCode'){const url=($('#syncUrl')?.value||'').trim()||Sync.HOSTED_URL,em=($('#syncEmail')?.value||'').trim();if(!/.+@.+\..+/.test(em)){toast('Enter your email address');return}syncSetup.url=url;syncSetup.email=em;b.textContent='…';Sync.requestCode(url,em).then(()=>{syncSetup.codeSent=true;syncRefresh();toast('Code sent. Check your mail.')}).catch(e=>{b.textContent='Send code';toast(e.message||String(e))})}
+  if(k==='syncVerify'){const code=$('#syncCodeIn')?.value||'';Sync.verifyCode(syncSetup.email,code).then(()=>{syncSetup.codeSent=false;syncRefresh();toast('Signed in. Now set the passphrase.')}).catch(e=>toast(e.message||String(e)))}
+  if(k==='syncPass'){const p=$('#syncPass')?.value||'';b.textContent='…';Sync.setPassphrase(p).then(created=>{syncRefresh();toast(created?'Passphrase set. Syncing.':'Unlocked. Syncing.')}).catch(e=>{b.textContent='Unlock';toast(e.message||String(e))})}
+  if(k==='syncNow'){b.textContent='…';Sync.syncNow().finally(()=>syncRefresh())}
+  if(k==='syncOut'){Sync.signOut().then(()=>{syncRefresh();toast('Signed out of sync. Local data kept.')})}
+  if(k==='obNext'){obStep=2;renderOnboarding()}
+  if(k==='obBack'){obStep=1;renderOnboarding()}
+  if(k==='obDone'){finishOnboarding(obStyle)}
   if(k==='obCustom'){S().onboarded=true;save();closeScrim();setTimeout(()=>{sheetTab='general';settings();setTimeout(()=>{const kb=document.querySelector('[data-run="recQuick"]');if(kb)kb.click()},250)},260)}
   if(k==='onboard'){closeScrim();setTimeout(onboarding,260)}
   if(k==='fitWindow'){closeScrim();setTimeout(fitToWindow,260)}
@@ -647,16 +650,33 @@ let rzTimer=null;addEventListener('resize',()=>{clearTimeout(rzTimer);rzTimer=se
 // ---------- first-run setup: pick a hotkey style ----------
 const HOTKEY_STYLES={quick:{quick:'Ctrl+Space',voice:'Ctrl+Shift+Space'},gaming:{quick:'Ctrl+Alt+/',voice:'Ctrl+Alt+.'}};
 function hotkeyStyle(){const q=S().quick.hotkey,v=S().voice.hotkey;for(const k in HOTKEY_STYLES){if(HOTKEY_STYLES[k].quick===q&&HOTKEY_STYLES[k].voice===v)return k}return 'custom'}
+let obStep=1,obStyle='quick',obSync='local';
 function onboarding(){
   if($('.scrim'))closeScrim();
-  const sel0=hotkeyStyle();
-  const card=(k,title,sub,st)=>`<button class="ob-card" data-style="${k}" aria-pressed="${sel0===k}"><b>${title}</b><span class="combo">${esc(st.quick)}</span><small>${sub}<br>Voice: <span style="font-family:var(--f-mono)">${esc(st.voice)}</span></small></button>`;
-  const s=scrim(`<div class="ob"><h2>Welcome to Sundial</h2><p>One choice to make: how you summon the quick-add bar from anywhere. You can change it any time in Settings.</p>
-    <div class="ob-cards">${card('quick','Quick','Two keys. Best if you mostly type.',HOTKEY_STYLES.quick)}${card('gaming','Gaming','Three keys, out of the way of games.',HOTKEY_STYLES.gaming)}</div>
-    <div class="ob-foot"><button class="btn" data-run="obCustom">Record my own…</button><span class="spacer"></span><button class="btn primary" data-run="obDone">Start</button></div></div>`,'sheet');
-  s.classList.add('ob-host');
+  obStep=1;obStyle=HOTKEY_STYLES[hotkeyStyle()]?hotkeyStyle():'quick';obSync=Sync.st().mode==='off'?'local':Sync.st().mode;
+  const s=scrim(`<div class="ob"></div>`,'sheet');s.classList.add('ob-host');renderOnboarding();
 }
-function finishOnboarding(style){const st=S();if(HOTKEY_STYLES[style]){st.quick.hotkey=HOTKEY_STYLES[style].quick;st.voice.hotkey=HOTKEY_STYLES[style].voice}st.onboarded=true;save();syncHotkeys();closeScrim();toast('Quick add: '+st.quick.hotkey)}
+function renderOnboarding(){const host=document.querySelector('.ob-host:not(.out) .ob');if(!host)return;
+  if(obStep===1){
+    const card=(k,title,sub,st)=>`<button class="ob-card" data-style="${k}" aria-pressed="${obStyle===k}"><b>${title}</b><span class="combo">${esc(st.quick)}</span><small>${sub}<br>Voice: <span style="font-family:var(--f-mono)">${esc(st.voice)}</span></small></button>`;
+    host.innerHTML=`<h2>Welcome to Sundial</h2><div class="ob-step">Step 1 of 2 · Quick add</div><p>How you summon the quick-add bar from anywhere. You can change it any time in Settings.</p>
+    <div class="ob-cards">${card('quick','Quick','Two keys. Best if you mostly type.',HOTKEY_STYLES.quick)}${card('gaming','Gaming','Three keys, out of the way of games.',HOTKEY_STYLES.gaming)}</div>
+    <div class="ob-foot"><button class="btn" data-run="obCustom">Record my own…</button><span class="spacer"></span><button class="btn primary" data-run="obNext">Next</button></div>`;
+    return}
+  const sy=Sync.st(),connected=sy.mode!=='off';
+  const pick=(k,title,sub)=>`<button class="ob-card" data-sync="${k}" aria-pressed="${obSync===k}"><b>${title}</b><small>${sub}</small></button>`;
+  const done=connected?(sy.keyOk?'Done':'Finish setup later'):(obSync==='local'?'Start':'Skip for now');
+  host.innerHTML=`<h2>Where do your days live?</h2><div class="ob-step">Step 2 of 2 · Optional</div><p>Sundial is complete on this PC alone. Sync is there when you want the same days on another device.</p>
+    <div class="ob-cards three">
+      ${pick('local','Just this PC','Everything stays on this machine. Switch on sync any time in Settings → Data & sync.')}
+      ${pick('hosted','Sundial Sync <span class="plan">free during the beta</span>','On every device, end-to-end encrypted, hosted in Switzerland. Free during the beta, then $2.49 a month or $19.99 a year. Beta accounts keep $9.99 a year for as long as they stay subscribed.')}
+      ${pick('self','My own server','Run the open-source sync server yourself and point Sundial at it.')}
+    </div>
+    ${obSync!=='local'||connected?`<div class="ob-sync">${syncRows(S(),optRow,true)}</div>`:''}
+    <div class="ob-foot"><button class="btn" data-run="obBack">Back</button><span class="spacer"></span><button class="btn primary" data-run="obDone">${done}</button></div>`;
+}
+function finishOnboarding(style){const st=S();if(HOTKEY_STYLES[style]){st.quick.hotkey=HOTKEY_STYLES[style].quick;st.voice.hotkey=HOTKEY_STYLES[style].voice}st.onboarded=true;save();syncHotkeys();closeScrim();
+  const sy=Sync.st();if(sy.mode==='off')syncSetup.mode='hosted';if(sy.mode!=='off'&&!sy.keyOk)setTimeout(()=>toast('Sync is connected but not unlocked: set your passphrase',()=>{sheetTab='data';settings()},'Open'),900);else toast('Quick add: '+st.quick.hotkey)}
 
 // sundial://signin?code=482913 (the Open Sundial button on the email's code page): Data & sync opens with the code
 // in place, and signs in at once when this is the device that asked for the code.
@@ -672,16 +692,20 @@ function deepLink(url){let u;try{u=new URL(String(url))}catch(e){return}if(u.pro
   else{toast('Enter the email the code went to, then Sign in');$('#syncEmail')?.focus()}}
 
 // ---------- sync settings ----------
+const optRow=(label,sub,ctl)=>`<div class="opt"><div>${label}${sub?`<small>${sub}</small>`:''}</div><div class="ctl">${ctl}</div></div>`;
+// The sync rows live in Settings and in first-run setup; after any sync action, redraw whichever is open.
+function syncRefresh(){if($('.ob-host:not(.out)'))renderOnboarding();else renderSheet()}
 const syncSetup={mode:'hosted',url:'',email:'',codeSent:false,advanced:false};
-function syncRows(st,opt){const s=Sync.st();const D=window.SundialDesktop;let h=`<h3>Sync</h3>`;
+function syncRows(st,opt,bare){const s=Sync.st();const D=window.SundialDesktop;let h=bare?'':`<h3>Sync</h3>`;
   if(s.mode==='off'){
-    h+=opt('Sync between devices','End-to-end encrypted: every task is sealed on this device before it leaves, and the server only ever stores ciphertext. Local data keeps working either way.',`<div class="seg">${[['hosted','Sundial Sync'],['self','My own server']].map(([v,l])=>`<button data-syncmode="${v}" aria-pressed="${syncSetup.mode===v}">${l}</button>`).join('')}</div>`);
+    if(!bare)h+=opt('Sync between devices','End-to-end encrypted: every task is sealed on this device before it leaves, and the server only ever stores ciphertext. Local data keeps working either way.',`<div class="seg">${[['hosted','Sundial Sync'],['self','My own server']].map(([v,l])=>`<button data-syncmode="${v}" aria-pressed="${syncSetup.mode===v}">${l}</button>`).join('')}</div>`);
     if(syncSetup.mode==='self')h+=opt('Your server','A Sundial Sync server you run (see server/README in the repo). The token is whatever you started it with.',`<input class="key" style="text-align:left;min-width:220px" id="syncUrl" placeholder="http://localhost:8768" value="${esc(syncSetup.url||s.server||'')}" spellcheck="false"><input class="key" style="text-align:left;min-width:150px" id="syncToken" type="password" placeholder="token" autocomplete="off"><button class="btn" data-run="syncConnect">Connect</button>`);
-    else{h+=opt('Sundial Sync <span class="plan">free while in beta</span>','Hosted in Switzerland, end-to-end encrypted, nothing to run. Your email, a six-digit code, done. A small subscription later; beta users keep a discount.',`<input class="key" style="text-align:left;min-width:200px" id="syncEmail" type="email" placeholder="you@example.com" value="${esc(syncSetup.email||'')}" autocomplete="email"><button class="btn primary" data-run="syncCode">Send code</button>`);
+    else{h+=opt(bare?'Your email':'Sundial Sync <span class="plan">free during the beta</span>',bare?'We email you a six-digit code. The server never learns more than that address.':'Your days on every device, end-to-end encrypted, hosted in Switzerland. Nothing to run: your email, a six-digit code, done. Free during the beta, then $2.49 a month or $19.99 a year. Beta accounts keep $9.99 a year for as long as they stay subscribed.',`<input class="key" style="text-align:left;min-width:200px" id="syncEmail" type="email" placeholder="you@example.com" value="${esc(syncSetup.email||'')}" autocomplete="email"><button class="btn primary" data-run="syncCode">Send code</button>`);
       if(syncSetup.codeSent)h+=opt('Code from the email','Six digits, good for 10 minutes.',`<input class="key" style="min-width:110px" id="syncCodeIn" inputmode="numeric" placeholder="482913"><button class="btn primary" data-run="syncVerify">Sign in</button>`);
       h+=`<div class="opt" style="border:0;padding-top:0"><div><small><button class="btn" style="padding:2px 8px;font-size:11px" data-run="syncAdvanced">${syncSetup.advanced?'Hide':'Advanced'}</button>${syncSetup.advanced?` <input class="key" style="text-align:left;min-width:220px;margin-left:6px" id="syncUrl" placeholder="${esc(Sync.HOSTED_URL)}" value="${esc(syncSetup.url||'')}" spellcheck="false"> another Sundial Sync server (email mode)`:''}</small></div></div>`}
     return h}
   h+=opt('Connected',`${s.mode==='hosted'?esc(s.email)+' · <span class="plan">'+esc(s.plan||'beta')+'</span>':'your server'} · <code>${esc(s.server)}</code> · this device <code>${esc(state.device)}</code>`,'<button class="btn" data-run="syncOut">Sign out</button>');
+  if(s.mode==='hosted')h+=opt('Plan','Beta: free. Founding price locked in: $9.99 a year once billing starts, for as long as you stay subscribed.','');
   if(!s.keyOk)h+=`<div class="opt attention"><div>One more step: your passphrase<small>This is what seals your data before it leaves this device; the server never gets it. New to Sundial Sync: make one up (8+ characters) and write it down somewhere safe. Already using it elsewhere: enter the same one. If it is lost, the synced copy cannot be read by anyone, including me; what is on this device stays.</small></div><div class="ctl"><input class="key" style="text-align:left;min-width:220px" id="syncPass" type="password" placeholder="passphrase, 8+ characters" autocomplete="new-password"><button class="btn primary" data-run="syncPass">Unlock sync</button></div></div>`;
   else h+=opt('Status',`${s.lastError?'Last error: '+esc(s.lastError):(s.lastSync?'Last synced '+new Date(s.lastSync).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'Not synced yet')} · ${Sync.pending()} waiting${Sync.isRunning()?' · syncing…':''}${D?'':' · key kept in this browser'}`,`<button class="btn" data-run="syncNow">Sync now</button>`);
   return h}
@@ -751,7 +775,7 @@ async function init(){
     D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});D.on('sundial://deep-link',e=>deepLink(e.payload));D.on('sundial://update-progress',e=>updateProgress(e.payload||{}));syncHotkeys();
     D.appVersion().then(v=>{appVersion=v}).catch(()=>{});setTimeout(()=>checkUpdates(false),4000);setInterval(()=>checkUpdates(false),6*3600*1000)}
   applyTheme();applyDensity();applyLayout();SFX.setVolume(S().sounds.volume);render();updateLogo();
-  Sync.on(()=>{if($('.sheet-host')&&sheetTab==='data')renderSheet()});Sync.start();
+  Sync.on(()=>{if($('.sheet-host')&&sheetTab==='data')renderSheet();else if($('.ob-host')&&obStep===2)renderOnboarding()});Sync.start();
   if(D&&D.deepLinkPending)D.deepLinkPending().then(u=>{if(u)deepLink(u)}).catch(()=>{});
   setTimeout(()=>{const s=Sync.st();if(s.mode!=='off'&&!s.keyOk&&!Sync.hasKey())toast('Sync is connected but not unlocked: set your passphrase',()=>{sheetTab='data';settings()},'Open')},2500);
   if(!S().onboarded)setTimeout(onboarding,500);
