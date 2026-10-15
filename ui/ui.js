@@ -521,7 +521,7 @@ function runSetting(k,b){
   if(k==='onboard'){closeScrim();setTimeout(onboarding,260)}
   if(k==='fitWindow'){closeScrim();setTimeout(fitToWindow,260)}
   if(k==='updateCheck'){b.textContent='Checking…';checkUpdates(true).finally(()=>{b.textContent='Check now'})}
-  if(k==='updateInstall'){installUpdate(null)}
+  if(k==='updateInstall'){installUpdate(null,b)}
   if(k==='aiSaveKey'){const v=($('#aiKey')?.value||'').trim();if(!v){toast('Paste a key first');return}const D=window.SundialDesktop;
     if(D)D.secret.set('ai:'+S().ai.provider,v).then(()=>{aiKeySaved=true;renderSheet();toast('Key saved to Windows Credential Manager')}).catch(e=>toast('Could not save: '+e));
     else{S().ai.keyInBrowser=v;save();aiKeySaved=true;renderSheet();toast('Key saved in this browser')}}
@@ -696,8 +696,20 @@ function updateBanner(u){const st=S();if(window.SundialDesktop&&st.toasts.enable
   const host=bannerHost();if(host.querySelector('.banner.update'))return;const el=document.createElement('div');el.className='banner update start';
   el.innerHTML=`<div class="ic">↻</div><div class="tx"><span class="k">Update ready</span><b>Sundial ${esc(u.version)}</b><small>${esc((u.notes||'').split('\n')[0].slice(0,90))||'Downloaded in the background. Restart whenever you like.'}</small></div><div class="bt"><button data-b="later">Later</button><button class="ok" data-b="go">Restart now</button></div>`;
   el.querySelector('[data-b="later"]').onclick=()=>dismissBanner(el);el.querySelector('[data-b="go"]').onclick=()=>installUpdate(el);host.appendChild(el)}
-async function installUpdate(el){const D=window.SundialDesktop;if(!D)return;const b=el?.querySelector('[data-b="go"]');if(b){b.textContent='Installing…';b.disabled=true}
-  try{await D.flush();await D.updateInstall()}catch(e){toast('Update failed: '+(e.message||e));if(b){b.textContent='Restart now';b.disabled=false}}}
+let installing=false;
+async function installUpdate(el,btn){const D=window.SundialDesktop;if(!D||installing)return;installing=true;const b=btn||el?.querySelector('[data-b="go"]');if(b){b.textContent='Installing…';b.disabled=true}
+  updateProgress({pct:0});
+  try{await D.flush();await D.updateInstall()}
+  catch(e){installing=false;const msg=e.message||String(e);updateProgress({error:msg});if(b){b.textContent='Restart now';b.disabled=false}}}
+// One banner that follows the download, then the installer, and stays put if anything goes wrong.
+function updateProgress(p){const host=bannerHost();let el=host.querySelector('.banner.progress');
+  if(!el){el=document.createElement('div');el.className='banner progress start';el.innerHTML='<div class="ic">↻</div><div class="tx"><span class="k">Updating</span><b></b><small></small></div><div class="bt"></div>';host.appendChild(el)}
+  const b=el.querySelector('b'),s=el.querySelector('small'),bt=el.querySelector('.bt');
+  if(p.error){el.querySelector('.k').textContent='Update failed';b.textContent=p.error.slice(0,160);s.textContent='Details are in update.log next to your data file (Settings → Data & sync → Show folder).';
+    bt.innerHTML='<button data-b="later">Close</button><button class="ok" data-b="go">Try again</button>';bt.querySelector('[data-b="later"]').onclick=()=>dismissBanner(el);bt.querySelector('[data-b="go"]').onclick=()=>{dismissBanner(el);installUpdate(null)};return}
+  bt.innerHTML='';el.querySelector('.k').textContent='Updating';
+  if(p.installing){b.textContent='Installing…';s.textContent='Sundial closes for a moment and comes back on the new version.';return}
+  const pct=typeof p.pct==='number'&&p.pct>=0?p.pct:null;b.textContent=pct==null?'Downloading…':'Downloading… '+pct+'%';s.textContent=updateInfo?'Sundial '+updateInfo.version:''}
 function syncHotkeys(){const D=window.SundialDesktop;if(!D)return;D.setHotkeys({quick:S().quick.hotkey,voice:S().voice.enabled?S().voice.hotkey:null}).then(failed=>{globalHotkeys=!(failed&&failed.length);if(failed&&failed.length)toast('Hotkey taken by another app: '+failed.join(', '))}).catch(()=>{globalHotkeys=false})}
 function refreshAiKey(){const D=window.SundialDesktop;if(D)D.secret.get('ai:'+S().ai.provider).then(v=>{aiKeySaved=!!v;if(sheetTab==='ai')renderSheet()}).catch(()=>{});else aiKeySaved=!!S().ai.keyInBrowser}
 function desktopGeneralRows(){return `<div class="opt"><div>Updates<small>Sundial ${esc(appVersion||'')}. Checks on launch and every six hours, downloads in the background, and asks before restarting.${updateInfo?' <b>'+esc(updateInfo.version)+' is ready.</b>':''}</small></div><div class="ctl"><button class="tog" role="switch" data-tog="updates.auto" aria-checked="${!!S().updates.auto}"></button>${updateInfo?'<button class="btn" data-run="updateInstall">Restart to update</button>':'<button class="btn" data-run="updateCheck">Check now</button>'}</div></div>`
@@ -736,7 +748,7 @@ function tick(){
 async function init(){
   const D=window.SundialDesktop;
   if(D){try{const raw=await D.load();if(raw)hydrate(raw);else save()}catch(e){console.error('load failed',e)}
-    D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});D.on('sundial://deep-link',e=>deepLink(e.payload));syncHotkeys();
+    D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});D.on('sundial://deep-link',e=>deepLink(e.payload));D.on('sundial://update-progress',e=>updateProgress(e.payload||{}));syncHotkeys();
     D.appVersion().then(v=>{appVersion=v}).catch(()=>{});setTimeout(()=>checkUpdates(false),4000);setInterval(()=>checkUpdates(false),6*3600*1000)}
   applyTheme();applyDensity();applyLayout();SFX.setVolume(S().sounds.volume);render();updateLogo();
   Sync.on(()=>{if($('.sheet-host')&&sheetTab==='data')renderSheet()});Sync.start();

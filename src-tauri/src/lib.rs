@@ -5,7 +5,14 @@
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{fs, path::PathBuf, sync::Mutex};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+};
 use tauri_plugin_updater::UpdaterExt;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -377,17 +384,66 @@ async fn update_check(app: AppHandle, pending: tauri::State<'_, PendingUpdate>) 
     }
 }
 
+/// Appends one line to update.log next to the data file, so a failed update can be diagnosed afterwards.
+fn ulog(app: &AppHandle, line: &str) {
+    if let Ok(dir) = data_dir(app) {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(dir.join("update.log")) {
+            use std::io::Write;
+            let _ = writeln!(f, "{stamp} {line}");
+        }
+    }
+}
+
 #[tauri::command]
 async fn update_install(app: AppHandle, pending: tauri::State<'_, PendingUpdate>) -> Result<(), String> {
-    let update = pending.0.lock().map_err(|e| e.to_string())?.take();
+    // Cloned, not taken: a failed attempt must not turn every later click into "no update checked".
+    let update = pending.0.lock().map_err(|e| e.to_string())?.clone();
     let Some(update) = update else {
         return Err("No update has been checked yet".to_string());
     };
-    update
-        .download_and_install(|_chunk, _total| {}, || {})
-        .await
-        .map_err(|e| e.to_string())?;
-    app.restart()
+    ulog(&app, &format!("install {} from {} (running {})", update.version, update.download_url, app.package_info().version));
+    let progress_app = app.clone();
+    let mut downloaded: u64 = 0;
+    let mut last_pct: i64 = -1;
+    let finish_app = app.clone();
+    let result = update
+        .download_and_install(
+            move |chunk, total| {
+                downloaded += chunk as u64;
+                let pct = total.map(|t| if t > 0 { (downloaded * 100 / t) as i64 } else { -1 }).unwrap_or(-1);
+                if pct != last_pct {
+                    last_pct = pct;
+                    let _ = progress_app.emit("sundial://update-progress", json!({ "downloaded": downloaded, "total": total, "pct": pct }));
+                }
+            },
+            move || {
+                ulog(&finish_app, "download complete, starting the installer");
+                let _ = finish_app.emit("sundial://update-progress", json!({ "pct": 100, "installing": true }));
+                // From here on nothing may keep the process alive: the installer has to replace the exe.
+                QUITTING.store(true, Ordering::SeqCst);
+                drop(finish_app.remove_tray_by_id("main"));
+            },
+        )
+        .await;
+    match result {
+        Ok(()) => {
+            // On Windows the updater normally ends the process itself once the installer is running. If it did not,
+            // leave now: the installer relaunches Sundial when it is done, and a restarted old copy would only get killed.
+            ulog(&app, "installer launched; exiting so it can replace the files");
+            quit(&app);
+            Ok(())
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            ulog(&app, &format!("failed: {msg}"));
+            QUITTING.store(false, Ordering::SeqCst);
+            if app.tray_by_id("main").is_none() {
+                let _ = build_tray_handle(&app);
+            }
+            Err(msg)
+        }
+    }
 }
 
 // ---------- corner toasts (Steam-style notification window) ----------
@@ -417,6 +473,9 @@ fn open_toast_window(app: &AppHandle, payload: &Value) -> Result<(), String> {
     let taskbar = 52.0; // room for a bottom taskbar; the toast sits just above it
     let x = if corner.ends_with("left") { mp.x + margin } else { mp.x + ms.width - TOAST_W - margin };
     let y = if corner.starts_with("top") { mp.y + margin } else { mp.y + ms.height - TOAST_H - taskbar - margin };
+    if let Some(old) = app.get_webview_window("toast") {
+        let _ = old.destroy();
+    }
     tauri::WebviewWindowBuilder::new(app, "toast", tauri::WebviewUrl::App("toast.html".into()))
         .title("Sundial notification")
         .inner_size(TOAST_W, TOAST_H)
@@ -506,6 +565,24 @@ fn deep_link_pending(state: tauri::State<'_, DeepLinks>) -> Result<Option<String
     Ok(state.0.lock().map_err(|e| e.to_string())?.take())
 }
 
+/// Set while the app is on its way out, so the close-to-tray handler stops holding windows open.
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// Quit for real: tray icon gone (Windows otherwise keeps a ghost icon until the next mouse-over), every window
+/// destroyed without a close request, the event loop asked to stop, and a watchdog in case it does not.
+fn quit(app: &AppHandle) {
+    QUITTING.store(true, Ordering::SeqCst);
+    drop(app.remove_tray_by_id("main"));
+    for (_, w) in app.webview_windows() {
+        let _ = w.destroy();
+    }
+    app.exit(0);
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        std::process::exit(0);
+    });
+}
+
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -515,6 +592,10 @@ fn show_main(app: &AppHandle) {
 }
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    build_tray_handle(app.handle())
+}
+
+fn build_tray_handle(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Sundial", true, None::<&str>)?;
     let quick = MenuItem::with_id(app, "quick", "Quick add", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Sundial", true, None::<&str>)?;
@@ -529,7 +610,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 show_main(app);
                 let _ = app.emit("sundial://quick-add", ());
             }
-            "quit" => app.exit(0),
+            "quit" => quit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -585,8 +666,10 @@ pub fn run() {
         // The close button hides to the tray so reminders keep firing; Quit lives in the tray menu.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                if window.label() == "main" && !QUITTING.load(Ordering::SeqCst) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
