@@ -1,6 +1,12 @@
-# One-time: generates the updater signing keypair. Runs when the `.keygen` file changes (or by hand).
-# The PUBLIC key is committed to src-tauri/updater.pub. The PRIVATE key is only uploaded as a run
-# artifact (visible to repo collaborators only) so it can be pasted into the TAURI_SIGNING_PRIVATE_KEY secret.
+# Generates the updater signing keypair. Runs when the `.keygen` file changes (or by hand).
+#
+# The private key never leaves this run in readable form. It is written encrypted with the password
+# in the TAURI_UPDATER_KEY_PASSWORD secret (scrypt, as minisign does) and committed as
+# src-tauri/updater.key; build.yml decrypts it with the same secret. The public key goes to
+# src-tauri/updater.pub and tauri.conf.json, which every installed copy uses to check updates.
+#
+# Nothing is uploaded as an artifact: on a public repo, any signed-in GitHub user can download artifacts.
+# Generation 1 made that mistake; its key was deleted and replaced by generation 2.
 name: keygen
 
 on:
@@ -17,28 +23,46 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Require the key password secret
+        env:
+          PASS: ${{ secrets.TAURI_UPDATER_KEY_PASSWORD }}
+        run: |
+          if [ "${#PASS}" -lt 24 ]; then
+            echo "::error::Add a repository secret TAURI_UPDATER_KEY_PASSWORD (24+ random characters) first."
+            exit 1
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - run: npm install
 
-      - name: Generate keypair
-        run: npx tauri signer generate -w "$RUNNER_TEMP/sundial-updater.key" --password "" --ci
-
-      - name: Commit the public key
+      - name: Generate the encrypted keypair
+        env:
+          PASS: ${{ secrets.TAURI_UPDATER_KEY_PASSWORD }}
         run: |
-          cp "$RUNNER_TEMP/sundial-updater.key.pub" src-tauri/updater.pub
-          echo "Public key:"; cat src-tauri/updater.pub; echo
+          npx tauri signer generate -w "$RUNNER_TEMP/updater.key" --password "$PASS" --ci
+          # the key file must be the encrypted form: refuse to commit anything else
+          head -c 200 "$RUNNER_TEMP/updater.key" | base64 -d 2>/dev/null | head -n1 | grep -q "encrypted secret key" \
+            || { echo "::error::generated key is not encrypted; nothing committed"; exit 1; }
+
+      - name: Commit the encrypted key and the public key
+        run: |
+          cp "$RUNNER_TEMP/updater.key" src-tauri/updater.key
+          cp "$RUNNER_TEMP/updater.key.pub" src-tauri/updater.pub
+          python3 - <<'PY'
+          import re
+          p = "src-tauri/tauri.conf.json"
+          s = open(p).read()
+          new = open("src-tauri/updater.pub").read().strip()
+          s, n = re.subn(r'("pubkey":\s*")[^"]*(")', lambda m: m.group(1) + new + m.group(2), s)
+          assert n == 1, "expected exactly one pubkey in tauri.conf.json"
+          open(p, "w").write(s)
+          PY
+          echo "New public key:"; cat src-tauri/updater.pub; echo
           git config user.name "sundial-bot"
           git config user.email "sundial-bot@users.noreply.github.com"
-          git add src-tauri/updater.pub
-          git commit -m "Updater public key [skip ci]" || echo "public key unchanged"
+          git add src-tauri/updater.key src-tauri/updater.pub src-tauri/tauri.conf.json
+          git commit -m "Updater keypair, generation $(grep -o '[0-9]\+' .keygen | tail -n1) (private key encrypted) [skip ci]"
           git push
-
-      - name: Upload the private key (collaborators only)
-        uses: actions/upload-artifact@v4
-        with:
-          name: sundial-updater-private-key
-          path: ${{ runner.temp }}/sundial-updater.key
-          retention-days: 7
