@@ -5,9 +5,9 @@
 const Sync=(()=>{
   const PROTO=1;
   const HOSTED_URL='https://sync.sundial.services';
-  let key=null,timer=null,running=false,queued=false,applying=false;const listeners=[];
-  const fresh=()=>({mode:'off',server:'',token:'',accountId:'',email:'',salt:'',cursor:0,dirty:{},lastSync:0,lastError:'',keyOk:false});
-  const st=()=>{if(!state.sync)state.sync=fresh();if(!state.sync.dirty)state.sync.dirty={};return state.sync};
+  let key=null,timer=null,running=false,queued=false,applying=false,gen=0;const listeners=[];
+  const fresh=()=>({mode:'off',server:'',token:'',accountId:'',email:'',salt:'',cursor:0,dirty:{},lastSync:0,lastError:'',keyOk:false,epoch:0,rejected:{}});
+  const st=()=>{if(!state.sync)state.sync=fresh();if(!state.sync.dirty)state.sync.dirty={};if(!state.sync.rejected)state.sync.rejected={};return state.sync};
   const te=new TextEncoder(),td=new TextDecoder();
   const b64=u8=>{let s='';for(const b of u8)s+=String.fromCharCode(b);return btoa(s)};
   const unb64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
@@ -23,20 +23,36 @@ const Sync=(()=>{
   async function dec(kind,id,nonceB,ctB){const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(nonceB),additionalData:aad(kind,id)},key,unb64(ctB));return JSON.parse(td.decode(pt))}
 
   // ----- http -----
-  async function api(path,body,method,token){const s=st();const tk=token===undefined?s.token:token;
-    const r=await fetch(s.server.replace(/\/+$/,'')+path,{method:method||(body?'POST':'GET'),headers:{'content-type':'application/json',...(tk?{authorization:'Bearer '+tk}:{})},body:body?JSON.stringify(body):undefined});
-    if(r.status===204)return null;const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
+  // Errors carry the HTTP status and a message a person can act on; raw server words never reach the screen.
+  function friendly(status,serverMsg,ctx){
+    if(status===0)return 'Cannot reach the sync server. Check your connection and try again.';
+    if(status===401)return ctx==='code'?'That code did not work. Codes last 10 minutes and work once. Send a new one.':ctx==='sync'?'Signed out of sync. Sign in again to resume.':'Not signed in.';
+    if(status===429)return ctx==='code'?'Too many attempts. Wait a while, then send a new code.':'The server asked us to slow down. It will retry in a minute.';
+    if(status===404&&ctx==='code')return 'Email sign-in is not switched on for this server yet.';
+    if(status===503)return serverMsg||'The server could not send the email right now. Try again in a few minutes.';
+    if(status>=500)return 'The sync server had a problem (HTTP '+status+'). Nothing was lost; it will retry.';
+    return serverMsg||('HTTP '+status);
+  }
+  async function api(path,body,method,token,ctx){const s=st();const tk=token===undefined?s.token:token;let r;
+    try{r=await fetch(s.server.replace(/\/+$/,'')+path,{method:method||(body?'POST':'GET'),headers:{'content-type':'application/json',...(tk?{authorization:'Bearer '+tk}:{})},body:body?JSON.stringify(body):undefined})}
+    catch(e){const err=new Error(friendly(0,'',ctx));err.status=0;throw err}
+    if(r.status===204)return null;const j=await r.json().catch(()=>({}));
+    if(!r.ok){const err=new Error(friendly(r.status,j.error,ctx));err.status=r.status;throw err}return j}
 
   // ----- dirty tracking (called from data.js / ui.js on every local change) -----
-  function markDirty(id){if(applying)return;const s=st();s.dirty[id]=1;if(s.mode!=='off'&&key)schedule(2000)}
-  function markAllDirty(){const s=st();for(const t of state.tasks)s.dirty['task:'+t.id]=1;for(const id in state.tombstones)s.dirty['task:'+id]=1;for(const d in state.notes)s.dirty['note:'+d]=1;s.dirty.labels=1;s.dirty.routines=1}
+  // Each mark carries a generation number, so an edit made while a request is in flight stays dirty afterwards.
+  function markDirty(id){if(applying)return;const s=st();s.dirty[id]=++gen;delete s.rejected[id];if(s.mode!=='off'&&key)schedule(2000)}
+  // Only things this device actually has: untouched defaults (labels never renamed, no routines, no note) must never
+  // travel, or a brand-new second PC would overwrite the first one's.
+  function markAllDirty(){const s=st();for(const t of state.tasks)s.dirty['task:'+t.id]=++gen;for(const id in state.tombstones)s.dirty['task:'+id]=++gen;
+    for(const d in state.notes)if(state.notesTs[d]>0)s.dirty['note:'+d]=++gen;if(state.labelsTs>0)s.dirty.labels=++gen;if(state.routinesTs>0)s.dirty.routines=++gen}
 
   // ----- documents -----
   function buildDoc(did){
-    if(did.startsWith('task:')){const id=did.slice(5);const t=get(id);if(t)return {kind:'task',id,updated_at:t.updatedAt||Date.now(),deleted:false,body:t};const ts=state.tombstones[id];return ts?{kind:'task',id,updated_at:ts,deleted:true,body:null}:null}
-    if(did.startsWith('note:')){const d=did.slice(5);const has=!!state.notes[d];return {kind:'note',id:d,updated_at:state.notesTs[d]||Date.now(),deleted:!has,body:has?{html:state.notes[d]}:null}}
-    if(did==='labels')return {kind:'labels',id:'labels',updated_at:state.labelsTs||Date.now(),deleted:false,body:state.labels};
-    if(did==='routines')return {kind:'routines',id:'routines',updated_at:state.routinesTs||Date.now(),deleted:false,body:state.routines};
+    if(did.startsWith('task:')){const id=did.slice(5);const t=get(id);if(t)return {kind:'task',id,updated_at:t.updatedAt||t.createdAt||0,deleted:false,body:t};const ts=state.tombstones[id];return ts?{kind:'task',id,updated_at:ts,deleted:true,body:null}:null}
+    if(did.startsWith('note:')){const d=did.slice(5);const has=!!state.notes[d];const ts=state.notesTs[d]||0;if(!ts)return null;return {kind:'note',id:d,updated_at:ts,deleted:!has,body:has?{html:state.notes[d]}:null}}
+    if(did==='labels'){if(!state.labelsTs)return null;return {kind:'labels',id:'labels',updated_at:state.labelsTs,deleted:false,body:state.labels}}
+    if(did==='routines'){if(!state.routinesTs)return null;return {kind:'routines',id:'routines',updated_at:state.routinesTs,deleted:false,body:state.routines}}
     return null;
   }
   async function applyDoc(d){
@@ -58,39 +74,52 @@ const Sync=(()=>{
   async function syncNow(){const s=st();if(s.mode==='off'||!s.server||!s.token||!key)return false;
     if(running){queued=true;return false}running=true;emit('start');
     try{
-      const dirtyIds=Object.keys(s.dirty);const docs=[];
-      for(const did of dirtyIds){const d=buildDoc(did);if(!d)continue;const e=d.deleted?{nonce:'',ct:''}:await enc(d.kind,d.id,d.body);docs.push({id:d.id,kind:d.kind,updated_at:d.updated_at,deleted:d.deleted,nonce:e.nonce,ct:e.ct})}
+      const snapshot={...s.dirty};const docs=[];
+      for(const did in snapshot){const d=buildDoc(did);if(!d){delete s.dirty[did];continue}const e=d.deleted?{nonce:'',ct:''}:await enc(d.kind,d.id,d.body);docs.push({id:d.id,kind:d.kind,updated_at:d.updated_at,deleted:d.deleted,nonce:e.nonce,ct:e.ct})}
       let cursor=s.cursor||0,more=true,first=true,changed=false;
-      while(more){const res=await api('/v1/sync',{protocol:PROTO,device_id:state.device,cursor,docs:first?docs:[]});first=false;
+      while(more){const res=await api('/v1/sync',{protocol:PROTO,device_id:state.device,cursor,docs:first?docs:[]},'POST',undefined,'sync');
+        if(first){for(const r of res.rejected||[]){const did=(r.kind==='task'?'task:':r.kind==='note'?'note:':'')+r.id;s.rejected[did]=r.reason||'rejected'}}
+        first=false;
+        // The server was restored from a backup: forget our place in its history and offer everything again.
+        if(res.epoch&&s.epoch&&res.epoch!==s.epoch){s.epoch=res.epoch;s.cursor=0;markAllDirty();save();running=false;return syncNow()}
+        if(res.epoch)s.epoch=res.epoch;
         applying=true;try{for(const d of res.docs||[]){try{if(await applyDoc(d))changed=true}catch(e){console.warn('sync: could not apply',d.kind,d.id,e.message||e)}}}finally{applying=false}
         cursor=res.cursor;more=!!res.more}
-      for(const did of dirtyIds)delete s.dirty[did];
+      for(const did in snapshot)if(s.dirty[did]===snapshot[did])delete s.dirty[did];
       s.cursor=cursor;s.lastSync=Date.now();s.lastError='';save();
       if(changed&&typeof render==='function')render();
       emit('ok');return true;
-    }catch(e){s.lastError=e.message||String(e);save();emit('error');return false}
+    }catch(e){
+      if(e.status===401){await signOutLocal('This PC was signed out of sync: the account was reset or removed. Your days are still here. Sign in again to resume.');emit('signedout');return false}
+      s.lastError=e.message||String(e);save();emit('error');return false}
     finally{running=false;if(queued){queued=false;schedule(800)}}
   }
   function schedule(ms){clearTimeout(timer);timer=setTimeout(()=>{syncNow().catch(()=>{})},ms)}
 
   // ----- setup flows -----
   async function health(server){const s=st();const keep=s.server;s.server=server;try{return await api('/v1/health',null,'GET','')}finally{s.server=keep}}
-  async function requestCode(server,email){const s=st();s.server=(server||HOSTED_URL).trim();save();try{await api('/v1/auth/request',{email},'POST','')}catch(e){if(/self-hosted|HTTP 404/.test(e.message||''))throw new Error('Email sign-in is not switched on for this server yet');throw e}}
-  async function verifyCode(email,code){const s=st();const r=await api('/v1/auth/verify',{email,code:String(code).trim(),device:{id:state.device,name:deviceName(),platform:navigator.platform}},'POST','');
-    Object.assign(s,{token:r.token,accountId:r.account_id,salt:r.salt,email,mode:'hosted',plan:r.plan||'beta',cursor:0,keyOk:false,lastError:''});save()}
+  async function requestCode(server,email){const s=st();s.server=(server||HOSTED_URL).trim();save();await api('/v1/auth/request',{email},'POST','','code')}
+  async function verifyCode(email,code){const s=st();const r=await api('/v1/auth/verify',{email,code:String(code).replace(/\D/g,''),device:{id:state.device,name:deviceName(),platform:navigator.platform}},'POST','','code');
+    Object.assign(s,{token:r.token,accountId:r.account_id,salt:r.salt,email,mode:'hosted',plan:r.plan||'beta',cursor:0,keyOk:false,lastError:'',epoch:0,rejected:{}});save()}
   async function connectSelf(server,token){const s=st();s.server=server.trim();const r=await api('/v1/account',null,'GET',token.trim());
-    Object.assign(s,{token:token.trim(),accountId:r.account_id,salt:r.salt,email:'',mode:'self',plan:r.plan||'',cursor:0,keyOk:false,lastError:''});save()}
+    Object.assign(s,{token:token.trim(),accountId:r.account_id,salt:r.salt,email:'',mode:'self',plan:r.plan||'',cursor:0,keyOk:false,lastError:'',epoch:0,rejected:{}});save()}
+  // Does this account already have a passphrase (a keycheck document)? Decides between "create" and "enter".
+  async function checkAccount(){const res=await api('/v1/sync',{protocol:PROTO,device_id:state.device,cursor:0,docs:[]},'POST',undefined,'sync');return {existing:!!(res.docs||[]).find(d=>d.kind==='keycheck'),docs:(res.docs||[]).length}}
   // First device: creates the keycheck. Later devices: must decrypt it, or the passphrase is wrong.
   async function setPassphrase(pass){const s=st();if(!pass||pass.length<8)throw new Error('Use at least 8 characters');key=await deriveKey(pass,s.salt);
-    const res=await api('/v1/sync',{protocol:PROTO,device_id:state.device,cursor:0,docs:[]});const kc=(res.docs||[]).find(d=>d.kind==='keycheck');
-    if(kc){let ok=false;try{const v=await dec('keycheck','keycheck',kc.nonce,kc.ct);ok=!!(v&&v.ok&&v.account===s.accountId)}catch(e){ok=false}if(!ok){key=null;throw new Error('That passphrase does not match this account')}}
-    else{const e=await enc('keycheck','keycheck',{ok:true,account:s.accountId});await api('/v1/sync',{protocol:PROTO,device_id:state.device,cursor:0,docs:[{id:'keycheck',kind:'keycheck',updated_at:Date.now(),deleted:false,nonce:e.nonce,ct:e.ct}]})}
-    await storeKey();s.keyOk=true;markAllDirty();save();schedule(300);return !kc}
-  async function signOut(){await forgetKey();const s=st();Object.assign(s,fresh(),{server:s.server});save();emit('ok')}
-  async function deleteAccount(){await api('/v1/account',null,'DELETE');await signOut()}
+    const res=await api('/v1/sync',{protocol:PROTO,device_id:state.device,cursor:0,docs:[]},'POST',undefined,'sync');const kc=(res.docs||[]).find(d=>d.kind==='keycheck');
+    if(kc){let ok=false;try{const v=await dec('keycheck','keycheck',kc.nonce,kc.ct);ok=!!(v&&v.ok&&v.account===s.accountId)}catch(e){ok=false}if(!ok){key=null;throw new Error('That is not the passphrase for this account. Check Caps Lock and try again.')}
+      // Joining an account that already has days in it: the starter examples of a fresh install must not travel.
+      state.tasks=state.tasks.filter(t=>!t.example);}
+    else{const e=await enc('keycheck','keycheck',{ok:true,account:s.accountId});await api('/v1/sync',{protocol:PROTO,device_id:state.device,cursor:0,docs:[{id:'keycheck',kind:'keycheck',updated_at:Date.now(),deleted:false,nonce:e.nonce,ct:e.ct}]},'POST',undefined,'sync')}
+    await storeKey();s.keyOk=true;s.cursor=0;markAllDirty();save();schedule(300);return !kc}
+  async function signOutLocal(msg){await forgetKey();const s=st();Object.assign(s,fresh(),{server:s.server,lastError:msg||''});save()}
+  async function signOut(){const s=st();if(s.mode==='hosted'&&s.token){try{await api('/v1/auth/logout',{},'POST')}catch(e){}}await signOutLocal('');emit('ok')}
+  // Erases the synced copy (every document, every device's access). Local data on every PC stays.
+  async function deleteAccount(code){const s=st();await api('/v1/account',s.mode==='hosted'?{code:String(code||'').replace(/\D/g,'')}:null,'DELETE',undefined,'code');await signOutLocal('');emit('ok')}
   function deviceName(){return (navigator.userAgentData&&navigator.userAgentData.platform||navigator.platform||'device')+' · '+(window.SundialDesktop?'desktop':'browser')}
   const emit=ev=>listeners.forEach(f=>{try{f(ev)}catch(e){}});
   function start(){st();loadKey().then(ok=>{if(ok&&st().mode!=='off'){schedule(1500);setInterval(()=>schedule(0),5*60*1000);addEventListener('online',()=>schedule(0))}})}
-  return {st,markDirty,markAllDirty,syncNow,schedule,health,requestCode,verifyCode,connectSelf,setPassphrase,signOut,deleteAccount,start,HOSTED_URL,
-    hasKey:()=>!!key,isRunning:()=>running,pending:()=>Object.keys(st().dirty).length,on:f=>listeners.push(f)};
+  return {st,markDirty,markAllDirty,syncNow,schedule,health,requestCode,verifyCode,connectSelf,checkAccount,setPassphrase,signOut,deleteAccount,start,HOSTED_URL,
+    hasKey:()=>!!key,isRunning:()=>running,pending:()=>Object.keys(st().dirty).length,rejected:()=>Object.keys(st().rejected).length,on:f=>listeners.push(f)};
 })();

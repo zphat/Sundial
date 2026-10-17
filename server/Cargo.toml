@@ -1,6 +1,6 @@
 [package]
 name = "sundial-sync"
-version = "0.1.2"
+version = "0.1.3"
 description = "Sundial Sync server: an end-to-end-encrypted document mailbox (protocol v1)"
 edition = "2021"
 license = "AGPL-3.0-only"
@@ -18,6 +18,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 subtle = "2"
+sha2 = "0.10"
 
 [profile.release]
 lto = true

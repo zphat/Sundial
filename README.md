@@ -1,51 +1,42 @@
 # Sundial
 
-Days · tasks · notes. A calendar and to-do app that is fast enough to actually use.
-"Sundial" is a placeholder name until a final one is chosen.
+Sundial is a calendar, a task list and a page of notes for each day, in one window. It is fast, and it works without an internet connection. Everything you type is saved on your own PC. It runs on Windows only, and it is a beta: expect rough edges, and say so when you find them.
 
-Live prototype (same link every version): https://claude.ai/artifact/HzhVqj4tbdPWainYbfEDBt
-Source and builds: https://github.com/zphat/Sundial
+## Download for Windows
 
-## Getting the Windows installer
+**[Download Sundial-Setup.exe](https://github.com/zphat/Sundial/releases/latest/download/Sundial-Setup.exe)**
 
-Every push to `main` builds `Sundial_<version>_x64-setup.exe` on GitHub:
-Actions tab → latest "build" run → Artifacts → `Sundial-windows-installer`.
-Tagged versions (`v0.1.0` …) also appear under Releases with the installer attached.
-The installer is unsigned for now, so Windows shows "unrecognized app" once: More info → Run anyway.
+Sundial isn't signed with a paid certificate yet, so Windows doesn't know it. The first time, you may see two warnings:
 
-## What is here
+1. Edge may say the file "isn't commonly downloaded". Choose **Keep**, then **Show more**, then **Keep anyway**.
+2. Windows may show a blue box titled "Windows protected your PC". Click **More info**, then **Run anyway**.
 
-- `ui/` — the whole app as it runs today. Open `ui/sundial.html` through a local server
-  (not double-click; the scripts need http). Files: `sundial.html` (shell), `styles.css`,
-  `data.js` (state, parser, undo, oplog, recurrence, reminders, import/export),
-  `audio.js` (synthesized sounds + voice capture), `ui.js` (rendering, events, banners, settings, search).
+The warning means Windows hasn't seen this app before. It isn't a virus detection. The installer needs no admin password and installs for your user only. Updates are signed and install on their own.
 
-## Decisions so far (2026-10-12)
+If Windows says Smart App Control blocked the file, there's no Run anyway button. Don't change any settings. That PC can't run Sundial until a signed build exists.
 
-- Desktop first (Windows), then web + mobile companions. Same UI code everywhere.
-- Desktop shell: **Tauri 2** = a small native wrapper around the `ui/` files that produces a
-  normal `Sundial-Setup.exe` (and later `.dmg`, iOS/Android). ~6 MB, uses the WebView2 engine
-  already on Windows 11.
-- Local-first. No account needed, ever. Optional paid "Sundial Sync" later, plus a free
-  "bring your own server" option. Open-source candidate (Obsidian-style: free app, paid sync).
-- AI parsing: optional, user supplies their own API key (Anthropic or OpenAI-compatible).
-- Sync readiness is already in the data layer: UUIDs, `updatedAt`, device id, append-only
-  change log (`oplog`), tombstones for deletes, newest-wins merge on import.
+## Where your data lives
 
-## Next session: build the Windows app
+Everything is one file: `%APPDATA%\app.sundial.desktop\sundial.json`. Paste `%APPDATA%pp.sundial.desktop` into the File Explorer address bar to open the folder. Next to the file, a `backups` folder keeps one copy for each day you used Sundial, the newest 30. Your tasks and notes don't leave your PC unless you turn Sync on. On its own the app only contacts github.com to check for updates and Google for its fonts; [PRIVACY.md](PRIVACY.md) lists everything.
 
-Machine check done on 2026-10-12: WebView2 present, git present, **no Rust, no C++ Build Tools,
-no Node, no winget**. Two one-time installs are needed before the first `.exe`:
+## Sync (optional)
 
-1. Microsoft C++ Build Tools (~6 GB, admin prompt): https://aka.ms/vs/17/release/vs_BuildTools.exe
-   with the "Desktop development with C++" workload.
-2. Rust via rustup (~1 GB, no admin): https://win.rustup.rs/x86_64
+Sync keeps the same days on more than one Windows PC. You sign in with your email and a six-digit code, then choose a passphrase.
 
-Alternative with zero local installs: GitHub Actions builds the `.exe` on every push.
+Your tasks and notes are encrypted on your PC with that passphrase before they're sent. The server, in Switzerland, holds your email address, the names of your PCs and encrypted data it can't read.
 
-Then: `cargo install tauri-cli --version "^2"`, scaffold `src-tauri/` (storage in
-`%APPDATA%\Sundial\sundial.json` with daily backups, tray icon, close-to-tray, system-wide
-`Ctrl+Space` quick add, native notifications, start-with-Windows, API keys in Windows
-Credential Manager, auto-update plumbing), `cargo tauri build` → `src-tauri/target/release/bundle/nsis/`.
+Nobody can recover the passphrase, including us. Lose it and the synced copy can't be opened; the data on your PCs is untouched.
 
-Code signing (so Windows doesn't warn on install): Azure Trusted Signing (~$10/mo) when ready to share.
+Sync is free during the beta. After that it's $2.49 a month or $19.99 a year, and beta accounts keep $9.99 a year for as long as they stay subscribed. No card is asked for today.
+
+What the server stores is written up in [PRIVACY.md](PRIVACY.md). You can also run your own server, see [server/README.md](server/README.md).
+
+## Feedback
+
+Open an issue at https://github.com/zphat/Sundial/issues. Say what you did, what you expected and what happened; the version number is in Settings. An email address for feedback is coming. Issues are public, so keep private details out of them.
+
+## For developers
+
+Repo layout, build and release notes: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Sync protocol: [docs/SYNC-PROTOCOL.md](docs/SYNC-PROTOCOL.md).
+
+The app (everything outside `server/`) is MIT licensed, see [LICENSE](LICENSE). The sync server in `server/` is AGPL-3.0, see [server/LICENSE](server/LICENSE).

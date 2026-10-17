@@ -684,6 +684,8 @@ pub fn run() {
                 if window.label() == "main" && !QUITTING.load(Ordering::SeqCst) {
                     api.prevent_close();
                     let _ = window.hide();
+                    // the UI shows a one-time "still running in the tray" note
+                    let _ = window.emit("sundial://hidden", ());
                 }
             }
         })

@@ -72,11 +72,13 @@ function openDrawerEl(dr,instant){
   dr.addEventListener('transitionend',release,{once:true});setTimeout(release,320);
 }
 function collapseDrawerEl(dr){dr.classList.add('instant');dr.style.height=dr.offsetHeight+'px';void dr.offsetHeight;dr.classList.remove('instant','on');dr.style.height='0px'}
-let lastView=null,lastSel=null,sheetAnim=false;
-function render(){
+let lastView=null,lastSel=null,sheetAnim=false,viewInT=null;
+// Redraws are whole-pane innerHTML swaps; keep the user's scroll positions so nothing jumps.
+function render(){const keepList=$('#list')?.scrollTop||0,cols=$('.cols'),keepCols=cols?cols.scrollTop:0;renderCore();const nl=$('#list');if(nl&&keepList)nl.scrollTop=keepList;if(cols&&keepCols)cols.scrollTop=keepCols}
+function renderCore(){
   snap();
   const wasOpen=document.querySelector('.drawer.on [data-drawer]')?.dataset.drawer;
-  const bp=$('#boardPane');if(view!==lastView){bp.classList.remove('view-in');void bp.offsetWidth;bp.classList.add('view-in');lastView=view}
+  const bp=$('#boardPane');if(view!==lastView){bp.classList.remove('view-in');void bp.offsetWidth;bp.classList.add('view-in');lastView=view;clearTimeout(viewInT);viewInT=setTimeout(()=>bp.classList.remove('view-in'),320)}
   if(sel!==lastSel){const te=$('#title');te.classList.remove('swap');void te.offsetWidth;te.classList.add('swap');lastSel=sel}
   const d=fromYmd(sel),ws=fromYmd(weekStart(sel));
   const ts=dayTasks(sel),done=ts.filter(x=>x.done).length;
@@ -216,11 +218,12 @@ function renderSide(){
   const side=$('#tlPane');const ts=dayTasks(sel);const timed=ts.filter(t=>t.time!=null),any=ts.filter(t=>t.time==null&&!t.done);
   const H0=0,H1=24,rows=H1-H0,hh=S().hh,m=nowMin(),today=sel===todayStr();
   let h=`<div class="pane-hd"><b>${relDay(sel)}${!today?' '+fromYmd(sel).getDate():''}</b><span class="eyebrow">${timed.length} timed · ${any.length} anytime</span><span class="hd-acts"><span class="zoom"><button data-zoom="-1" title="Zoom out">−</button><button data-zoom="1" title="Zoom in">+</button><button data-zoom="fit" title="Fit the whole day in view">⤢</button></span>${lockBtn('tl')}<button class="x" data-pane="tl" title="Hide pane">×</button></span></div><div class="tl">`;
-  if(any.length)h+=`<div class="anytime">${any.map(x=>`<span class="chip" data-id="${x.id}" data-act="open"><span class="swatch" style="--sw:var(--c-${x.color})"></span>${esc(x.title)}</span>`).join('')}</div>`;
+  // The anytime bank: tasks without a time. Drag one onto an hour to schedule it; drag a block back here to clear its time.
+  h+=`<div class="anytime ${any.length?'':'empty'}" data-bank="1">${any.length?any.map(x=>`<span class="chip" data-id="${x.id}" data-act="open" draggable="true" title="Drag onto an hour to give it a time"><span class="swatch" style="--sw:var(--c-${x.color})"></span>${esc(x.title)}</span>`).join(''):(timed.length?'<span class="hint">Anytime tasks sit here. Drop a block back to clear its time.</span>':'')}</div>`;
   h+=`<div class="hours" style="--rows:${rows};--hh:${hh}px">`;
   for(let i=0;i<rows;i++)h+=`<div class="h" data-hour="${H0+i}" style="top:${i*hh}px"><span>${fmtTime((H0+i)*60)}</span></div>`;
   for(const x of timed){const top=(x.time-H0*60)/60*hh;const hgt=Math.max(18,(x.dur||30)/60*hh-3);if(top<0||top>rows*hh)continue;const live=today&&!x.done&&m>=x.time&&m<x.time+(x.dur||30);
-    h+=`<div class="blk ${x.done?'done':''} ${live?'live':''} ${x.id===openId?'editing':''}" data-id="${x.id}" data-act="open" draggable="true" style="--sw:var(--c-${x.color});top:${top}px;height:${hgt}px">${esc(x.title)}${hgt>30?`<small>${fmtTime(x.time)}${x.dur?' · '+fmtDur(x.dur):''}</small>`:''}</div>`}
+    h+=`<div class="blk ${x.done?'done':''} ${live?'live':''} ${x.id===openId?'editing':''} ${anim.enter===x.id?'enter':''}" data-id="${x.id}" data-act="open" draggable="true" style="--sw:var(--c-${x.color});top:${top}px;height:${hgt}px">${esc(x.title)}${hgt>30?`<small>${fmtTime(x.time)}${x.dur?' · '+fmtDur(x.dur):''}</small>`:''}<span class="rz" data-rz="${x.id}" title="Drag to change how long it takes"></span></div>`}
   if(today&&m>=H0*60&&m<=H1*60)h+=`<div class="now" style="top:${(m-H0*60)/60*hh}px"><i>☉ ${fmtTime(m)}</i></div>`;
   const prev=side.querySelector('.tl');const keep=prev&&prev.dataset.date===sel&&prev.dataset.hh===String(hh)?prev.scrollTop:null;
   side.innerHTML=h+'</div></div>';
@@ -446,6 +449,7 @@ function toggleDone(id){
   render();
 }
 document.addEventListener('click',e=>{
+  if(suppressClick||e.target.closest('.rz'))return;
   const inMenu=e.target.closest('.menu');if(!inMenu)closeMenu();
   const b=e.target.closest('button,[data-act],[data-date]');if(!b)return;
   if(b.dataset.view){view=b.dataset.view;openId=null;render();return}
@@ -513,10 +517,21 @@ function runSetting(k,b){
   if(k==='syncConnect'){const url=($('#syncUrl')?.value||'').trim(),tok=$('#syncToken')?.value||'';if(!url||!tok){toast('Server URL and token, please');return}b.textContent='…';Sync.connectSelf(url,tok).then(()=>{syncRefresh();toast('Connected. Now set the passphrase.')}).catch(e=>{b.textContent='Connect';toast('Could not connect: '+(e.message||e))})}
   if(k==='syncAdvanced'){syncSetup.advanced=!syncSetup.advanced;syncRefresh()}
   if(k==='syncCode'){const url=($('#syncUrl')?.value||'').trim()||Sync.HOSTED_URL,em=($('#syncEmail')?.value||'').trim();if(!/.+@.+\..+/.test(em)){toast('Enter your email address');return}syncSetup.url=url;syncSetup.email=em;b.textContent='…';Sync.requestCode(url,em).then(()=>{syncSetup.codeSent=true;syncRefresh();toast('Code sent. Check your mail.')}).catch(e=>{b.textContent='Send code';toast(e.message||String(e))})}
-  if(k==='syncVerify'){const code=$('#syncCodeIn')?.value||'';Sync.verifyCode(syncSetup.email,code).then(()=>{syncSetup.codeSent=false;syncRefresh();toast('Signed in. Now set the passphrase.')}).catch(e=>toast(e.message||String(e)))}
-  if(k==='syncPass'){const p=$('#syncPass')?.value||'';b.textContent='…';Sync.setPassphrase(p).then(created=>{syncRefresh();toast(created?'Passphrase set. Syncing.':'Unlocked. Syncing.')}).catch(e=>{b.textContent='Unlock';toast(e.message||String(e))})}
+  if(k==='syncVerify'){const code=$('#syncCodeIn')?.value||'';b.textContent='…';Sync.verifyCode(syncSetup.email,code).then(()=>{syncSetup.codeSent=false;syncSetup.existing=null;syncRefresh();toast('Signed in. One more step: the passphrase.')}).catch(e=>{b.textContent='Sign in';toast(e.message||String(e))})}
+  if(k==='syncShowPass'){syncSetup.showPass=!syncSetup.showPass;const a=$('#syncPass')?.value||'',b2=$('#syncPass2')?.value||'';syncRefresh();if($('#syncPass'))$('#syncPass').value=a;if($('#syncPass2'))$('#syncPass2').value=b2;passGate()}
+  if(k==='syncPass'){const p=$('#syncPass')?.value||'';const creating=syncSetup.existing===false;
+    if(creating){const p2=$('#syncPass2')?.value||'';if(p.length<8){toast('Use at least 8 characters');return}if(p!==p2){toast('The two passphrases do not match');return}if(!$('#syncWrote')?.checked){toast('Tick the box once you have written it down');return}}
+    const label=b.textContent;b.textContent='…';b.disabled=true;Sync.setPassphrase(p).then(created=>{syncSetup.existing=null;syncRefresh();toast(created?'Passphrase set. Syncing.':'Unlocked. Syncing.')}).catch(e=>{b.textContent=label;b.disabled=false;toast(e.message||String(e))})}
   if(k==='syncNow'){b.textContent='…';Sync.syncNow().finally(()=>syncRefresh())}
-  if(k==='syncOut'){Sync.signOut().then(()=>{syncRefresh();toast('Signed out of sync. Local data kept.')})}
+  if(k==='syncOut'){if(!syncSetup.outArmed){syncSetup.outArmed=true;syncRefresh();setTimeout(()=>{if(syncSetup.outArmed){syncSetup.outArmed=false;syncRefresh()}},4000);return}syncSetup.outArmed=false;Sync.signOut().then(()=>{syncRefresh();toast('Signed out of sync. Your days stay on this PC; signing back in needs your passphrase.')})}
+  if(k==='syncResetStart'){syncSetup.reset='ask';syncRefresh()}
+  if(k==='syncResetCancel'){syncSetup.reset=null;syncRefresh()}
+  if(k==='syncResetCode'){const s=Sync.st();b.textContent='…';Sync.requestCode(s.server,s.email).then(()=>{syncSetup.reset='code';syncRefresh()}).catch(e=>{b.textContent='Email me a code';toast(e.message||String(e))})}
+  if(k==='syncResetGo'){const s=Sync.st();const code=$('#syncResetIn')?.value||'';if(s.mode==='hosted'&&code.replace(/\D/g,'').length<6){toast('Enter the six-digit code from the email');return}b.textContent='…';b.disabled=true;const em=s.email;
+    Sync.deleteAccount(code).then(()=>{syncSetup.reset=null;syncSetup.existing=null;syncSetup.codeSent=false;syncSetup.email=em||syncSetup.email;syncRefresh();toast('Synced copy erased. Sign in again on the PC that has your days; they upload with the new passphrase.')}).catch(e=>{b.textContent='Erase and start over';b.disabled=false;toast(e.message||String(e))})}
+  if(k==='openNotes')openExternal('https://github.com/zphat/Sundial/releases/latest');
+  if(k==='openIssues')openExternal('https://github.com/zphat/Sundial/issues/new');
+  if(k==='openPrivacy')openExternal('https://github.com/zphat/Sundial/blob/main/PRIVACY.md');
   if(k==='obNext'){obStep=2;renderOnboarding()}
   if(k==='obBack'){obStep=1;renderOnboarding()}
   if(k==='obDone'){finishOnboarding(obStyle)}
@@ -568,7 +583,7 @@ document.addEventListener('input',e=>{
   if(t.dataset.ai){setPath(S(),'ai.'+t.dataset.ai,t.value.trim());save();return}
   if(t.dataset.rtName){const r=state.routines.find(x=>x.id===t.dataset.rtName);if(r){r.name=t.value;touchRoutines();save()}return}
   if(t.dataset.rtLines){const r=state.routines.find(x=>x.id===t.dataset.rtLines);if(r){r.lines=t.value.split('\n');touchRoutines();save()}return}
-  if(t.id==='syncUrl')syncSetup.url=t.value;if(t.id==='syncEmail')syncSetup.email=t.value;
+  if(t.id==='syncUrl')syncSetup.url=t.value;if(t.id==='syncEmail')syncSetup.email=t.value;if(t.id==='syncPass'||t.id==='syncPass2'||t.id==='syncWrote')passGate();
   if(!openId)return;const x=get(openId);if(!x)return;
   if(t.id==='edTitle'){upd(openId,{title:t.value},true);const row=document.querySelector(`.task[data-id="${openId}"] .t`);if(row)row.textContent=t.value}
   if(t.id==='edNotes')upd(openId,{notes:t.value},true);
@@ -615,8 +630,11 @@ document.addEventListener('keydown',e=>{
 function moveCursor(d){if(view!=='day'){view='day';render()}const ids=[...document.querySelectorAll('#list .task[data-id]')].map(x=>x.dataset.id);if(!ids.length)return;let i=ids.indexOf(cursorId);i=i<0?(d>0?0:ids.length-1):Math.max(0,Math.min(ids.length-1,i+d));cursorId=ids[i];document.querySelectorAll('#list .task').forEach(x=>x.classList.toggle('cursor',x.dataset.id===cursorId));document.querySelector(`.task[data-id="${cursorId}"]`)?.scrollIntoView({block:'nearest'})}
 
 // drag: reorder within list, drop on a day to move, drop on a timeline hour to schedule
-document.addEventListener('dragstart',e=>{const r=e.target.closest('[data-id]');if(!r||!get(r.dataset.id))return;dragId=r.dataset.id;r.classList.add('dragging');e.dataTransfer.effectAllowed='move';try{e.dataTransfer.setData('text/plain',dragId)}catch(_){}});
-document.addEventListener('dragend',()=>{dragId=null;document.querySelectorAll('.dragging,.over,.drop-before').forEach(x=>x.classList.remove('dragging','over','drop-before'))});
+let dragOff=0,rzState=null,suppressClick=false;
+document.addEventListener('dragstart',e=>{const r=e.target.closest('[data-id]');if(!r||!get(r.dataset.id))return;dragId=r.dataset.id;r.classList.add('dragging');e.dataTransfer.effectAllowed='move';try{e.dataTransfer.setData('text/plain',dragId)}catch(_){}
+  // a block keeps the point you grabbed it by, so it lands where it looks like it will
+  dragOff=r.classList.contains('blk')?(e.clientY-r.getBoundingClientRect().top)/S().hh*60:0});
+document.addEventListener('dragend',()=>{dragId=null;document.querySelectorAll('.dragging,.over,.drop-before,.drop-after').forEach(x=>{x.classList.remove('dragging','over','drop-before','drop-after');delete x.dataset.drop})});
 // Where a dragged row would land. Timed tasks keep their time order (the timeline is where a time changes), so a
 // drop among them means "top of the anytime group"; the lower half of a row means "after it".
 function dropTarget(row,y){const d=get(dragId),t=row?get(row.dataset.id):null;if(!d)return {};
@@ -628,18 +646,35 @@ function dropTarget(row,y){const d=get(dragId),t=row?get(row.dataset.id):null;if
   const rc=row.getBoundingClientRect();const after=y>rc.top+rc.height/2;
   if(!after)return {row,after:false,beforeId:t.id};
   const next=rows[rows.indexOf(row)+1];return {row,after:true,beforeId:next?next.dataset.id:null}}
-document.addEventListener('dragover',e=>{if(!dragId)return;const day=e.target.closest('[data-date],[data-dropdate]');const row=e.target.closest('.task');const hr=e.target.closest('.hours');const list=e.target.closest('#list');
-  if(day||row||hr||list){e.preventDefault();e.dataTransfer.dropEffect='move'}
+document.addEventListener('dragover',e=>{if(!dragId)return;const day=e.target.closest('[data-date],[data-dropdate]');const row=e.target.closest('.task');const hr=e.target.closest('.hours');const list=e.target.closest('#list');const bank=e.target.closest('.anytime');
+  if(day||row||hr||list||bank){e.preventDefault();e.dataTransfer.dropEffect='move'}
   document.querySelectorAll('.over,.drop-before,.drop-after').forEach(x=>x.classList.remove('over','drop-before','drop-after'));
+  if(hr){const y=e.clientY-hr.getBoundingClientRect().top;const mins=Math.max(0,Math.min(23*60+45,Math.round(((y/S().hh*60)-dragOff)/15)*15));hr.dataset.drop=fmtTime(mins);hr.style.setProperty('--drop',(mins/60*S().hh)+'px');hr.classList.add('over')}else{document.querySelectorAll('.hours.over').forEach(x=>{x.classList.remove('over');delete x.dataset.drop})}
+  if(bank){bank.classList.add('over');return}
+  if(hr)return;
   if(day&&!row){day.classList.add('over');return}
   if(row&&row.dataset.id===dragId)return;
   if(row||list){const tgt=dropTarget(row,e.clientY);if(tgt.blocked){e.dataTransfer.dropEffect='none';return}if(tgt.row)tgt.row.classList.add(tgt.after?'drop-after':'drop-before')}});
 document.addEventListener('drop',e=>{if(!dragId)return;e.preventDefault();const row=e.target.closest('.task');const day=e.target.closest('[data-date],[data-dropdate]');const hr=e.target.closest('.hours');
   const list=e.target.closest('#list');
-  if((row&&row.dataset.id!==dragId)||(list&&!row)){const tgt=dropTarget(row,e.clientY);if(tgt.blocked)toast('Timed tasks keep their time order. Drop it on the timeline to change the time, or clear the time first.');else if(!(row&&row.dataset.id===dragId))reorder(dragId,tgt.beforeId)}
+  // the hour grid and the anytime bank sit inside the timeline's date wrapper, so they are checked first
+  if(hr){const y=e.clientY-hr.getBoundingClientRect().top;const mins=Math.round(((y/S().hh*60)-dragOff)/15)*15;upd(dragId,{time:Math.max(0,Math.min(23*60+45,mins))});toast('Scheduled '+fmtTime(get(dragId).time),()=>{undo();render()})}
+  else if(e.target.closest('.anytime')){const t=get(dragId);if(t&&t.time!=null){upd(dragId,{time:null});toast('Back to anytime',()=>{undo();render()})}}
+  else if((row&&row.dataset.id!==dragId)||(list&&!row)){const tgt=dropTarget(row,e.clientY);if(tgt.blocked)toast('Timed tasks keep their time order. Drop it on the timeline to change the time, or clear the time first.');else if(!(row&&row.dataset.id===dragId))reorder(dragId,tgt.beforeId)}
   else if(day&&!row)moveTo(dragId,day.dataset.date||day.dataset.dropdate);
-  else if(hr){const y=e.clientY-hr.getBoundingClientRect().top;const mins=Math.round((y/S().hh*60)/15)*15;upd(dragId,{time:Math.max(0,Math.min(23*60+45,mins))});toast('Scheduled '+fmtTime(get(dragId).time))}
-  dragId=null;render()});
+  dragId=null;dragOff=0;render()});
+
+// Stretch a timeline block by its bottom edge: 15-minute steps, live preview, one undo step on release.
+document.addEventListener('pointerdown',e=>{const h=e.target.closest('.rz');if(!h||e.button!==0)return;const blk=h.closest('.blk');const t=get(h.dataset.rz);if(!blk||!t)return;
+  e.preventDefault();e.stopPropagation();blk.draggable=false;blk.classList.add('resizing');try{h.setPointerCapture(e.pointerId)}catch(_){}
+  rzState={id:t.id,blk,y0:e.clientY,dur0:t.dur||30,dur:t.dur||30,hh:S().hh,time:t.time}});
+document.addEventListener('pointermove',e=>{if(!rzState)return;const r=rzState;const d=Math.max(15,Math.round((r.dur0+(e.clientY-r.y0)/r.hh*60)/15)*15);if(d===r.dur)return;r.dur=d;
+  r.blk.style.height=Math.max(18,d/60*r.hh-3)+'px';let sm=r.blk.querySelector('small');if(!sm){sm=document.createElement('small');r.blk.insertBefore(sm,r.blk.querySelector('.rz'))}sm.textContent=fmtTime(r.time)+' · '+fmtDur(d)});
+function endResize(apply){if(!rzState)return;const r=rzState;rzState=null;r.blk.classList.remove('resizing');r.blk.draggable=true;
+  if(apply&&r.dur!==r.dur0){const t=get(r.id);upd(r.id,{dur:r.dur});toast(fmtDur(r.dur)+' for '+(t?t.title:'task'),()=>{undo();render()})}
+  suppressClick=true;setTimeout(()=>{suppressClick=false},0);render()}
+document.addEventListener('pointerup',()=>endResize(true));
+document.addEventListener('pointercancel',()=>endResize(false));
 // gutters: widths in side-by-side mode, heights in stacked mode
 let gdrag=null;
 // which section sits above a bar in stacked mode
@@ -674,7 +709,7 @@ function onboarding(){
 function renderOnboarding(){const host=document.querySelector('.ob-host:not(.out) .ob');if(!host)return;
   if(obStep===1){
     const card=(k,title,sub,st)=>`<button class="ob-card" data-style="${k}" aria-pressed="${obStyle===k}"><b>${title}</b><span class="combo">${esc(st.quick)}</span><small>${sub}<br>Voice: <span style="font-family:var(--f-mono)">${esc(st.voice)}</span></small></button>`;
-    host.innerHTML=`<h2>Welcome to Sundial</h2><div class="ob-step">Step 1 of 2 · Quick add</div><p>How you summon the quick-add bar from anywhere. You can change it any time in Settings.</p>
+    host.innerHTML=`<h2>Welcome to Sundial</h2><div class="ob-step">Step 1 of 2 · Quick add</div><p>Pick the shortcut that opens a small add-a-task box from anywhere in Windows. You can change it any time in Settings.</p>
     <div class="ob-cards">${card('quick','Quick','Two keys. Best if you mostly type.',HOTKEY_STYLES.quick)}${card('gaming','Gaming','Three keys, out of the way of games.',HOTKEY_STYLES.gaming)}</div>
     <div class="ob-foot"><button class="btn" data-run="obCustom">Record my own…</button><span class="spacer"></span><button class="btn primary" data-run="obNext">Next</button></div>`;
     return}
@@ -684,7 +719,7 @@ function renderOnboarding(){const host=document.querySelector('.ob-host:not(.out
   host.innerHTML=`<h2>Where do your days live?</h2><div class="ob-step">Step 2 of 2 · Optional</div><p>Sundial is complete on this PC alone. Sync is there when you want the same days on another device.</p>
     <div class="ob-cards three">
       ${pick('local','Just this PC','Everything stays on this machine. Switch on sync any time in Settings → Data & sync.')}
-      ${pick('hosted','Sundial Sync <span class="plan">free during the beta</span>','On every device, end-to-end encrypted, hosted in Switzerland. Free during the beta, then $2.49 a month or $19.99 a year. Beta accounts keep $9.99 a year for as long as they stay subscribed.')}
+      ${pick('hosted','Sundial Sync <span class="plan">free during the beta</span>','The same days on all your Windows PCs, end-to-end encrypted, hosted in Switzerland. Free during the beta, no card needed; afterwards $2.49 a month or $19.99 a year, and beta accounts keep $9.99 a year for as long as they stay subscribed.')}
       ${pick('self','My own server','Run the open-source sync server yourself and point Sundial at it.')}
     </div>
     ${obSync!=='local'||connected?`<div class="ob-sync">${syncRows(S(),optRow,true)}</div>`:''}
@@ -700,29 +735,49 @@ function deepLink(url){let u;try{u=new URL(String(url))}catch(e){return}if(u.pro
   if(what==='quick-add'){openQuickAdd();return}
   if(what!=='signin')return;
   const code=(u.searchParams.get('code')||'').replace(/\D/g,'').slice(0,6);if(code.length!==6)return;
-  if(Sync.st().mode!=='off'){toast('Sync is already signed in on this device');return}
-  syncSetup.mode='hosted';syncSetup.codeSent=true;sheetTab='data';if($('.scrim.sheet-host'))renderSheet();else settings();
+  if(Sync.st().mode!=='off'){toast('Sync is already signed in on this PC');return}
+  syncSetup.mode='hosted';syncSetup.codeSent=true;
+  if($('.ob-host:not(.out)')){obStep=2;obSync='hosted';renderOnboarding()}else{sheetTab='data';if($('.scrim.sheet-host'))renderSheet();else settings()}
   const inp=$('#syncCodeIn');if(inp)inp.value=code;
   if(/.+@.+\..+/.test(syncSetup.email||''))Sync.verifyCode(syncSetup.email,code).then(()=>{syncSetup.codeSent=false;renderSheet();toast('Signed in. Now set the passphrase.')}).catch(e=>toast(e.message||String(e)));
   else{toast('Enter the email the code went to, then Sign in');$('#syncEmail')?.focus()}}
 
 // ---------- sync settings ----------
+// The create-passphrase button opens only when both fields agree and the box is ticked.
+function passGate(){const go=$('#syncPassGo');if(!go)return;const a=$('#syncPass')?.value||'',b=$('#syncPass2')?.value||'';go.disabled=!(a.length>=8&&a===b&&$('#syncWrote')?.checked)}
+function openExternal(u){if(window.SundialDesktop)window.SundialDesktop.openUrl(u).catch(()=>window.open(u,'_blank'));else window.open(u,'_blank')}
 const optRow=(label,sub,ctl)=>`<div class="opt"><div>${label}${sub?`<small>${sub}</small>`:''}</div><div class="ctl">${ctl}</div></div>`;
 // The sync rows live in Settings and in first-run setup; after any sync action, redraw whichever is open.
 function syncRefresh(){if($('.ob-host:not(.out)'))renderOnboarding();else renderSheet()}
-const syncSetup={mode:'hosted',url:'',email:'',codeSent:false,advanced:false};
+const syncSetup={mode:'hosted',url:'',email:'',codeSent:false,advanced:false,existing:null,checking:false,showPass:false,reset:null,outArmed:false};
 function syncRows(st,opt,bare){const s=Sync.st();const D=window.SundialDesktop;let h=bare?'':`<h3>Sync</h3>`;
   if(s.mode==='off'){
     if(!bare)h+=opt('Sync between devices','End-to-end encrypted: every task is sealed on this device before it leaves, and the server only ever stores ciphertext. Local data keeps working either way.',`<div class="seg">${[['hosted','Sundial Sync'],['self','My own server']].map(([v,l])=>`<button data-syncmode="${v}" aria-pressed="${syncSetup.mode===v}">${l}</button>`).join('')}</div>`);
     if(syncSetup.mode==='self')h+=opt('Your server','A Sundial Sync server you run (see server/README in the repo). The token is whatever you started it with.',`<input class="key" style="text-align:left;min-width:220px" id="syncUrl" placeholder="http://localhost:8768" value="${esc(syncSetup.url||s.server||'')}" spellcheck="false"><input class="key" style="text-align:left;min-width:150px" id="syncToken" type="password" placeholder="token" autocomplete="off"><button class="btn" data-run="syncConnect">Connect</button>`);
-    else{h+=opt(bare?'Your email':'Sundial Sync <span class="plan">free during the beta</span>',bare?'We email you a six-digit code. The server never learns more than that address.':'Your days on every device, end-to-end encrypted, hosted in Switzerland. Nothing to run: your email, a six-digit code, done. Free during the beta, then $2.49 a month or $19.99 a year. Beta accounts keep $9.99 a year for as long as they stay subscribed.',`<input class="key" style="text-align:left;min-width:200px" id="syncEmail" type="email" placeholder="you@example.com" value="${esc(syncSetup.email||'')}" autocomplete="email"><button class="btn primary" data-run="syncCode">Send code</button>`);
-      if(syncSetup.codeSent)h+=opt('Code from the email','Six digits, good for 10 minutes.',`<input class="key" style="min-width:110px" id="syncCodeIn" inputmode="numeric" placeholder="482913"><button class="btn primary" data-run="syncVerify">Sign in</button>`);
+    else{h+=opt(bare?'Your email':'Sundial Sync <span class="plan">free during the beta</span>',bare?'We email you a six-digit code; there is no password to invent. Afterwards you make up one passphrase that locks your days.':'Keeps your days the same on all your Windows PCs, end-to-end encrypted, hosted in Switzerland. Phone and Mac apps are not out yet. Your email, a six-digit code, one passphrase. Free during the beta, no card needed. Afterwards $2.49 a month or $19.99 a year; sign up during the beta and your price stays $9.99 a year for as long as you stay subscribed.',`<input class="key" style="text-align:left;min-width:200px" id="syncEmail" type="email" placeholder="you@example.com" value="${esc(syncSetup.email||'')}" autocomplete="email"><button class="btn primary" data-run="syncCode">Send code</button>`);
+      if(syncSetup.codeSent)h+=opt('Code from the email',`Sent to ${esc(syncSetup.email)}. Not there after a minute? Check spam, then press Send code again.`,`<input class="key" style="min-width:110px" id="syncCodeIn" inputmode="numeric" placeholder="482913"><button class="btn primary" data-run="syncVerify">Sign in</button>`);
       h+=`<div class="opt" style="border:0;padding-top:0"><div><small><button class="btn" style="padding:2px 8px;font-size:11px" data-run="syncAdvanced">${syncSetup.advanced?'Hide':'Advanced'}</button>${syncSetup.advanced?` <input class="key" style="text-align:left;min-width:220px;margin-left:6px" id="syncUrl" placeholder="${esc(Sync.HOSTED_URL)}" value="${esc(syncSetup.url||'')}" spellcheck="false"> another Sundial Sync server (email mode)`:''}</small></div></div>`}
     return h}
-  h+=opt('Connected',`${s.mode==='hosted'?esc(s.email)+' · <span class="plan">'+esc(s.plan||'beta')+'</span>':'your server'} · <code>${esc(s.server)}</code> · this device <code>${esc(state.device)}</code>`,'<button class="btn" data-run="syncOut">Sign out</button>');
+  h+=opt('Connected',`${s.mode==='hosted'?esc(s.email)+' · <span class="plan">'+esc(s.plan||'beta')+'</span> · this PC':'your server · <code>'+esc(s.server)+'</code>'}`,`<button class="btn" data-run="syncOut">${syncSetup.outArmed?'Sign out? Click again':'Sign out'}</button>`);
   if(s.mode==='hosted')h+=opt('Plan','Beta: free. Founding price locked in: $9.99 a year once billing starts, for as long as you stay subscribed.','');
-  if(!s.keyOk)h+=`<div class="opt attention"><div>One more step: your passphrase<small>This is what seals your data before it leaves this device; the server never gets it. New to Sundial Sync: make one up (8+ characters) and write it down somewhere safe. Already using it elsewhere: enter the same one. If it is lost, the synced copy cannot be read by anyone, including me; what is on this device stays.</small></div><div class="ctl"><input class="key" style="text-align:left;min-width:220px" id="syncPass" type="password" placeholder="passphrase, 8+ characters" autocomplete="new-password"><button class="btn primary" data-run="syncPass">Unlock sync</button></div></div>`;
-  else h+=opt('Status',`${s.lastError?'Last error: '+esc(s.lastError):(s.lastSync?'Last synced '+new Date(s.lastSync).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'Not synced yet')} · ${Sync.pending()} waiting${Sync.isRunning()?' · syncing…':''}${D?'':' · key kept in this browser'}`,`<button class="btn" data-run="syncNow">Sync now</button>`);
+  if(syncSetup.reset)h+=resetRows(s,opt);
+  else if(!s.keyOk){
+    if(syncSetup.existing==null&&!syncSetup.checking){syncSetup.checking=true;Sync.checkAccount().then(r=>{syncSetup.existing=r.existing}).catch(()=>{syncSetup.existing=false}).finally(()=>{syncSetup.checking=false;syncRefresh()})}
+    const pt=syncSetup.showPass?'text':'password',show=`<button class="btn" data-run="syncShowPass">${syncSetup.showPass?'Hide':'Show'}</button>`;
+    if(syncSetup.existing==null)h+=opt('One more step: your passphrase','Checking this account…','');
+    else if(syncSetup.existing)h+=`<div class="opt attention passenter"><div>Enter your sync passphrase<small>The one you made up on your first PC. It unlocks your days here; the server never sees it.</small></div><div class="ctl"><input class="key" style="text-align:left;min-width:190px" id="syncPass" type="${pt}" placeholder="passphrase" autocomplete="current-password">${show}<button class="btn primary" data-run="syncPass">Unlock</button></div></div>
+      <div class="opt" style="border:0;padding-top:0"><div><small><button class="btn" style="padding:2px 8px;font-size:11px" data-run="syncResetStart">Forgot it?</button> Your days on your other PC are safe. You can erase the synced copy and start over from the PC that has them.</small></div></div>`;
+    else h+=`<div class="opt attention passcreate"><div>Create your sync passphrase<small>Sundial locks your days with it before they leave this PC. Nobody else has it, not even Sundial. You will type it once on each new PC. Write it down: if it is lost, the synced copy cannot be opened, but your days on this PC are fine.</small>
+      <div class="passfields"><input class="key" id="syncPass" type="${pt}" placeholder="passphrase, 8+ characters" autocomplete="new-password"><input class="key" id="syncPass2" type="${pt}" placeholder="type it again" autocomplete="new-password">${show}</div>
+      <label class="wrote"><input type="checkbox" id="syncWrote"> I wrote it down somewhere safe</label></div><div class="ctl"><button class="btn primary" data-run="syncPass" id="syncPassGo" disabled>Create and start syncing</button></div></div>`;
+  }
+  else h+=opt('Status',`${s.lastError?esc(s.lastError):(s.lastSync?'Last synced '+new Date(s.lastSync).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'Not synced yet')} · ${Sync.pending()} waiting${Sync.isRunning()?' · syncing…':''}${Sync.rejected()?' · '+Sync.rejected()+' too large to sync':''}${D?'':' · key kept in this browser'}`,`<button class="btn" data-run="syncNow">Sync now</button>`)
+    +opt('Start over or leave','Erases the synced copy for every PC and signs them all out. Nothing on any PC is deleted.','<button class="btn" data-run="syncResetStart">Erase synced copy…</button>');
+  return h}
+// Forgot the passphrase, or want out: erase the synced copy (a code confirms it on the hosted service), then sign in fresh.
+function resetRows(s,opt){const r=syncSetup.reset;
+  let h=`<div class="opt attention"><div>Erase the synced copy and start over<small>Removes everything the sync server holds for this account and signs out every PC. Nothing on any PC is deleted: the PC you continue from uploads its days again with a new passphrase.${s.mode==='hosted'?' A code goes to your email first, so nobody else can do this.':''}</small></div><div class="ctl">${s.mode==='hosted'&&r==='ask'?'<button class="btn primary" data-run="syncResetCode">Email me a code</button>':''}<button class="btn" data-run="syncResetCancel">Cancel</button></div></div>`;
+  if(r==='code'||s.mode!=='hosted')h+=opt('Confirm',s.mode==='hosted'?`Code sent to ${esc(s.email)}.`:'Self-hosted server: no code needed.',`${s.mode==='hosted'?'<input class="key" style="min-width:110px" id="syncResetIn" inputmode="numeric" placeholder="482913">':''}<button class="btn del" data-run="syncResetGo">Erase and start over</button>`);
   return h}
 
 // ---------- desktop + AI helpers ----------
@@ -754,7 +809,8 @@ function refreshAiKey(){const D=window.SundialDesktop;if(D)D.secret.get('ai:'+S(
 function desktopGeneralRows(){return `<div class="opt"><div>Updates<small>Sundial ${esc(appVersion||'')}. Checks on launch and every six hours, downloads in the background, and asks before restarting.${updateInfo?' <b>'+esc(updateInfo.version)+' is ready.</b>':''}</small></div><div class="ctl"><button class="tog" role="switch" data-tog="updates.auto" aria-checked="${!!S().updates.auto}"></button>${updateInfo?'<button class="btn" data-run="updateInstall">Restart to update</button>':'<button class="btn" data-run="updateCheck">Check now</button>'}</div></div>`
   +`<div class="opt"><div>Start with Windows<small>Launches hidden in the tray at sign-in.</small></div><div class="ctl"><button class="tog" role="switch" data-autostart="1" aria-checked="${autostartOn}"></button></div></div>`
   +`<div class="opt"><div>Closing the window<small>Hides Sundial to the tray so reminders keep firing. Quit is in the tray icon menu.</small></div><div class="ctl"><span class="soon">TRAY</span></div></div>`
-  +`<div class="opt"><div>Your data<small>One JSON file on this PC, plus a daily backup folder beside it.</small></div><div class="ctl"><button class="btn" data-run="revealData">Show folder</button></div></div>`}
+  +`<div class="opt"><div>Your data<small>One JSON file on this PC, plus a daily backup folder beside it.</small></div><div class="ctl"><button class="btn" data-run="revealData">Show folder</button></div></div>`
+  +`<div class="opt"><div>About<small>Sundial ${esc(appVersion||'')} · beta. Tell me what breaks or annoys you.</small></div><div class="ctl"><button class="btn" data-run="openNotes">What's new</button><button class="btn" data-run="openIssues">Send feedback</button><button class="btn" data-run="openPrivacy">Privacy</button></div></div>`}
 function aiTab(st,opt,tog){const a=st.ai,D=window.SundialDesktop;
   let h=opt('AI parsing','Optional. The instant parse always runs first; then your own model reads the line and fills in what the rules missed: times in words, notes, the right color. Your key, your bill.',tog('ai.enabled'));
   if(!a.enabled)return h;
@@ -782,15 +838,15 @@ function tick(){
   for(const ev of dueEvents(now))notify(ev,false);
   const m=nowMin();if(m!==lastMinute){lastMinute=m;updateLogo();
     const nowEl=document.querySelector('.hours .now');if(nowEl&&sel===todayStr()){nowEl.style.top=(m/60*S().hh)+'px';nowEl.querySelector('i').textContent='☉ '+fmtTime(m)}
-    if(view==='day'&&sel===todayStr()&&!openId&&!Voice.isActive()){const strip=$('.now-strip');const fresh=nowStrip();if((strip?strip.outerHTML:'')!==fresh)render()}}
+    if(view==='day'&&sel===todayStr()&&!openId&&!Voice.isActive()){const strip=$('.now-strip');const fresh=nowStrip();if(strip&&fresh&&strip.outerHTML!==fresh)strip.outerHTML=fresh;else if((!strip)!==(!fresh))render()}}
 }
 async function init(){
   const D=window.SundialDesktop;
   if(D){try{const raw=await D.load();if(raw)hydrate(raw);else save()}catch(e){console.error('load failed',e)}
-    D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});D.on('sundial://deep-link',e=>deepLink(e.payload));D.on('sundial://update-progress',e=>updateProgress(e.payload||{}));syncHotkeys();
+    D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});D.on('sundial://deep-link',e=>deepLink(e.payload));D.on('sundial://hidden',()=>{if(S().trayNoticeShown)return;S().trayNoticeShown=true;save();D.toastShow({kind:'info',label:'Still running',title:'Sundial is in the tray',meta:'Reminders keep working. Quit from the tray icon menu.',corner:S().toasts.corner,secs:8,sticky:false,actions:[{id:'ok',label:'OK',primary:true}]}).catch(()=>{})});D.on('sundial://update-progress',e=>updateProgress(e.payload||{}));syncHotkeys();
     D.appVersion().then(v=>{appVersion=v}).catch(()=>{});setTimeout(()=>checkUpdates(false),4000);setInterval(()=>checkUpdates(false),6*3600*1000)}
   applyTheme();applyDensity();applyLayout();SFX.setVolume(S().sounds.volume);render();updateLogo();
-  Sync.on(()=>{if($('.sheet-host')&&sheetTab==='data')renderSheet();else if($('.ob-host')&&obStep===2)renderOnboarding()});Sync.start();
+  Sync.on(ev=>{if(ev==='signedout')toast(Sync.st().lastError||'Signed out of sync',()=>{sheetTab='data';settings()},'Open');if($('.sheet-host')&&sheetTab==='data')renderSheet();else if($('.ob-host:not(.out)')&&obStep===2)renderOnboarding()});Sync.start();
   if(D&&D.deepLinkPending)D.deepLinkPending().then(u=>{if(u)deepLink(u)}).catch(()=>{});
   setTimeout(()=>{const s=Sync.st();if(s.mode!=='off'&&!s.keyOk&&!Sync.hasKey())toast('Sync is connected but not unlocked: set your passphrase',()=>{sheetTab='data';settings()},'Open')},2500);
   if(!S().onboarded)setTimeout(onboarding,500);
