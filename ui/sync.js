@@ -9,7 +9,7 @@
 const Sync=(()=>{
   const PROTO=1;
   const HOSTED_URL='https://sync.sundial.services';
-  const PAIR_TTL=15*60*1000,PAIR_MAX_AGE=60*60*1000,PAIR_INFO='sundial-pair-1';
+  const PAIR_TTL=15*60*1000,PAIR_UNOPENED=2*60*1000,PAIR_INFO='sundial-pair-1';
   let key=null,timer=null,running=false,queued=false,applying=false,gen=0,machine='';const listeners=[];
   let pairing=null,approvalTimer=null;const pairReqs={};const pairSeen={};const ownPairIds={};
   const fresh=()=>({mode:'off',server:'',token:'',accountId:'',email:'',salt:'',cursor:0,dirty:{},lastSync:0,lastError:'',keyOk:false,epoch:0,rejected:{}});
@@ -88,9 +88,9 @@ const Sync=(()=>{
   }
   async function applyDoc(d){
     if(d.kind==='pair'){notePair(d);return false}
-    if(d.kind==='keycheck'){
+    if(d.kind==='keycheck'){if(d.deleted)return false;   // the key is never withdrawn; a tombstone here is noise
       // another PC replaced the account's key under us (two first-time setups at once, or a reset): stop writing with the wrong key
-      if(!d.deleted&&!(await keyOpens(key,d))){await lostKey('Another PC set this account up with a different key. Approve this PC from it, or enter its recovery code.')}
+      if(!(await keyOpens(key,d))){await lostKey('Another PC set this account up with a different key. Approve this PC from it, or enter its recovery code.')}
       return false}
     const body=d.deleted?null:await dec(d.kind,d.id,d.nonce,d.ct);
     if(d.kind==='task'){const loc=get(d.id);const tomb=state.tombstones[d.id]||0;
@@ -165,18 +165,24 @@ const Sync=(()=>{
   const recoveryCode=()=>secretGet('sync:recovery');
 
   // ----- approving another PC -----
-  // Commit-then-reveal, so neither side (nor the server in between) can pick a key after seeing the other's:
-  //   1. new PC  -> pair:<id>        {t:'req',  commit: SHA-256(P_new), name}
-  //   2. old PC  -> pair:<id>:ack    {t:'ack',  pub: P_old}                      (no prompt yet)
-  //   3. new PC  -> pair:<id>:open   {t:'open', pub: P_new}; both show SAS = SHA-256(info|id|P_new|P_old) mod 10000
-  //   4. old PC checks the commit, shows the prompt; on Approve -> pair:<id>:grant {t:'grant', iv, wrapped}
-  //      wrapped = AES-GCM(HKDF(ECDH), aad 'pair:<id>') over {k: account key, rc: recovery code}
-  //   5. new PC unwraps, proves the key against the keycheck, keeps it, removes the pair documents.
-  // A substituted key changes the SAS; a forged grant fails the keycheck. The server only relays bytes.
+  // Commit-then-reveal on both sides, so nobody in the middle (the server included) can pick a key after seeing
+  // the other's, and every code the first PC ever computes costs it a visible prompt:
+  //   1. new PC  -> pair:<id>         {t:'req',    commit: SHA-256(P_new), name}
+  //   2. old PC  -> pair:<id>:ack     {t:'ack',    commit: SHA-256(P_old)}      one request at a time, no prompt yet
+  //   3. new PC  -> pair:<id>:open    {t:'open',   pub: P_new}
+  //   4. old PC checks the req commit, then in one step -> pair:<id>:reveal {t:'reveal', pub: P_old} and the prompt,
+  //      both showing SAS = SHA-256(info|id|P_new|P_old) mod 10000
+  //   5. new PC checks the ack commit, shows the same code; on Approve the old PC -> pair:<id>:grant {t:'grant', iv, wrapped}
+  //      wrapped = AES-GCM(HKDF(ECDH, info|id|P_new|P_old), aad 'pair:<id>') over {k: account key, rc: recovery code}
+  //   6. new PC unwraps, proves the key against the keycheck, then asks the person to confirm the other PC really
+  //      showed the code and was approved there; only then is the key kept and the pair documents removed.
+  // A substituted key changes the code; a forged grant fails the keycheck; a server that answers by itself never
+  // produces a prompt on the real PC, which the confirmation step asks about.
   const plain=obj=>b64(te.encode(JSON.stringify(obj)));
   const unplain=ct=>{try{return JSON.parse(td.decode(unb64(ct)))}catch(e){return null}};
   const ecdhKeys=()=>crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},false,['deriveBits']);
   const ecdhPub=async kp=>b64(new Uint8Array(await crypto.subtle.exportKey('raw',kp.publicKey)));
+  const commitOf=async pubB64=>b64(await sha256(unb64(pubB64)));
   async function sas(id,pubNew,pubOld){const h=await sha256(cat(te.encode(PAIR_INFO),te.encode('|'+id+'|'),unb64(pubNew),te.encode('|'),unb64(pubOld)));const n=new DataView(h.buffer).getUint32(0)%10000;return String(n).padStart(4,'0').replace(/(\d\d)(\d\d)/,'$1 $2')}
   async function pairKey(myPriv,peerPubB64,id,pubNew,pubOld){const peer=await crypto.subtle.importKey('raw',unb64(peerPubB64),{name:'ECDH',namedCurve:'P-256'},true,[]);
     const bits=await crypto.subtle.deriveBits({name:'ECDH',public:peer},myPriv,256);
@@ -185,60 +191,76 @@ const Sync=(()=>{
     return crypto.subtle.deriveKey({name:'HKDF',hash:'SHA-256',salt:new Uint8Array(0),info},hk,{name:'AES-GCM',length:256},false,['encrypt','decrypt'])}
   // Tombstones for another PC's document must sort after it, whatever that PC's clock said.
   const pairDoc=(id,obj,deleted,after)=>({id,kind:'pair',updated_at:Math.max(Date.now(),(after||0)+1),deleted:!!deleted,nonce:'',ct:deleted?'':plain(obj)});
-  const base=id=>id.replace(/:(ack|open|grant)$/,'');
+  const base=id=>id.replace(/:(ack|open|reveal|grant)$/,'');
+  const liveReq=()=>Object.values(pairReqs).find(r=>!r.done&&Date.now()-r.seenAt<(r.sas?PAIR_TTL:PAIR_UNOPENED));
   function notePair(d){
     const id=base(d.id),kind=d.id.slice(id.length+1)||'req';
     if(ownPairIds[id]){if(pairing&&pairing.id===id)pairingSaw(d,kind);return}
-    if(d.deleted){if(kind==='req'&&pairReqs[id]){delete pairReqs[id];emit('pair')}return}
+    if(d.deleted){if(kind==='req'&&pairReqs[id]){pairSeen[id]=1;delete pairReqs[id];emit('pair')}return}
     if(!key||pairing)return;
     const p=unplain(d.ct);if(!p)return;
-    if(kind==='req'&&p.t==='req'&&p.commit){if(pairSeen[id]||pairReqs[id]||Date.now()-d.updated_at>PAIR_MAX_AGE)return;
-      pairReqs[id]={id,name:String(p.name||'another PC').slice(0,60),commit:p.commit,ts:d.updated_at,ack:false};
-      ecdhKeys().then(async kp=>{const r=pairReqs[id];if(!r)return;r.kp=kp;r.pub=await ecdhPub(kp);await pull(0,[pairDoc(id+':ack',{t:'ack',pub:r.pub})]);r.ack=true;watchApprovals()}).catch(()=>{delete pairReqs[id]})}
-    if(kind==='open'&&p.t==='open'&&p.pub){const r=pairReqs[id];if(!r||!r.pub||r.sas)return;
-      sha256(unb64(p.pub)).then(async h=>{if(b64(h)!==r.commit){pairSeen[id]=1;delete pairReqs[id];return}r.pubNew=p.pub;r.sas=await sas(id,p.pub,r.pub);emit('pair')})}
+    if(kind==='req'&&p.t==='req'&&typeof p.commit==='string'){
+      if(pairSeen[id]||pairReqs[id]||liveReq())return;            // one at a time; an id is only ever answered once
+      const r=pairReqs[id]={id,name:String(p.name||'another PC').slice(0,60),commitNew:p.commit,seenAt:Date.now(),reqAt:d.updated_at,sas:null,done:false};
+      ecdhKeys().then(async kp=>{if(pairReqs[id]!==r)return;r.kp=kp;r.pubOld=await ecdhPub(kp);r.commitOld=await commitOf(r.pubOld);
+        await pull(0,[pairDoc(id+':ack',{t:'ack',commit:r.commitOld})]);watchApprovals()}).catch(()=>{delete pairReqs[id]})}
+    if(kind==='open'&&p.t==='open'&&typeof p.pub==='string'){const r=pairReqs[id];if(!r||!r.pubOld||r.sas||r.opening)return;r.opening=true;
+      commitOf(p.pub).then(async c=>{if(pairReqs[id]!==r)return;if(c!==r.commitNew){r.opening=false;return}   // not the key that was committed: ignore it, the real one may still come
+        r.pubNew=p.pub;r.openAt=d.updated_at;r.sas=await sas(id,p.pub,r.pubOld);
+        await pull(0,[pairDoc(id+':reveal',{t:'reveal',pub:r.pubOld})]);emit('pair')}).catch(()=>{r.opening=false})}
   }
-  // While another PC is waiting on us, look more often than the usual cadence.
-  function watchApprovals(){if(approvalTimer)return;approvalTimer=setInterval(()=>{const open=Object.values(pairReqs).some(r=>Date.now()-r.ts<PAIR_TTL);if(!open){clearInterval(approvalTimer);approvalTimer=null;emit('pair');return}schedule(0)},3000)}
+  // While a request is open on this side, look every few seconds and expire it by this PC's own clock.
+  function watchApprovals(){if(approvalTimer)return;approvalTimer=setInterval(()=>{let open=false;
+    for(const r of Object.values(pairReqs)){if(r.done)continue;const age=Date.now()-r.seenAt;
+      if(age>(r.sas?PAIR_TTL:PAIR_UNOPENED)){r.done=true;pairSeen[r.id]=1;delete pairReqs[r.id];pull(0,[pairDoc(r.id,null,true,r.reqAt),pairDoc(r.id+':ack',null,true)]).catch(()=>{});emit('pair')}else open=true}
+    if(!open){clearInterval(approvalTimer);approvalTimer=null;return}schedule(0)},3000)}
   // New PC side.
-  function pairingSaw(d,kind){const me=pairing;if(d.deleted){if(kind==='req'&&!me.grant){failPairing('Your other PC did not approve this one. Try again there, or use the recovery code.')}return}
+  function pairingSaw(d,kind){const me=pairing;if(d.deleted){if(kind==='req'&&!me.grant&&!me.ready)failPairing('Your other PC did not approve this one. Try again there, or use the recovery code.');return}
     const p=unplain(d.ct);if(!p)return;
-    if(kind==='ack'&&p.t==='ack'&&p.pub&&!me.pubOld){me.pubOld=p.pub;me.ackAt=d.updated_at;
-      pull(0,[pairDoc(me.id+':open',{t:'open',pub:me.pub})]).then(async()=>{if(pairing!==me)return;me.code=await sas(me.id,me.pub,me.pubOld);emit('pairsas')}).catch(()=>{})}
+    if(kind==='ack'&&p.t==='ack'&&typeof p.commit==='string'&&!me.commitOld){me.commitOld=p.commit;me.ackAt=d.updated_at;
+      pull(0,[pairDoc(me.id+':open',{t:'open',pub:me.pub})]).then(()=>{if(pairing===me)me.openAt=Date.now()}).catch(()=>{})}
+    if(kind==='reveal'&&p.t==='reveal'&&typeof p.pub==='string'&&me.commitOld&&!me.pubOld){me.revealAt=d.updated_at;
+      commitOf(p.pub).then(async c=>{if(pairing!==me)return;if(c!==me.commitOld){failPairing("The other PC's answer was tampered with on the way. Try again.");return}me.pubOld=p.pub;me.code=await sas(me.id,me.pub,me.pubOld);emit('pairsas')}).catch(()=>{})}
     if(kind==='grant'&&p.t==='grant'&&p.iv&&p.wrapped&&me.pubOld&&!me.grant){me.grant=p;me.grantAt=d.updated_at}}
   async function startPairing(){if(pairing)return {id:pairing.id,code:pairing.code};const kp=await ecdhKeys();const pub=await ecdhPub(kp);const id='pair:'+Math.random().toString(36).slice(2,12)+Date.now().toString(36);ownPairIds[id]=1;
-    const commit=b64(await sha256(unb64(pub)));
+    const commit=await commitOf(pub);
     const first=await pull(0,[pairDoc(id,{t:'req',commit,name:deviceName()})]);
     if((first.rejected||[]).some(r=>r.id===id)){delete ownPairIds[id];throw new Error('This server does not support approving from another PC yet. Use the recovery code.')}
-    pairing={id,kp,pub,commit,code:null,pubOld:null,grant:null,cursor:first.cursor||0,since:Date.now()};pollPairing();return {id,code:null}}
+    pairing={id,kp,pub,commit,code:null,commitOld:null,pubOld:null,grant:null,ready:null,cursor:first.cursor||0,since:Date.now()};pollPairing();return {id,code:null}}
   async function pollPairing(){if(!pairing)return;const me=pairing;
     try{const res=await pull(me.cursor,[]);me.cursor=res.cursor||me.cursor;for(const d of res.docs||[])if(d.kind==='pair')notePair(d)}catch(e){}
     if(pairing!==me)return;
-    if(me.grant){try{await finishPairing(me)}catch(e){await cancelPairing();emit('pairfail',e.message||String(e))}return}
+    if(me.grant&&!me.ready){try{me.ready=await proveGrant(me);emit('pairready')}catch(e){await cancelPairing();emit('pairfail',e.message||String(e));return}}
     if(Date.now()-me.since>PAIR_TTL){await cancelPairing();emit('pairfail','No approval arrived in 15 minutes. Try again, or use the recovery code.');return}
     me.timer=setTimeout(pollPairing,3000)}
-  async function finishPairing(me){const k0=await pairKey(me.kp.privateKey,me.pubOld,me.id,me.pub,me.pubOld);
+  // The grant must decrypt under the handshake key, carry a 32-byte key, and that key must open the account's keycheck.
+  async function proveGrant(me){const k0=await pairKey(me.kp.privateKey,me.pubOld,me.id,me.pub,me.pubOld);
     let payload;try{const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(me.grant.iv),additionalData:te.encode(me.id)},k0,unb64(me.grant.wrapped));payload=JSON.parse(td.decode(pt))}catch(e){throw new Error('The approval could not be read. Try again.')}
     if(!payload||typeof payload.k!=='string'||unb64(payload.k).length!==32)throw new Error('The approval could not be read. Try again.');
     const cand=await keyFromRaw(payload.k);
-    // proof: the key must open the account's keycheck, or it did not come from a PC that holds the real key
     if(!(await keyOpens(cand,await findKeycheck())))throw new Error('The approval did not come from a PC that holds your key. Try again.');
-    await pull(0,[pairDoc(me.id,null,true,me.since),pairDoc(me.id+':ack',null,true,me.ackAt),pairDoc(me.id+':open',null,true),pairDoc(me.id+':grant',null,true,me.grantAt)]).catch(()=>{});
-    clearTimeout(me.timer);pairing=null;await adopt(cand,looksLikeCode(payload.rc||'')?payload.rc:null,true);emit('paired')}
-  function failPairing(msg){const me=pairing;if(!me)return;clearTimeout(me.timer);pairing=null;emit('pairfail',msg)}
-  async function cancelPairing(){const me=pairing;pairing=null;if(!me)return;clearTimeout(me.timer);await pull(0,[pairDoc(me.id,null,true,me.since),pairDoc(me.id+':open',null,true)]).catch(()=>{})}
-  // Existing PC side.
-  const pendingPairs=()=>Object.values(pairReqs).filter(r=>r.sas&&Date.now()-r.ts<PAIR_TTL).sort((a,b)=>a.ts-b.ts).map(r=>({id:r.id,name:r.name,code:r.sas,ts:r.ts}));
-  async function approvePair(id){const r=pairReqs[id];if(!r||!r.sas||!key)throw new Error('Nothing to approve');
-    if(Date.now()-r.ts>PAIR_TTL){delete pairReqs[id];emit('pair');throw new Error('That request has expired. Ask the other PC to sign in again.')}
-    const k0=await pairKey(r.kp.privateKey,r.pubNew,id,r.pubNew,r.pub);const iv=crypto.getRandomValues(new Uint8Array(12));
+    return {cand,rc:looksLikeCode(payload.rc||'')?payload.rc:null}}
+  // The person confirms the other PC really showed the code and was approved there; only then the key is kept.
+  async function confirmPairing(){const me=pairing;if(!me||!me.ready)throw new Error('Nothing to confirm yet');clearTimeout(me.timer);pairing=null;
+    await pull(0,[pairDoc(me.id,null,true,me.since),pairDoc(me.id+':ack',null,true,me.ackAt),pairDoc(me.id+':open',null,true,me.openAt),pairDoc(me.id+':reveal',null,true,me.revealAt),pairDoc(me.id+':grant',null,true,me.grantAt)]).catch(()=>{});
+    await adopt(me.ready.cand,me.ready.rc,true);emit('paired')}
+  function failPairing(msg){const me=pairing;if(!me)return;clearTimeout(me.timer);pairing=null;pull(0,[pairDoc(me.id+':open',null,true,me.openAt)]).catch(()=>{});emit('pairfail',msg)}
+  async function cancelPairing(){const me=pairing;pairing=null;if(!me)return;clearTimeout(me.timer);await pull(0,[pairDoc(me.id,null,true,me.since),pairDoc(me.id+':open',null,true,me.openAt)]).catch(()=>{})}
+  // Existing PC side. Approving names the code that was shown, so a prompt can never approve a request that replaced it.
+  const pendingPairs=()=>Object.values(pairReqs).filter(r=>r.sas&&!r.done&&Date.now()-r.seenAt<PAIR_TTL).sort((a,b)=>a.seenAt-b.seenAt).map(r=>({id:r.id,name:r.name,code:r.sas,ts:r.seenAt}));
+  async function approvePair(id,code){const r=pairReqs[id];if(!r||!r.sas||r.done||!key)throw new Error('Nothing to approve');
+    if(code!==undefined&&code!==r.sas)throw new Error('That prompt is out of date. Look for the newest one.');
+    if(Date.now()-r.seenAt>PAIR_TTL){r.done=true;pairSeen[id]=1;delete pairReqs[id];emit('pair');throw new Error('That request has expired. Ask the other PC to sign in again.')}
+    const k0=await pairKey(r.kp.privateKey,r.pubNew,id,r.pubNew,r.pubOld);const iv=crypto.getRandomValues(new Uint8Array(12));
     const payload=te.encode(JSON.stringify({k:await rawOf(key),rc:(await secretGet('sync:recovery'))||null}));
     const wrapped=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:te.encode(id)},k0,payload));
-    pairSeen[id]=1;delete pairReqs[id];
-    await pull(0,[pairDoc(id+':grant',{t:'grant',iv:b64(iv),wrapped:b64(wrapped)}),pairDoc(id,null,true,r.ts),pairDoc(id+':ack',null,true),pairDoc(id+':open',null,true)]);emit('pair')}
-  async function denyPair(id){const r=pairReqs[id];pairSeen[id]=1;delete pairReqs[id];emit('pair');await pull(0,[pairDoc(id,null,true,r?r.ts:0),pairDoc(id+':ack',null,true)]).catch(()=>{})}
+    const res=await pull(0,[pairDoc(id+':grant',{t:'grant',iv:b64(iv),wrapped:b64(wrapped)}),pairDoc(id,null,true,r.reqAt),pairDoc(id+':ack',null,true),pairDoc(id+':open',null,true,r.openAt),pairDoc(id+':reveal',null,true)]);
+    if((res.rejected||[]).some(x=>x.id===id+':grant'))throw new Error('The server refused the approval. Try again in a moment.');
+    r.done=true;pairSeen[id]=1;delete pairReqs[id];emit('pair')}
+  async function denyPair(id){const r=pairReqs[id];pairSeen[id]=1;if(r)r.done=true;delete pairReqs[id];emit('pair');await pull(0,[pairDoc(id,null,true,r?r.reqAt:0),pairDoc(id+':ack',null,true),pairDoc(id+':reveal',null,true)]).catch(()=>{})}
+  function forgetPairs(){for(const k in pairReqs)delete pairReqs[k];if(approvalTimer){clearInterval(approvalTimer);approvalTimer=null}}
 
-  async function signOutLocal(msg,forget){await cancelPairing();await forgetKey(!!forget);const s=st();Object.assign(s,fresh(),{server:s.server,lastError:msg||''});save()}
+  async function signOutLocal(msg,forget){await cancelPairing();forgetPairs();await forgetKey(!!forget);const s=st();Object.assign(s,fresh(),{server:s.server,lastError:msg||''});save()}
   async function signOut(){const s=st();await cancelPairing();if(s.mode==='hosted'&&s.token){try{await api('/v1/auth/logout',{},'POST')}catch(e){}}await signOutLocal('',false);emit('ok')}
   // Erases the synced copy (every document, every device's access). Local data on every PC stays.
   async function deleteAccount(code){const s=st();await api('/v1/account',s.mode==='hosted'?{code:String(code||'').replace(/\D/g,'')}:null,'DELETE',undefined,'code');await signOutLocal('',true);emit('ok')}
@@ -250,6 +272,6 @@ const Sync=(()=>{
       if(ok){schedule(1500);let n=0;setInterval(()=>{n++;if(!document.hidden||n%2===0)schedule(0)},30*1000);addEventListener('online',()=>schedule(0))}
       else if(s.keyOk){lostKey('This PC no longer has its sync key. Approve it again from another PC, or enter the recovery code.')}})}
   return {st,markDirty,markAllDirty,syncNow,schedule,health,requestCode,verifyCode,connectSelf,checkAccount,setPassphrase:unlockWith,unlockWith,setupFirst,recoveryCode,normalizeSecret,
-    startPairing,cancelPairing,pendingPairs,approvePair,denyPair,isPairing:()=>!!pairing,pairingCode:()=>pairing?pairing.code:null,pairingSince:()=>pairing?pairing.since:0,
+    startPairing,cancelPairing,confirmPairing,pendingPairs,approvePair,denyPair,isPairing:()=>!!pairing,pairingCode:()=>pairing?pairing.code:null,pairingSince:()=>pairing?pairing.since:0,pairingReady:()=>!!(pairing&&pairing.ready),
     signOut,deleteAccount,start,HOSTED_URL,hasKey:()=>!!key,isRunning:()=>running,pending:()=>Object.keys(st().dirty).length,rejected:()=>Object.keys(st().rejected).length,on:f=>listeners.push(f)};
 })();

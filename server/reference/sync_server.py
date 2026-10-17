@@ -134,7 +134,7 @@ class Store:
                       else "future" if up > t + FUTURE_MS else None)
             if reason: rejected.append({"id": did[:128], "kind": kind[:32], "reason": reason}); continue
             cur = self.db.execute("SELECT updated_at, LENGTH(ct) FROM docs WHERE account=? AND id=?", (account, did)).fetchone()
-            if cur and kind == "keycheck" and not deleted: rejected.append({"id": did, "kind": kind, "reason": "exists"}); continue   # the key is set once
+            if cur and kind == "keycheck": rejected.append({"id": did, "kind": kind, "reason": "exists"}); continue   # the key is set once and never withdrawn
             if cur and cur[0] > up: continue   # the stored version is newer; it comes back in the pull
             if deleted: ct = ""
             nxt = used - (cur[1] if cur else 0) + len(ct)

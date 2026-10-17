@@ -24,6 +24,8 @@
     machineName:()=>invoke('machine_name'),
     // corner toast window; actions come back through the 'sundial://toast-action' event
     toastShow:payload=>invoke('toast_show',{payload}),
+    toastCurrent:()=>invoke('toast_payload'),
+    toastDismiss:()=>invoke('toast_action',{action:'dismiss'}),
     updateCheck:()=>invoke('update_check'),
     updateInstall:()=>invoke('update_install'),
     // sundial://… link that opened or poked the app (see deepLink in ui.js)

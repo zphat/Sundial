@@ -305,7 +305,7 @@ function onToastAction(ev){const a=ev.action,p=ev.payload||{};const t=p.id?get(p
   if(a==='snooze'){SFX.stopRepeat();if(t)snooze(t);return}
   if(a==='open'){if(t){view='day';goDay(t.date);openId=t.id;render();revealTask(t.id)}return}
   if(a==='install'){installUpdate(null);return}
-  if(a==='approve'&&p.pair){Sync.approvePair(p.pair).then(()=>approvedNote()).catch(e=>toast(e.message||String(e)));return}
+  if(a==='approve'&&p.pair){Sync.approvePair(p.pair,p.code).then(()=>approvedNote()).catch(e=>toast(e.message||String(e)));return}
   if(a==='ignore'&&p.pair){Sync.denyPair(p.pair);return}
   if(a==='later')return;
 }
@@ -523,6 +523,8 @@ function runSetting(k,b){
   if(k==='syncShowPass'){syncSetup.showPass=!syncSetup.showPass;const a=$('#syncPass')?.value||'';syncRefresh();if($('#syncPass'))$('#syncPass').value=a}
   if(k==='syncPass'){const p=$('#syncPass')?.value||'';const label=b.textContent;b.textContent='…';b.disabled=true;Sync.unlockWith(p).then(()=>{syncFlowReset();syncRefresh();toast('Unlocked. Syncing.')}).catch(e=>{b.textContent=label;b.disabled=false;if(e.raced){syncSetup.existing=true}toast(e.message||String(e));if(e.raced)syncRefresh()})}
   if(k==='syncRetryPair'){syncSetup.pairError=null;syncRefresh()}
+  if(k==='syncPairFinish'){b.textContent='…';b.disabled=true;Sync.confirmPairing().catch(e=>{b.textContent='Yes, finish';b.disabled=false;toast(e.message||String(e))})}
+  if(k==='syncPairCancel'){Sync.cancelPairing().then(()=>{syncSetup.pairError='Cancelled. If that approval was not yours, change nothing on the other PC and tell whoever runs the server.';syncRefresh()})}
   if(k==='syncUseCode'){syncSetup.useCode=!syncSetup.useCode;syncRefresh()}
   if(k==='syncRetrySetup'){syncSetup.setupError=null;syncSetup.existing=null;syncRefresh()}
   if(k==='syncRecoveryDone'){syncSetup.showRecovery=false;syncSetup.recovery=null;syncRefresh()}
@@ -778,7 +780,8 @@ function syncRows(st,opt,bare){const s=Sync.st();const D=window.SundialDesktop;l
       else{
         if(!Sync.isPairing()&&!syncSetup.pairError&&!syncSetup.pairStarting){syncSetup.pairStarting=true;Sync.startPairing().then(()=>syncRefresh()).catch(e=>{syncSetup.pairError=e.message||String(e);syncRefresh()}).finally(()=>{syncSetup.pairStarting=false})}
         const code=Sync.pairingCode(),age=Sync.pairingSince()?Date.now()-Sync.pairingSince():0;
-        const wait=code?`<div class="paircode">${esc(code)}</div><div class="pairwait">Waiting for the approval<span>.</span><span>.</span><span>.</span></div><small class="pairhint">${bare?'You can close this; it says here when the other PC has approved.':'It says here when the other PC has approved.'}</small>`
+        const wait=Sync.pairingReady()?`<div class="paircode">${esc(code)}</div><div class="pairconfirm">Your other PC approved. Did it show <b>${esc(code)}</b>, and did you click Approve there yourself?</div><div class="pairbtns"><button class="btn" data-run="syncPairCancel">No, cancel</button><button class="btn primary" data-run="syncPairFinish">Yes, finish</button></div>`
+          :code?`<div class="paircode">${esc(code)}</div><div class="pairwait">Waiting for the approval<span>.</span><span>.</span><span>.</span></div><small class="pairhint">${bare?'You can close this; it says here when the other PC has approved.':'It says here when the other PC has approved.'}</small>`
           :(syncSetup.pairError?`<small class="warn">${esc(syncSetup.pairError)}</small> <button class="btn" data-run="syncRetryPair">Try again</button>`
           :`<div class="pairwait">Waiting for your other PC to notice<span>.</span><span>.</span><span>.</span></div><small class="pairhint">${age>45000?'Still nothing. ':''}If Sundial on the other PC is tucked away in the tray, open its window. It can take up to a minute.</small>`);
         h+=`<div class="opt attention paircard"><div>Approve this PC from your other PC<small>Your days are locked with a key only your PCs hold. Open Sundial on the PC that already syncs: it asks to add this one. Approve it there if it shows the same code.</small>${wait}</div></div>`;
@@ -807,9 +810,11 @@ function pairBanners(){const host=bannerHost();const pend=Sync.pendingPairs();
   for(const p of pend){if(host.querySelector(`.banner.pair[data-pair="${CSS.escape(p.id)}"]`))continue;const el=document.createElement('div');el.className='banner pair start';el.dataset.pair=p.id;
     el.innerHTML=`<div class="ic">⇄</div><div class="tx"><span class="k">Add a PC to your sync?</span><b>${esc(p.name)}</b><small>Approve only if that PC shows <b class="pc">${esc(p.code)}</b>. Not yours? Not mine cancels it.</small></div><div class="bt"><button data-b="later">Not mine</button><button class="ok" data-b="go">Approve</button></div>`;
     el.querySelector('[data-b="later"]').onclick=()=>{Sync.denyPair(p.id)};
-    el.querySelector('[data-b="go"]').onclick=()=>{const b=el.querySelector('[data-b="go"]');b.textContent='…';b.disabled=true;Sync.approvePair(p.id).then(()=>approvedNote()).catch(e=>{b.textContent='Approve';b.disabled=false;toast(e.message||String(e))})};
+    el.querySelector('[data-b="go"]').onclick=()=>{const b=el.querySelector('[data-b="go"]');b.textContent='…';b.disabled=true;Sync.approvePair(p.id,p.code).then(()=>approvedNote()).catch(e=>{b.textContent='Approve';b.disabled=false;toast(e.message||String(e))})};
     host.appendChild(el);setTimeout(pairBanners,Math.max(1000,p.ts+15*60*1000-Date.now()+500));
-    if(window.SundialDesktop&&S().toasts.enabled)window.SundialDesktop.toastShow({kind:'pair',label:'Add a PC?',title:p.name,meta:'Approve only if it shows '+p.code,corner:S().toasts.corner,secs:60,sticky:false,pair:p.id,actions:[{id:'ignore',label:'Not mine'},{id:'approve',label:'Approve',primary:true}]}).catch(()=>{})}}
+    if(window.SundialDesktop&&S().toasts.enabled)window.SundialDesktop.toastShow({kind:'pair',label:'Add a PC?',title:p.name,meta:'Approve only if it shows '+p.code,corner:S().toasts.corner,secs:60,sticky:false,pair:p.id,code:p.code,actions:[{id:'ignore',label:'Not mine'},{id:'approve',label:'Approve',primary:true}]}).catch(()=>{})}
+  // a corner toast for a request that has since gone must not stay clickable
+  if(window.SundialDesktop&&window.SundialDesktop.toastCurrent)window.SundialDesktop.toastCurrent().then(cur=>{if(cur&&cur.kind==='pair'&&!pend.some(p=>p.id===cur.pair))window.SundialDesktop.toastDismiss()}).catch(()=>{})}
 function approvedNote(){const msg='Approved. The other PC picks it up in a few seconds.';if(window.SundialDesktop&&document.hidden)window.SundialDesktop.toastShow({kind:'info',label:'Sync',title:'Approved',meta:'The other PC picks it up in a few seconds.',corner:S().toasts.corner,secs:6,sticky:false,actions:[{id:'ok',label:'OK',primary:true}]}).catch(()=>{});else toast(msg)}
 // Forgot the passphrase, or want out: erase the synced copy (a code confirms it on the hosted service), then sign in fresh.
 function resetRows(s,opt){const r=syncSetup.reset;
@@ -886,7 +891,7 @@ async function init(){
   Sync.on((ev,arg)=>{
     if(ev==='start'||ev==='ok'||ev==='error'){const sm=document.querySelector('[data-run="syncNow"]')?.closest('.opt')?.querySelector('small');if(sm)sm.innerHTML=syncStatusText(Sync.st());return}
     if(ev==='signedout'||ev==='lostkey'){syncFlowReset();toast(arg||Sync.st().lastError||'Signed out of sync',()=>{sheetTab='data';settings()},'Open')}
-    if(ev==='pair')pairBanners();if(ev==='paired'){syncFlowReset();toast('This PC is in. Syncing.')}if(ev==='pairfail'){syncSetup.pairError=arg||'Approval did not go through.';toast(syncSetup.pairError,()=>{sheetTab='data';settings()},'Open')}
+    if(ev==='pair')pairBanners();if(ev==='pairready'){if(!$('.sheet-host')&&!$('.ob-host:not(.out)'))toast('Your other PC approved. One more click to finish.',()=>{sheetTab='data';settings()},'Open')}if(ev==='paired'){syncFlowReset();toast('This PC is in. Syncing.')}if(ev==='pairfail'){syncSetup.pairError=arg||'Approval did not go through.';toast(syncSetup.pairError,()=>{sheetTab='data';settings()},'Open')}
     if($('.sheet-host')&&sheetTab==='data')renderSheet();else if($('.ob-host:not(.out)')&&obStep===2)renderOnboarding()});Sync.start();
   if(D&&D.deepLinkPending)D.deepLinkPending().then(u=>{if(u)deepLink(u)}).catch(()=>{});
   setTimeout(()=>{const s=Sync.st();if(s.mode!=='off'&&!s.keyOk&&!Sync.hasKey())toast('Sync is signed in, but this PC is not approved yet',()=>{sheetTab='data';settings()},'Open')},2500);

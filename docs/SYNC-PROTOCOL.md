@@ -132,42 +132,46 @@ Self-hosted (token) accounts: bearer only, no body.
 The server never has the account key, so a new PC must get it from the user (the recovery code) or from a PC
 that already holds it. The second path is a commit-then-reveal handshake relayed as `pair` documents. The server
 stores and forwards them like any other bytes; their `ct` is base64 JSON, not ciphertext, and `nonce` is empty.
-Anyone holding a device token for the account can read and write these documents, which is exactly why the
-person must compare the code on both screens.
+Anyone holding a device token for the account can read and write these documents, and the server operator can
+answer them itself, which is why the person compares a code on both screens and confirms on the new PC.
 
 1. The new PC generates an ephemeral ECDH P-256 key pair (private key not extractable) and pushes `pair:<id>` with
    `{"t":"req","commit":"<base64 SHA-256(raw public key)>","name":"<this PC's name>"}`. It shows nothing yet and polls
    `/v1/sync` from the cursor it got back every 3 seconds, for up to 15 minutes.
-2. An unlocked PC that pulls the request generates its own ephemeral key pair and pushes `pair:<id>:ack` with
-   `{"t":"ack","pub":"<base64 raw public key>"}`. It shows no prompt yet and polls every 3 seconds while a request
-   is open.
+2. An unlocked PC that pulls the request, and has no other request open, generates its own ephemeral key pair and
+   pushes `pair:<id>:ack` with `{"t":"ack","commit":"<base64 SHA-256(its raw public key)>"}`. It reveals nothing and
+   shows no prompt yet. It answers one request at a time, never answers the same id twice, and expires requests by
+   its own clock: unopened after 2 minutes, unapproved after 15 (tombstoning the request so the new PC learns of it).
 3. The new PC pulls the ack and pushes `pair:<id>:open` with `{"t":"open","pub":"<its base64 raw public key>"}`.
-   Both sides now compute the check code: the first four bytes of
+4. The unlocked PC verifies `SHA-256(P_new)` equals the commit from step 1 (an open that does not match is ignored;
+   the real one may still arrive). In one step it pushes `pair:<id>:reveal` with `{"t":"reveal","pub":"<P_old>"}` and
+   shows the prompt "Add a PC? Approve only if it shows <code>", where code = the first four bytes of
    `SHA-256("sundial-pair-1" | id | P_new | P_old)` as an unsigned integer modulo 10000, shown as two pairs of digits.
-   The new PC displays it.
-4. The unlocked PC verifies `SHA-256(P_new)` equals the commit from step 1 (otherwise it drops the request for good),
-   computes the same code, and asks the person: "Add a PC? Approve only if it shows <code>". On approval it derives
-   the shared secret with ECDH, runs it through HKDF-SHA256 (empty salt, info `"sundial-pair-1" | id | P_new | P_old`)
-   into an AES-256-GCM key, and encrypts `{"k":"<base64 raw account key>","rc":"<recovery code or null>"}` with a
-   random 12-byte IV and additional data `pair:<id>`. It pushes `pair:<id>:grant` with
-   `{"t":"grant","iv":"<base64>","wrapped":"<base64>"}` and tombstones the request, the ack and the open.
-   "Not mine" tombstones the request instead, which the new PC reports as declined.
-5. The new PC derives the same key, decrypts the grant, and proves the candidate account key by decrypting the
-   `keycheck` document with it. Only then does it keep the key (and the recovery code, so this PC can show it too),
-   tombstone the grant, drop its starter examples and offer its own documents.
+   Every code this PC ever computes therefore costs it a visible prompt.
+5. The new PC verifies `SHA-256(P_old)` equals the commit from step 2 (otherwise it fails: "tampered with on the
+   way") and shows the same code.
+6. On Approve, the unlocked PC derives the shared secret with ECDH, runs it through HKDF-SHA256 (empty salt, info
+   `"sundial-pair-1" | id | P_new | P_old`) into an AES-256-GCM key, encrypts
+   `{"k":"<base64 raw account key>","rc":"<recovery code or null>"}` with a random 12-byte IV and additional data
+   `pair:<id>`, and pushes `pair:<id>:grant` `{"t":"grant","iv":"<base64>","wrapped":"<base64>"}` together with
+   tombstones for the request, ack, open and reveal. Approve is bound to the code that was shown; a prompt cannot
+   approve a request that replaced it. "Not mine" tombstones the request instead, which the new PC reports as declined.
+7. The new PC derives the same key, decrypts the grant, requires a 32-byte key, and proves it by decrypting the
+   `keycheck` document with it. It then asks the person: "Your other PC approved. Did it show <code>, and did you
+   click Approve there yourself?" Only on "Yes, finish" does it keep the key (and the recovery code, so this PC can
+   show it too), tombstone the grant, drop its starter examples and offer its own documents.
 
-Why this holds against the server and against a stolen token: the new PC's key is committed before the other side
-reveals its own, and the other side's key is revealed before the new PC's, so a party in the middle cannot choose
-either key after seeing the other. A substituted key changes the check code, which the person compares; a forged
-grant carries a key that fails the `keycheck`, so it is refused. Each attempt costs the attacker a visible prompt and
-succeeds with probability 1 in 10000 only if the person approves without comparing. Requests are ignored by the
-receiving side when older than an hour; the new PC tombstones its own request when it gives up, and tombstones are
-dated after the document they delete, whatever the other PC's clock said.
+What each piece defends against. The two commits mean neither key can be chosen after seeing the other, so a party
+in the middle changes the code the person compares. The reveal-with-prompt rule means a stolen token cannot collect
+codes silently: every attempt is a prompt on the real PC. The keycheck proof defeats a grant forged by a token
+holder. Against the server operator, who can serve a keycheck of their own, the protection is the person: the real
+PC never showed a prompt, and the new PC asks before keeping anything. The `keycheck` document is write-once and
+cannot be tombstoned (`rejected` reason `exists`), so two PCs setting up a brand-new account at the same moment
+cannot split it and a token holder cannot lock new PCs out. Tombstones are dated after the document they delete,
+whatever the other PC's clock said.
 
 The recovery code (20 characters from an alphabet without look-alikes, invented by the app on the first PC; or a
-passphrase typed in older versions) remains the other way in, and "erase the synced copy and start over" the way
-out. The server refuses a second `keycheck` for an account (`rejected` reason `exists`), so two PCs that set up a
-brand-new account at the same moment cannot split it: the loser is told to get approved by the winner.
+passphrase typed in older versions) remains the other way in, and "erase the synced copy and start over" the way out.
 
 ## Operator notes
 

@@ -588,8 +588,9 @@ async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncR
             .map_err(internal)?;
         let mut old_len = 0i64;
         if let Some((u, len)) = stored {
-            // the account's key is set exactly once; a second first-time setup loses (two PCs signing in at the same moment)
-            if d.kind == "keycheck" && !d.deleted {
+            // the account's key is set exactly once and never withdrawn: a second first-time setup loses (two PCs
+            // signing in at the same moment), and a tombstone cannot lock new PCs out
+            if d.kind == "keycheck" {
                 rejected.push(json!({ "id": d.id, "kind": d.kind, "reason": "exists" }));
                 continue;
             }

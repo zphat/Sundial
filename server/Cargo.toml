@@ -1,6 +1,6 @@
 [package]
 name = "sundial-sync"
-version = "0.1.4"
+version = "0.1.5"
 description = "Sundial Sync server: an end-to-end-encrypted document mailbox (protocol v1)"
 edition = "2021"
 license = "AGPL-3.0-only"
