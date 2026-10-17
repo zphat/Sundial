@@ -366,6 +366,12 @@ fn app_version(app: AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
+/// The name this PC goes by, for the "add a PC?" prompt on the other PC.
+#[tauri::command]
+fn machine_name() -> String {
+    std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default()
+}
+
 #[tauri::command]
 async fn update_check(app: AppHandle, pending: tauri::State<'_, PendingUpdate>) -> Result<Option<Value>, String> {
     let updater = app.updater().map_err(|e| e.to_string())?;
@@ -693,7 +699,7 @@ pub fn run() {
             load_db, save_db, data_path, reveal_data, open_url, notify,
             autostart_get, autostart_set, secret_set, secret_get, secret_delete,
             set_hotkeys, ai_parse, app_version, update_check, update_install,
-            toast_show, toast_payload, toast_action, deep_link_pending
+            toast_show, toast_payload, toast_action, deep_link_pending, machine_name
         ])
         .build(tauri::generate_context!())
         .expect("error while building Sundial")

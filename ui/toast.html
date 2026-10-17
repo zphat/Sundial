@@ -55,7 +55,7 @@ button.primary:hover{color:var(--on-accent);filter:brightness(1.05)}
   const card=document.getElementById('card');
   const corner=p.corner||'bottom-left';
   card.className='card '+(p.kind||'remind')+(corner.endsWith('right')?' right':' left');
-  const icon=p.kind==='update'?'↻':p.kind==='start'?'☉':'◔';
+  const icon=p.kind==='update'?'↻':p.kind==='start'?'☉':p.kind==='pair'?'⇄':'◔';
   const acts=(p.actions||[{id:'ok',label:'OK',primary:true}]);
   card.innerHTML=`<div class="stripe"></div><div class="ic">${icon}</div><div class="tx"><span class="k">${esc(p.label||'')}</span><b title="${esc(p.title)}">${esc(p.title)}</b>${p.meta?`<small>${esc(p.meta)}</small>`:''}</div>
     <div class="bt">${acts.map(a=>`<button data-a="${esc(a.id)}" class="${a.primary?'primary':''}">${esc(a.label)}</button>`).join('')}</div>

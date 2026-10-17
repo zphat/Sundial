@@ -20,7 +20,7 @@ MAX_CT = 64 * 1024
 FUTURE_MS = 24 * 3600 * 1000
 QUOTA = 50 * 1024 * 1024                      # ciphertext one account may hold in total
 LOCK_FAILS, LOCK_MS = 10, 24 * 3600 * 1000    # wrong codes that lock an address, and for how long
-KINDS = ("task", "note", "labels", "routines", "keycheck")
+KINDS = ("task", "note", "labels", "routines", "keycheck", "pair")
 # Browsers: only the desktop app's webview and the local preview may call the API. SUNDIAL_ORIGINS=a,b adds more.
 ORIGINS = {"http://tauri.localhost", "https://tauri.localhost", "tauri://localhost", "http://localhost:8767", "http://127.0.0.1:8767", "http://localhost:8000", "http://127.0.0.1:8000"}
 ORIGINS |= {o.strip() for o in os.environ.get("SUNDIAL_ORIGINS", "").split(",") if o.strip()}
@@ -134,6 +134,7 @@ class Store:
                       else "future" if up > t + FUTURE_MS else None)
             if reason: rejected.append({"id": did[:128], "kind": kind[:32], "reason": reason}); continue
             cur = self.db.execute("SELECT updated_at, LENGTH(ct) FROM docs WHERE account=? AND id=?", (account, did)).fetchone()
+            if cur and kind == "keycheck" and not deleted: rejected.append({"id": did, "kind": kind, "reason": "exists"}); continue   # the key is set once
             if cur and cur[0] > up: continue   # the stored version is newer; it comes back in the pull
             if deleted: ct = ""
             nxt = used - (cur[1] if cur else 0) + len(ct)

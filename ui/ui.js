@@ -305,6 +305,8 @@ function onToastAction(ev){const a=ev.action,p=ev.payload||{};const t=p.id?get(p
   if(a==='snooze'){SFX.stopRepeat();if(t)snooze(t);return}
   if(a==='open'){if(t){view='day';goDay(t.date);openId=t.id;render();revealTask(t.id)}return}
   if(a==='install'){installUpdate(null);return}
+  if(a==='approve'&&p.pair){Sync.approvePair(p.pair).then(()=>approvedNote()).catch(e=>toast(e.message||String(e)));return}
+  if(a==='ignore'&&p.pair){Sync.denyPair(p.pair);return}
   if(a==='later')return;
 }
 function takeover(x,demo){
@@ -514,21 +516,25 @@ function runSetting(k,b){
   if(k==='rtNew'){newRoutine();renderSheet();const ta=[...document.querySelectorAll('.rt-name')].pop();if(ta){ta.focus();ta.select()}}
   if(k==='rtReset'){resetRoutines();renderSheet();render();toast('Starter routines restored')}
   if(k==='revealData'){window.SundialDesktop?.reveal().catch(e=>toast(String(e)))}
-  if(k==='syncConnect'){const url=($('#syncUrl')?.value||'').trim(),tok=$('#syncToken')?.value||'';if(!url||!tok){toast('Server URL and token, please');return}b.textContent='…';Sync.connectSelf(url,tok).then(()=>{syncRefresh();toast('Connected. Now set the passphrase.')}).catch(e=>{b.textContent='Connect';toast('Could not connect: '+(e.message||e))})}
+  if(k==='syncConnect'){const url=($('#syncUrl')?.value||'').trim(),tok=$('#syncToken')?.value||'';if(!url||!tok){toast('Server URL and token, please');return}b.textContent='…';Sync.connectSelf(url,tok).then(()=>{syncFlowReset();syncRefresh();toast('Connected. Setting up sync on this PC…')}).catch(e=>{b.textContent='Connect';toast('Could not connect: '+(e.message||e))})}
   if(k==='syncAdvanced'){syncSetup.advanced=!syncSetup.advanced;syncRefresh()}
   if(k==='syncCode'){const url=($('#syncUrl')?.value||'').trim()||Sync.HOSTED_URL,em=($('#syncEmail')?.value||'').trim();if(!/.+@.+\..+/.test(em)){toast('Enter your email address');return}syncSetup.url=url;syncSetup.email=em;b.textContent='…';Sync.requestCode(url,em).then(()=>{syncSetup.codeSent=true;syncRefresh();toast('Code sent. Check your mail.')}).catch(e=>{b.textContent='Send code';toast(e.message||String(e))})}
-  if(k==='syncVerify'){const code=$('#syncCodeIn')?.value||'';b.textContent='…';Sync.verifyCode(syncSetup.email,code).then(()=>{syncSetup.codeSent=false;syncSetup.existing=null;syncRefresh();toast('Signed in. One more step: the passphrase.')}).catch(e=>{b.textContent='Sign in';toast(e.message||String(e))})}
-  if(k==='syncShowPass'){syncSetup.showPass=!syncSetup.showPass;const a=$('#syncPass')?.value||'',b2=$('#syncPass2')?.value||'';syncRefresh();if($('#syncPass'))$('#syncPass').value=a;if($('#syncPass2'))$('#syncPass2').value=b2;passGate()}
-  if(k==='syncPass'){const p=$('#syncPass')?.value||'';const creating=syncSetup.existing===false;
-    if(creating){const p2=$('#syncPass2')?.value||'';if(p.length<8){toast('Use at least 8 characters');return}if(p!==p2){toast('The two passphrases do not match');return}if(!$('#syncWrote')?.checked){toast('Tick the box once you have written it down');return}}
-    const label=b.textContent;b.textContent='…';b.disabled=true;Sync.setPassphrase(p).then(created=>{syncSetup.existing=null;syncRefresh();toast(created?'Passphrase set. Syncing.':'Unlocked. Syncing.')}).catch(e=>{b.textContent=label;b.disabled=false;toast(e.message||String(e))})}
+  if(k==='syncVerify'){const code=$('#syncCodeIn')?.value||'';b.textContent='…';Sync.verifyCode(syncSetup.email,code).then(()=>{syncSetup.codeSent=false;syncFlowReset();syncRefresh();toast('Signed in.')}).catch(e=>{b.textContent='Sign in';toast(e.message||String(e))})}
+  if(k==='syncShowPass'){syncSetup.showPass=!syncSetup.showPass;const a=$('#syncPass')?.value||'';syncRefresh();if($('#syncPass'))$('#syncPass').value=a}
+  if(k==='syncPass'){const p=$('#syncPass')?.value||'';const label=b.textContent;b.textContent='…';b.disabled=true;Sync.unlockWith(p).then(()=>{syncFlowReset();syncRefresh();toast('Unlocked. Syncing.')}).catch(e=>{b.textContent=label;b.disabled=false;if(e.raced){syncSetup.existing=true}toast(e.message||String(e));if(e.raced)syncRefresh()})}
+  if(k==='syncRetryPair'){syncSetup.pairError=null;syncRefresh()}
+  if(k==='syncUseCode'){syncSetup.useCode=!syncSetup.useCode;syncRefresh()}
+  if(k==='syncRetrySetup'){syncSetup.setupError=null;syncSetup.existing=null;syncRefresh()}
+  if(k==='syncRecoveryDone'){syncSetup.showRecovery=false;syncSetup.recovery=null;syncRefresh()}
+  if(k==='syncCopyRecovery'){const code=syncSetup.showRecovery?syncSetup.recovery:syncSetup.recoveryShown;if(code)copy(code,'Recovery code')}
+  if(k==='syncShowRecovery'){if(syncSetup.revealRecovery){syncSetup.revealRecovery=false;syncSetup.recoveryShown=null;syncRefresh()}else{b.textContent='…';Sync.recoveryCode().then(c=>{syncSetup.recoveryShown=c||null;syncSetup.revealRecovery=true;syncRefresh()})}}
   if(k==='syncNow'){b.textContent='…';Sync.syncNow().finally(()=>syncRefresh())}
-  if(k==='syncOut'){if(!syncSetup.outArmed){syncSetup.outArmed=true;syncRefresh();setTimeout(()=>{if(syncSetup.outArmed){syncSetup.outArmed=false;syncRefresh()}},4000);return}syncSetup.outArmed=false;Sync.signOut().then(()=>{syncRefresh();toast('Signed out of sync. Your days stay on this PC; signing back in needs your passphrase.')})}
+  if(k==='syncOut'){if(!syncSetup.outArmed){syncSetup.outArmed=true;syncRefresh();setTimeout(()=>{if(syncSetup.outArmed){syncSetup.outArmed=false;syncRefresh()}},5000);return}Sync.signOut().then(()=>{syncFlowReset();syncRefresh();toast('Signed out of sync. Your days stay on this PC, and so does the recovery code.')})}
   if(k==='syncResetStart'){syncSetup.reset='ask';syncRefresh()}
   if(k==='syncResetCancel'){syncSetup.reset=null;syncRefresh()}
   if(k==='syncResetCode'){const s=Sync.st();b.textContent='…';Sync.requestCode(s.server,s.email).then(()=>{syncSetup.reset='code';syncRefresh()}).catch(e=>{b.textContent='Email me a code';toast(e.message||String(e))})}
   if(k==='syncResetGo'){const s=Sync.st();const code=$('#syncResetIn')?.value||'';if(s.mode==='hosted'&&code.replace(/\D/g,'').length<6){toast('Enter the six-digit code from the email');return}b.textContent='…';b.disabled=true;const em=s.email;
-    Sync.deleteAccount(code).then(()=>{syncSetup.reset=null;syncSetup.existing=null;syncSetup.codeSent=false;syncSetup.email=em||syncSetup.email;syncRefresh();toast('Synced copy erased. Sign in again on the PC that has your days; they upload with the new passphrase.')}).catch(e=>{b.textContent='Erase and start over';b.disabled=false;toast(e.message||String(e))})}
+    Sync.deleteAccount(code).then(()=>{syncSetup.reset=null;syncFlowReset();syncSetup.codeSent=false;syncSetup.email=em||syncSetup.email;syncRefresh();toast('Synced copy erased. Sign in again on the PC that has your days: it uploads them again and shows a new recovery code.')}).catch(e=>{b.textContent='Erase and start over';b.disabled=false;toast(e.message||String(e))})}
   if(k==='openNotes')openExternal('https://github.com/zphat/Sundial/releases/latest');
   if(k==='openIssues')openExternal('https://github.com/zphat/Sundial/issues/new');
   if(k==='openPrivacy')openExternal('https://github.com/zphat/Sundial/blob/main/PRIVACY.md');
@@ -583,7 +589,7 @@ document.addEventListener('input',e=>{
   if(t.dataset.ai){setPath(S(),'ai.'+t.dataset.ai,t.value.trim());save();return}
   if(t.dataset.rtName){const r=state.routines.find(x=>x.id===t.dataset.rtName);if(r){r.name=t.value;touchRoutines();save()}return}
   if(t.dataset.rtLines){const r=state.routines.find(x=>x.id===t.dataset.rtLines);if(r){r.lines=t.value.split('\n');touchRoutines();save()}return}
-  if(t.id==='syncUrl')syncSetup.url=t.value;if(t.id==='syncEmail')syncSetup.email=t.value;if(t.id==='syncPass'||t.id==='syncPass2'||t.id==='syncWrote')passGate();
+  if(t.id==='syncUrl')syncSetup.url=t.value;if(t.id==='syncEmail')syncSetup.email=t.value;
   if(!openId)return;const x=get(openId);if(!x)return;
   if(t.id==='edTitle'){upd(openId,{title:t.value},true);const row=document.querySelector(`.task[data-id="${openId}"] .t`);if(row)row.textContent=t.value}
   if(t.id==='edNotes')upd(openId,{notes:t.value},true);
@@ -726,7 +732,7 @@ function renderOnboarding(){const host=document.querySelector('.ob-host:not(.out
     <div class="ob-foot"><button class="btn" data-run="obBack">Back</button><span class="spacer"></span><button class="btn primary" data-run="obDone">${done}</button></div>`;
 }
 function finishOnboarding(style){const st=S();if(HOTKEY_STYLES[style]){st.quick.hotkey=HOTKEY_STYLES[style].quick;st.voice.hotkey=HOTKEY_STYLES[style].voice}st.onboarded=true;save();syncHotkeys();closeScrim();
-  const sy=Sync.st();if(sy.mode==='off')syncSetup.mode='hosted';if(sy.mode!=='off'&&!sy.keyOk)setTimeout(()=>toast('Sync is connected but not unlocked: set your passphrase',()=>{sheetTab='data';settings()},'Open'),900);else toast('Quick add: '+st.quick.hotkey)}
+  const sy=Sync.st();if(sy.mode==='off')syncSetup.mode='hosted';if(sy.mode!=='off'&&!sy.keyOk)setTimeout(()=>toast('Sync is signed in, but this PC is not approved yet',()=>{sheetTab='data';settings()},'Open'),900);else toast('Quick add: '+st.quick.hotkey)}
 
 // sundial://signin?code=482913 (the Open Sundial button on the email's code page): Data & sync opens with the code
 // in place, and signs in at once when this is the device that asked for the code.
@@ -739,44 +745,75 @@ function deepLink(url){let u;try{u=new URL(String(url))}catch(e){return}if(u.pro
   syncSetup.mode='hosted';syncSetup.codeSent=true;
   if($('.ob-host:not(.out)')){obStep=2;obSync='hosted';renderOnboarding()}else{sheetTab='data';if($('.scrim.sheet-host'))renderSheet();else settings()}
   const inp=$('#syncCodeIn');if(inp)inp.value=code;
-  if(/.+@.+\..+/.test(syncSetup.email||''))Sync.verifyCode(syncSetup.email,code).then(()=>{syncSetup.codeSent=false;renderSheet();toast('Signed in. Now set the passphrase.')}).catch(e=>toast(e.message||String(e)));
+  if(/.+@.+\..+/.test(syncSetup.email||''))Sync.verifyCode(syncSetup.email,code).then(()=>{syncSetup.codeSent=false;syncFlowReset();syncRefresh();toast('Signed in.')}).catch(e=>toast(e.message||String(e)));
   else{toast('Enter the email the code went to, then Sign in');$('#syncEmail')?.focus()}}
 
 // ---------- sync settings ----------
-// The create-passphrase button opens only when both fields agree and the box is ticked.
-function passGate(){const go=$('#syncPassGo');if(!go)return;const a=$('#syncPass')?.value||'',b=$('#syncPass2')?.value||'';go.disabled=!(a.length>=8&&a===b&&$('#syncWrote')?.checked)}
 function openExternal(u){if(window.SundialDesktop)window.SundialDesktop.openUrl(u).catch(()=>window.open(u,'_blank'));else window.open(u,'_blank')}
 const optRow=(label,sub,ctl)=>`<div class="opt"><div>${label}${sub?`<small>${sub}</small>`:''}</div><div class="ctl">${ctl}</div></div>`;
 // The sync rows live in Settings and in first-run setup; after any sync action, redraw whichever is open.
 function syncRefresh(){if($('.ob-host:not(.out)'))renderOnboarding();else renderSheet()}
-const syncSetup={mode:'hosted',url:'',email:'',codeSent:false,advanced:false,existing:null,checking:false,showPass:false,reset:null,outArmed:false};
+const syncSetup={mode:'hosted',url:'',email:'',codeSent:false,advanced:false,existing:null,checking:false,showPass:false,reset:null,outArmed:false,settingUp:false,setupError:null,recovery:null,showRecovery:false,revealRecovery:false,recoveryShown:null,useCode:false,pairError:null,pairStarting:false,triedStored:false};
 function syncRows(st,opt,bare){const s=Sync.st();const D=window.SundialDesktop;let h=bare?'':`<h3>Sync</h3>`;
   if(s.mode==='off'){
     if(!bare)h+=opt('Sync between devices','End-to-end encrypted: every task is sealed on this device before it leaves, and the server only ever stores ciphertext. Local data keeps working either way.',`<div class="seg">${[['hosted','Sundial Sync'],['self','My own server']].map(([v,l])=>`<button data-syncmode="${v}" aria-pressed="${syncSetup.mode===v}">${l}</button>`).join('')}</div>`);
     if(syncSetup.mode==='self')h+=opt('Your server','A Sundial Sync server you run (see server/README in the repo). The token is whatever you started it with.',`<input class="key" style="text-align:left;min-width:220px" id="syncUrl" placeholder="http://localhost:8768" value="${esc(syncSetup.url||s.server||'')}" spellcheck="false"><input class="key" style="text-align:left;min-width:150px" id="syncToken" type="password" placeholder="token" autocomplete="off"><button class="btn" data-run="syncConnect">Connect</button>`);
-    else{h+=opt(bare?'Your email':'Sundial Sync <span class="plan">free during the beta</span>',bare?'We email you a six-digit code; there is no password to invent. Afterwards you make up one passphrase that locks your days.':'Keeps your days the same on all your Windows PCs, end-to-end encrypted, hosted in Switzerland. Phone and Mac apps are not out yet. Your email, a six-digit code, one passphrase. Free during the beta, no card needed. Afterwards $2.49 a month or $19.99 a year; sign up during the beta and your price stays $9.99 a year for as long as you stay subscribed.',`<input class="key" style="text-align:left;min-width:200px" id="syncEmail" type="email" placeholder="you@example.com" value="${esc(syncSetup.email||'')}" autocomplete="email"><button class="btn primary" data-run="syncCode">Send code</button>`);
+    else{h+=opt(bare?'Your email':'Sundial Sync <span class="plan">free during the beta</span>',bare?'We email you a six-digit code; there is no password to invent. Your days are locked with a key only your PCs hold.':'Keeps your days the same on all your Windows PCs, end-to-end encrypted, hosted in Switzerland. Phone and Mac apps are not out yet. Your email and a six-digit code; that is all. Free during the beta, no card needed. Afterwards $2.49 a month or $19.99 a year; sign up during the beta and your price stays $9.99 a year for as long as you stay subscribed.',`<input class="key" style="text-align:left;min-width:200px" id="syncEmail" type="email" placeholder="you@example.com" value="${esc(syncSetup.email||'')}" autocomplete="email"><button class="btn primary" data-run="syncCode">Send code</button>`);
       if(syncSetup.codeSent)h+=opt('Code from the email',`Sent to ${esc(syncSetup.email)}. Not there after a minute? Check spam, then press Send code again.`,`<input class="key" style="min-width:110px" id="syncCodeIn" inputmode="numeric" placeholder="482913"><button class="btn primary" data-run="syncVerify">Sign in</button>`);
       h+=`<div class="opt" style="border:0;padding-top:0"><div><small><button class="btn" style="padding:2px 8px;font-size:11px" data-run="syncAdvanced">${syncSetup.advanced?'Hide':'Advanced'}</button>${syncSetup.advanced?` <input class="key" style="text-align:left;min-width:220px;margin-left:6px" id="syncUrl" placeholder="${esc(Sync.HOSTED_URL)}" value="${esc(syncSetup.url||'')}" spellcheck="false"> another Sundial Sync server (email mode)`:''}</small></div></div>`}
     return h}
-  h+=opt('Connected',`${s.mode==='hosted'?esc(s.email)+' · <span class="plan">'+esc(s.plan||'beta')+'</span> · this PC':'your server · <code>'+esc(s.server)+'</code>'}`,`<button class="btn" data-run="syncOut">${syncSetup.outArmed?'Sign out? Click again':'Sign out'}</button>`);
+  h+=opt('Connected',`${s.mode==='hosted'?esc(s.email)+' · <span class="plan">'+esc(s.plan||'beta')+'</span> · this PC':'your server · <code>'+esc(s.server)+'</code>'}`,`<button class="btn" data-run="syncOut">${syncSetup.outArmed?'Sign out this PC? Click again':'Sign out'}</button>`);
   if(s.mode==='hosted')h+=opt('Plan','Beta: free. Founding price locked in: $9.99 a year once billing starts, for as long as you stay subscribed.','');
   if(syncSetup.reset)h+=resetRows(s,opt);
   else if(!s.keyOk){
     if(syncSetup.existing==null&&!syncSetup.checking){syncSetup.checking=true;Sync.checkAccount().then(r=>{syncSetup.existing=r.existing}).catch(()=>{syncSetup.existing=false}).finally(()=>{syncSetup.checking=false;syncRefresh()})}
-    const pt=syncSetup.showPass?'text':'password',show=`<button class="btn" data-run="syncShowPass">${syncSetup.showPass?'Hide':'Show'}</button>`;
-    if(syncSetup.existing==null)h+=opt('One more step: your passphrase','Checking this account…','');
-    else if(syncSetup.existing)h+=`<div class="opt attention passenter"><div>Enter your sync passphrase<small>The one you made up on your first PC. It unlocks your days here; the server never sees it.</small></div><div class="ctl"><input class="key" style="text-align:left;min-width:190px" id="syncPass" type="${pt}" placeholder="passphrase" autocomplete="current-password">${show}<button class="btn primary" data-run="syncPass">Unlock</button></div></div>
-      <div class="opt" style="border:0;padding-top:0"><div><small><button class="btn" style="padding:2px 8px;font-size:11px" data-run="syncResetStart">Forgot it?</button> Your days on your other PC are safe. You can erase the synced copy and start over from the PC that has them.</small></div></div>`;
-    else h+=`<div class="opt attention passcreate"><div>Create your sync passphrase<small>Sundial locks your days with it before they leave this PC. Nobody else has it, not even Sundial. You will type it once on each new PC. Write it down: if it is lost, the synced copy cannot be opened, but your days on this PC are fine.</small>
-      <div class="passfields"><input class="key" id="syncPass" type="${pt}" placeholder="passphrase, 8+ characters" autocomplete="new-password"><input class="key" id="syncPass2" type="${pt}" placeholder="type it again" autocomplete="new-password">${show}</div>
-      <label class="wrote"><input type="checkbox" id="syncWrote"> I wrote it down somewhere safe</label></div><div class="ctl"><button class="btn primary" data-run="syncPass" id="syncPassGo" disabled>Create and start syncing</button></div></div>`;
+    if(syncSetup.existing==null)h+=opt('Almost there','Checking this account…','');
+    else if(!syncSetup.existing){
+      // first PC: the app invents the key and starts syncing; the recovery code is shown once, below, when it is ready
+      if(!syncSetup.settingUp&&!syncSetup.setupError){syncSetup.settingUp=true;Sync.setupFirst().then(code=>{syncSetup.recovery=code;syncSetup.showRecovery=true}).catch(e=>{syncSetup.setupError=e.message||String(e)}).finally(()=>{syncSetup.settingUp=false;syncSetup.existing=null;syncRefresh()})}
+      h+=opt('Almost there',syncSetup.setupError?`<span class="warn">${esc(syncSetup.setupError)}</span>`:'Setting up sync on this PC…',syncSetup.setupError?'<button class="btn" data-run="syncRetrySetup">Try again</button>':'')}
+    else{
+      // another PC. First: does this PC still remember the code from before (a plain sign-out keeps it)? Then: approval from an existing PC, or the code typed in.
+      if(!syncSetup.triedStored){syncSetup.triedStored=true;Sync.recoveryCode().then(c=>c?Sync.unlockWith(c):Promise.reject()).then(()=>{syncSetup.existing=null;toast('Back in. Syncing.')}).catch(()=>{}).finally(()=>syncRefresh());h+=opt('Almost there','Checking this PC…','')}
+      else{
+        if(!Sync.isPairing()&&!syncSetup.pairError&&!syncSetup.pairStarting){syncSetup.pairStarting=true;Sync.startPairing().then(()=>syncRefresh()).catch(e=>{syncSetup.pairError=e.message||String(e);syncRefresh()}).finally(()=>{syncSetup.pairStarting=false})}
+        const code=Sync.pairingCode(),age=Sync.pairingSince()?Date.now()-Sync.pairingSince():0;
+        const wait=code?`<div class="paircode">${esc(code)}</div><div class="pairwait">Waiting for the approval<span>.</span><span>.</span><span>.</span></div><small class="pairhint">${bare?'You can close this; it says here when the other PC has approved.':'It says here when the other PC has approved.'}</small>`
+          :(syncSetup.pairError?`<small class="warn">${esc(syncSetup.pairError)}</small> <button class="btn" data-run="syncRetryPair">Try again</button>`
+          :`<div class="pairwait">Waiting for your other PC to notice<span>.</span><span>.</span><span>.</span></div><small class="pairhint">${age>45000?'Still nothing. ':''}If Sundial on the other PC is tucked away in the tray, open its window. It can take up to a minute.</small>`);
+        h+=`<div class="opt attention paircard"><div>Approve this PC from your other PC<small>Your days are locked with a key only your PCs hold. Open Sundial on the PC that already syncs: it asks to add this one. Approve it there if it shows the same code.</small>${wait}</div></div>`;
+        h+=`<div class="opt" style="border:0;padding-top:0"><div><small>No other PC nearby? <button class="btn" style="padding:2px 8px;font-size:11px" data-run="syncUseCode">${syncSetup.useCode?'Hide the code field':'Enter the recovery code'}</button> It was shown when sync was first set up; on a PC that syncs, Settings → Data & sync shows it again.</small></div></div>`;
+        if(syncSetup.useCode)h+=opt('Recovery code','Or your passphrase, if you chose your own in an older version.',`<input class="key" style="text-align:left;min-width:230px" id="syncPass" type="${syncSetup.showPass?'text':'password'}" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false"><button class="btn" data-run="syncShowPass">${syncSetup.showPass?'Hide':'Show'}</button><button class="btn primary" data-run="syncPass">Unlock</button>`);
+        h+=`<div class="opt" style="border:0;padding-top:0"><div><small>Lost both? <button class="btn" style="padding:2px 8px;font-size:11px" data-run="syncResetStart">Erase the synced copy and start over</button> Your days on every PC stay where they are.</small></div></div>`;
+      }
+    }
   }
-  else h+=opt('Status',`${s.lastError?esc(s.lastError):(s.lastSync?'Last synced '+new Date(s.lastSync).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'Not synced yet')} · ${Sync.pending()} waiting${Sync.isRunning()?' · syncing…':''}${Sync.rejected()?' · '+Sync.rejected()+' too large to sync':''}${D?'':' · key kept in this browser'}`,`<button class="btn" data-run="syncNow">Sync now</button>`)
-    +opt('Start over or leave','Erases the synced copy for every PC and signs them all out. Nothing on any PC is deleted.','<button class="btn" data-run="syncResetStart">Erase synced copy…</button>');
+  if(s.keyOk){if(syncSetup.showRecovery)h+=recoveryCard(syncSetup.recovery,true);
+    h+=opt('Status',syncStatusText(s),`<button class="btn" data-run="syncNow">Sync now</button>`);
+    if(!bare){h+=opt('Add another PC','Sign in there with the same email. A message appears here asking to approve it; check that the codes match, then click Approve.','');
+      if(!syncSetup.showRecovery)h+=opt('Recovery code','Needed to add a PC when this one is not around, or to get back in if this PC is lost or signed out. Keep it somewhere safe.',`<button class="btn" data-run="syncShowRecovery">${syncSetup.revealRecovery?'Hide':'Show'}</button>`)+(syncSetup.revealRecovery?recoveryCard(syncSetup.recoveryShown,false):'');
+      h+=opt('Start over or leave','Erases the synced copy for every PC and signs them all out. Nothing on any PC is deleted.','<button class="btn" data-run="syncResetStart">Erase synced copy…</button>')}}
   return h}
+// One line of status that the sync listener can refresh without redrawing the whole tab.
+function syncStatusText(s){const D=window.SundialDesktop;return `${s.lastError?esc(s.lastError):(s.lastSync?'Last synced '+new Date(s.lastSync).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'Not synced yet')} · ${Sync.pending()} waiting${Sync.isRunning()?' · syncing…':''}${Sync.rejected()?' · '+Sync.rejected()+' too large to sync':''}${D?'':' · key kept in this browser'}`}
+// Everything the sync setup remembers between screens; cleared whenever an account is entered or left.
+function syncFlowReset(){Object.assign(syncSetup,{existing:null,checking:false,pairError:null,pairStarting:false,setupError:null,settingUp:false,useCode:false,showRecovery:false,revealRecovery:false,recoveryShown:null,recovery:null,triedStored:false,outArmed:false})}
+// The secret that unlocks the synced copy on another PC. Shown once right after setup, and on request later.
+function recoveryCard(code,first){if(code==null)return `<div class="opt" style="border:0;padding-top:0"><div><small>This PC does not hold the recovery code. A PC that set sync up, or was approved by one, shows it under Settings → Data & sync. If this account was made in an older version with a passphrase you chose, that passphrase is the code.</small></div></div>`;
+  return `<div class="opt attention recovery"><div>${first?'Syncing. Save your recovery code':'Your recovery code'}<small>${first?'You only need it to add another PC when this one is not nearby, or if this PC is lost. Nobody can recover it for you, not even Sundial. Settings → Data & sync shows it again.':'Anyone with this code and your email can read your synced days. Keep it private.'}</small><div class="rc">${esc(code)}</div></div><div class="ctl"><button class="btn" data-run="syncCopyRecovery">Copy</button>${first?'<button class="btn primary" data-run="syncRecoveryDone">I saved it</button>':''}</div></div>`}
+// Another PC wants in: one banner per request, and a corner toast on the desktop. Approving sends it the key.
+function pairBanners(){const host=bannerHost();const pend=Sync.pendingPairs();
+  host.querySelectorAll('.banner.pair').forEach(el=>{if(!pend.some(p=>p.id===el.dataset.pair))dismissBanner(el)});
+  for(const p of pend){if(host.querySelector(`.banner.pair[data-pair="${CSS.escape(p.id)}"]`))continue;const el=document.createElement('div');el.className='banner pair start';el.dataset.pair=p.id;
+    el.innerHTML=`<div class="ic">⇄</div><div class="tx"><span class="k">Add a PC to your sync?</span><b>${esc(p.name)}</b><small>Approve only if that PC shows <b class="pc">${esc(p.code)}</b>. Not yours? Not mine cancels it.</small></div><div class="bt"><button data-b="later">Not mine</button><button class="ok" data-b="go">Approve</button></div>`;
+    el.querySelector('[data-b="later"]').onclick=()=>{Sync.denyPair(p.id)};
+    el.querySelector('[data-b="go"]').onclick=()=>{const b=el.querySelector('[data-b="go"]');b.textContent='…';b.disabled=true;Sync.approvePair(p.id).then(()=>approvedNote()).catch(e=>{b.textContent='Approve';b.disabled=false;toast(e.message||String(e))})};
+    host.appendChild(el);setTimeout(pairBanners,Math.max(1000,p.ts+15*60*1000-Date.now()+500));
+    if(window.SundialDesktop&&S().toasts.enabled)window.SundialDesktop.toastShow({kind:'pair',label:'Add a PC?',title:p.name,meta:'Approve only if it shows '+p.code,corner:S().toasts.corner,secs:60,sticky:false,pair:p.id,actions:[{id:'ignore',label:'Not mine'},{id:'approve',label:'Approve',primary:true}]}).catch(()=>{})}}
+function approvedNote(){const msg='Approved. The other PC picks it up in a few seconds.';if(window.SundialDesktop&&document.hidden)window.SundialDesktop.toastShow({kind:'info',label:'Sync',title:'Approved',meta:'The other PC picks it up in a few seconds.',corner:S().toasts.corner,secs:6,sticky:false,actions:[{id:'ok',label:'OK',primary:true}]}).catch(()=>{});else toast(msg)}
 // Forgot the passphrase, or want out: erase the synced copy (a code confirms it on the hosted service), then sign in fresh.
 function resetRows(s,opt){const r=syncSetup.reset;
-  let h=`<div class="opt attention"><div>Erase the synced copy and start over<small>Removes everything the sync server holds for this account and signs out every PC. Nothing on any PC is deleted: the PC you continue from uploads its days again with a new passphrase.${s.mode==='hosted'?' A code goes to your email first, so nobody else can do this.':''}</small></div><div class="ctl">${s.mode==='hosted'&&r==='ask'?'<button class="btn primary" data-run="syncResetCode">Email me a code</button>':''}<button class="btn" data-run="syncResetCancel">Cancel</button></div></div>`;
+  let h=`<div class="opt attention"><div>Erase the synced copy and start over<small>Removes everything the sync server holds for this account and signs out every PC. Nothing on any PC is deleted: the PC you continue from uploads its days again and shows a new recovery code.${s.mode==='hosted'?' A code goes to your email first, so nobody else can do this.':''}</small></div><div class="ctl">${s.mode==='hosted'&&r==='ask'?'<button class="btn primary" data-run="syncResetCode">Email me a code</button>':''}<button class="btn" data-run="syncResetCancel">Cancel</button></div></div>`;
   if(r==='code'||s.mode!=='hosted')h+=opt('Confirm',s.mode==='hosted'?`Code sent to ${esc(s.email)}.`:'Self-hosted server: no code needed.',`${s.mode==='hosted'?'<input class="key" style="min-width:110px" id="syncResetIn" inputmode="numeric" placeholder="482913">':''}<button class="btn del" data-run="syncResetGo">Erase and start over</button>`);
   return h}
 
@@ -846,9 +883,13 @@ async function init(){
     D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});D.on('sundial://deep-link',e=>deepLink(e.payload));D.on('sundial://hidden',()=>{if(S().trayNoticeShown)return;S().trayNoticeShown=true;save();D.toastShow({kind:'info',label:'Still running',title:'Sundial is in the tray',meta:'Reminders keep working. Quit from the tray icon menu.',corner:S().toasts.corner,secs:8,sticky:false,actions:[{id:'ok',label:'OK',primary:true}]}).catch(()=>{})});D.on('sundial://update-progress',e=>updateProgress(e.payload||{}));syncHotkeys();
     D.appVersion().then(v=>{appVersion=v}).catch(()=>{});setTimeout(()=>checkUpdates(false),4000);setInterval(()=>checkUpdates(false),6*3600*1000)}
   applyTheme();applyDensity();applyLayout();SFX.setVolume(S().sounds.volume);render();updateLogo();
-  Sync.on(ev=>{if(ev==='signedout')toast(Sync.st().lastError||'Signed out of sync',()=>{sheetTab='data';settings()},'Open');if($('.sheet-host')&&sheetTab==='data')renderSheet();else if($('.ob-host:not(.out)')&&obStep===2)renderOnboarding()});Sync.start();
+  Sync.on((ev,arg)=>{
+    if(ev==='start'||ev==='ok'||ev==='error'){const sm=document.querySelector('[data-run="syncNow"]')?.closest('.opt')?.querySelector('small');if(sm)sm.innerHTML=syncStatusText(Sync.st());return}
+    if(ev==='signedout'||ev==='lostkey'){syncFlowReset();toast(arg||Sync.st().lastError||'Signed out of sync',()=>{sheetTab='data';settings()},'Open')}
+    if(ev==='pair')pairBanners();if(ev==='paired'){syncFlowReset();toast('This PC is in. Syncing.')}if(ev==='pairfail'){syncSetup.pairError=arg||'Approval did not go through.';toast(syncSetup.pairError,()=>{sheetTab='data';settings()},'Open')}
+    if($('.sheet-host')&&sheetTab==='data')renderSheet();else if($('.ob-host:not(.out)')&&obStep===2)renderOnboarding()});Sync.start();
   if(D&&D.deepLinkPending)D.deepLinkPending().then(u=>{if(u)deepLink(u)}).catch(()=>{});
-  setTimeout(()=>{const s=Sync.st();if(s.mode!=='off'&&!s.keyOk&&!Sync.hasKey())toast('Sync is connected but not unlocked: set your passphrase',()=>{sheetTab='data';settings()},'Open')},2500);
+  setTimeout(()=>{const s=Sync.st();if(s.mode!=='off'&&!s.keyOk&&!Sync.hasKey())toast('Sync is signed in, but this PC is not approved yet',()=>{sheetTab='data';settings()},'Open')},2500);
   if(!S().onboarded)setTimeout(onboarding,500);
   // first gesture: unlock audio and (browser only) ask once for OS notifications
   const unlock=()=>{SFX.unlock();try{if(!D&&'Notification'in window&&Notification.permission==='default')Notification.requestPermission().catch(()=>{})}catch(_){}};

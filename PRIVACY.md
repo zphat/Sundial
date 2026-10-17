@@ -17,7 +17,7 @@ Nothing else leaves your PC unless you turn Sync on.
 Sync is off until you turn it on. When you do, the server keeps:
 
 - your email address;
-- an account salt, a random public number your PC uses to turn your passphrase into a key;
+- an account salt, a random public number your PC uses to turn your recovery code into a key;
 - for each PC you sign in: a hashed sign-in token, a device id, the device name and the platform, when it signed in and when it last synced;
 - your data as ciphertext: each task, each day's note, your label names and your routines, encrypted on your PC before upload. Each encrypted item also carries an id, a type (task, note, labels or routines), a last-changed time, a sequence number, which of your PCs sent it and when the server received it, so your PCs can tell what's new. A note's id is its date.
 
@@ -25,7 +25,7 @@ There's no payment during the beta, so there are no card details to store.
 
 ## What we can and cannot see
 
-Your data is encrypted on your PC with AES-256-GCM. The key is made from your passphrase with PBKDF2, on your PC. The passphrase and the key are never sent. We can't read your tasks, notes, label names or routines, and we can't reset or recover your passphrase. If you lose it, nobody can open the synced copy; the copy on each of your PCs keeps working.
+Your data is encrypted on your PC with AES-256-GCM. The key is made on your PC from a recovery code the app invents (or a passphrase you typed, in older versions) with PBKDF2. The recovery code and the key are never sent. When you approve a second PC from the first, the key travels inside an end-to-end handshake between the two PCs; the server relays bytes it cannot open. We can't read your tasks, notes, label names or routines, and we can't reset or recover your recovery code. If you lose it and have no PC left that is signed in, nobody can open the synced copy; the copy on each of your PCs keeps working.
 
 We can see your email address, the names of your PCs, when each one last synced, how many encrypted items you have, which days have a note, and the masked IP addresses in the logs described below.
 

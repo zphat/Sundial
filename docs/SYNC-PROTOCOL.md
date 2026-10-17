@@ -22,8 +22,9 @@ Short version: the server is a dumb, encrypted mailbox of documents. It never se
 | `labels`   | `labels`          | the six color names                            |
 | `routines` | `routines`        | the routines array                             |
 | `keycheck` | `keycheck`        | `{"ok":true,"account":"<account id>"}`         |
+| `pair`     | `pair:<random>` and `pair:<random>:grant` | plaintext (see "Approving another PC"); `nonce` is empty |
 
-Settings are per device and are not synced. The `keycheck` document lets a new device confirm the passphrase
+Settings are per device and are not synced. The `keycheck` document lets a new device confirm the secret
 before touching anything.
 
 Wire shape of a document (push and pull are identical):
@@ -36,14 +37,13 @@ A tombstone is `deleted: true` with an empty `ct`. Documents are at most 64 KB o
 
 ## Encryption
 
-- Key: AES-256-GCM. Derived on the device from the user's passphrase with PBKDF2-HMAC-SHA256, 600 000 iterations,
+- Key: AES-256-GCM. Derived on the device from the account secret (the recovery code the app invents on the first PC, or a passphrase typed in older versions) with PBKDF2-HMAC-SHA256, 600 000 iterations,
   and a 32-byte per-account salt the server hands out at sign-in (the salt is random and public).
 - Each document: fresh random 12-byte nonce; additional authenticated data (AAD) is the UTF-8 string `kind:id`,
   so a ciphertext cannot be moved to a different document.
 - The derived key is kept on the device (OS credential store on desktop; browser storage on the web, with a warning).
-  The passphrase itself is never stored or sent.
-- Losing the passphrase loses the ability to read the synced copy. Local data on existing devices is untouched.
-  The UI says this in plain words when the passphrase is set.
+  The secret itself is never sent; the first PC keeps the recovery code in the OS credential store so it can be shown again, and an approved PC receives it inside the handshake.
+- Losing the secret, with no PC left that holds the key, loses the ability to read the synced copy. Local data on existing devices is untouched. The UI says this in plain words when the code is shown.
 
 ## Endpoints
 
@@ -91,7 +91,7 @@ come back in the pull and the client converges. At most 500 documents are return
 call again with the new cursor.
 
 Documents that fail validation are not stored and are listed in `rejected` with a reason: `id` (empty or over
-128 characters), `kind` (not one of the five), `size` (ciphertext over 64 KB), `future` (`updated_at` more than
+128 characters), `kind` (not one of the six), `size` (ciphertext over 64 KB), `future` (`updated_at` more than
 24 hours ahead of the server clock) or `quota` (the account would pass 50 MB of ciphertext). A client must not
 treat a rejected document as synced: keep it dirty or tell the user. Documents skipped because the stored copy is
 newer are not listed; they come back in the pull.
@@ -126,6 +126,48 @@ Self-hosted (token) accounts: bearer only, no body.
 - Clocks: `updated_at` comes from device clocks. A device whose clock is badly ahead "wins" edits it should not;
   clients therefore cap their own `updated_at` at `max(now, last seen server time)` and the server rejects
   documents more than 24 hours in the future.
+
+## Approving another PC
+
+The server never has the account key, so a new PC must get it from the user (the recovery code) or from a PC
+that already holds it. The second path is a commit-then-reveal handshake relayed as `pair` documents. The server
+stores and forwards them like any other bytes; their `ct` is base64 JSON, not ciphertext, and `nonce` is empty.
+Anyone holding a device token for the account can read and write these documents, which is exactly why the
+person must compare the code on both screens.
+
+1. The new PC generates an ephemeral ECDH P-256 key pair (private key not extractable) and pushes `pair:<id>` with
+   `{"t":"req","commit":"<base64 SHA-256(raw public key)>","name":"<this PC's name>"}`. It shows nothing yet and polls
+   `/v1/sync` from the cursor it got back every 3 seconds, for up to 15 minutes.
+2. An unlocked PC that pulls the request generates its own ephemeral key pair and pushes `pair:<id>:ack` with
+   `{"t":"ack","pub":"<base64 raw public key>"}`. It shows no prompt yet and polls every 3 seconds while a request
+   is open.
+3. The new PC pulls the ack and pushes `pair:<id>:open` with `{"t":"open","pub":"<its base64 raw public key>"}`.
+   Both sides now compute the check code: the first four bytes of
+   `SHA-256("sundial-pair-1" | id | P_new | P_old)` as an unsigned integer modulo 10000, shown as two pairs of digits.
+   The new PC displays it.
+4. The unlocked PC verifies `SHA-256(P_new)` equals the commit from step 1 (otherwise it drops the request for good),
+   computes the same code, and asks the person: "Add a PC? Approve only if it shows <code>". On approval it derives
+   the shared secret with ECDH, runs it through HKDF-SHA256 (empty salt, info `"sundial-pair-1" | id | P_new | P_old`)
+   into an AES-256-GCM key, and encrypts `{"k":"<base64 raw account key>","rc":"<recovery code or null>"}` with a
+   random 12-byte IV and additional data `pair:<id>`. It pushes `pair:<id>:grant` with
+   `{"t":"grant","iv":"<base64>","wrapped":"<base64>"}` and tombstones the request, the ack and the open.
+   "Not mine" tombstones the request instead, which the new PC reports as declined.
+5. The new PC derives the same key, decrypts the grant, and proves the candidate account key by decrypting the
+   `keycheck` document with it. Only then does it keep the key (and the recovery code, so this PC can show it too),
+   tombstone the grant, drop its starter examples and offer its own documents.
+
+Why this holds against the server and against a stolen token: the new PC's key is committed before the other side
+reveals its own, and the other side's key is revealed before the new PC's, so a party in the middle cannot choose
+either key after seeing the other. A substituted key changes the check code, which the person compares; a forged
+grant carries a key that fails the `keycheck`, so it is refused. Each attempt costs the attacker a visible prompt and
+succeeds with probability 1 in 10000 only if the person approves without comparing. Requests are ignored by the
+receiving side when older than an hour; the new PC tombstones its own request when it gives up, and tombstones are
+dated after the document they delete, whatever the other PC's clock said.
+
+The recovery code (20 characters from an alphabet without look-alikes, invented by the app on the first PC; or a
+passphrase typed in older versions) remains the other way in, and "erase the synced copy and start over" the way
+out. The server refuses a second `keycheck` for an account (`rejected` reason `exists`), so two PCs that set up a
+brand-new account at the same moment cannot split it: the loser is told to get approved by the winner.
 
 ## Operator notes
 

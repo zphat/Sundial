@@ -539,7 +539,9 @@ struct SyncReq {
     docs: Vec<DocIn>,
 }
 
-const KINDS: [&str; 5] = ["task", "note", "labels", "routines", "keycheck"];
+// "pair" documents are plaintext ECDH handshake messages between two of the user's PCs (see the protocol doc);
+// the server relays them like any other opaque bytes.
+const KINDS: [&str; 6] = ["task", "note", "labels", "routines", "keycheck", "pair"];
 
 async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncReq>) -> Result<Json<Value>, ApiError> {
     let token = bearer(&headers).ok_or_else(unauthorized)?;
@@ -586,6 +588,11 @@ async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncR
             .map_err(internal)?;
         let mut old_len = 0i64;
         if let Some((u, len)) = stored {
+            // the account's key is set exactly once; a second first-time setup loses (two PCs signing in at the same moment)
+            if d.kind == "keycheck" && !d.deleted {
+                rejected.push(json!({ "id": d.id, "kind": d.kind, "reason": "exists" }));
+                continue;
+            }
             if u > d.updated_at {
                 continue; // the stored version is newer; it will come back in the pull
             }
