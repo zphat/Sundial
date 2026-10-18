@@ -10,7 +10,7 @@ Protocol: [`docs/SYNC-PROTOCOL.md`](../docs/SYNC-PROTOCOL.md). License: AGPL-3.0
 SUNDIAL_TOKENS="pick-a-long-random-secret" SUNDIAL_BIND=0.0.0.0:8768 ./sundial-sync
 ```
 
-Then in Sundial: Settings → Data & sync → **My own server** → URL + that token → Connect → choose a passphrase.
+Then in Sundial: Settings → Data & sync → **My own server** → URL + that token → Connect. The app makes the key and shows a recovery code once.
 Every token is its own account, so a household can share one server with one token per person.
 
 Environment:

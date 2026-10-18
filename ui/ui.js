@@ -538,7 +538,7 @@ function runSetting(k,b){
   if(k==='syncResetGo'){const s=Sync.st();const code=$('#syncResetIn')?.value||'';if(s.mode==='hosted'&&code.replace(/\D/g,'').length<6){toast('Enter the six-digit code from the email');return}b.textContent='…';b.disabled=true;const em=s.email;
     Sync.deleteAccount(code).then(()=>{syncSetup.reset=null;syncFlowReset();syncSetup.codeSent=false;syncSetup.email=em||syncSetup.email;syncRefresh();toast('Synced copy erased. Sign in again on the PC that has your days: it uploads them again and shows a new recovery code.')}).catch(e=>{b.textContent='Erase and start over';b.disabled=false;toast(e.message||String(e))})}
   if(k==='openNotes')openExternal('https://github.com/zphat/Sundial/releases/latest');
-  if(k==='openIssues')openExternal('https://github.com/zphat/Sundial/issues/new');
+  if(k==='openIssues'){copy('hello@sundial.services','Address');openExternal('mailto:hello@sundial.services?subject='+encodeURIComponent('Sundial '+(appVersion?appVersion+' ':'')+'feedback'))}
   if(k==='openPrivacy')openExternal('https://github.com/zphat/Sundial/blob/main/PRIVACY.md');
   if(k==='obNext'){obStep=2;renderOnboarding()}
   if(k==='obBack'){obStep=1;renderOnboarding()}
@@ -793,7 +793,7 @@ function syncRows(st,opt,bare){const s=Sync.st();const D=window.SundialDesktop;l
   }
   if(s.keyOk){if(syncSetup.showRecovery)h+=recoveryCard(syncSetup.recovery,true);
     h+=opt('Status',syncStatusText(s),`<button class="btn" data-run="syncNow">Sync now</button>`);
-    if(!bare){h+=opt('Add another PC','Sign in there with the same email. A message appears here asking to approve it; check that the codes match, then click Approve.','');
+    if(!bare){h+=opt('Add another PC','Sign in there with the same email. A message appears here asking to approve it: type the code that PC shows. Then type the finish code shown here on that PC.','');
       if(!syncSetup.showRecovery)h+=opt('Recovery code','Needed to add a PC when this one is not around, or to get back in if this PC is lost or signed out. Keep it somewhere safe.',`<button class="btn" data-run="syncShowRecovery">${syncSetup.revealRecovery?'Hide':'Show'}</button>`)+(syncSetup.revealRecovery?recoveryCard(syncSetup.recoveryShown,false):'');
       h+=opt('Start over or leave','Erases the synced copy for every PC and signs them all out. Nothing on any PC is deleted.','<button class="btn" data-run="syncResetStart">Erase synced copy…</button>')}}
   return h}
@@ -860,7 +860,7 @@ function desktopGeneralRows(){return `<div class="opt"><div>Updates<small>Sundia
   +`<div class="opt"><div>Start with Windows<small>Launches hidden in the tray at sign-in.</small></div><div class="ctl"><button class="tog" role="switch" data-autostart="1" aria-checked="${autostartOn}"></button></div></div>`
   +`<div class="opt"><div>Closing the window<small>Hides Sundial to the tray so reminders keep firing. Quit is in the tray icon menu.</small></div><div class="ctl"><span class="soon">TRAY</span></div></div>`
   +`<div class="opt"><div>Your data<small>One JSON file on this PC, plus a daily backup folder beside it.</small></div><div class="ctl"><button class="btn" data-run="revealData">Show folder</button></div></div>`
-  +`<div class="opt"><div>About<small>Sundial ${esc(appVersion||'')} · beta. Tell me what breaks or annoys you.</small></div><div class="ctl"><button class="btn" data-run="openNotes">What's new</button><button class="btn" data-run="openIssues">Send feedback</button><button class="btn" data-run="openPrivacy">Privacy</button></div></div>`}
+  +`<div class="opt"><div>About<small>Sundial ${esc(appVersion||'')} · beta. Tell me what breaks or annoys you: hello@sundial.services</small></div><div class="ctl"><button class="btn" data-run="openNotes">What's new</button><button class="btn" data-run="openIssues">Send feedback</button><button class="btn" data-run="openPrivacy">Privacy</button></div></div>`}
 function aiTab(st,opt,tog){const a=st.ai,D=window.SundialDesktop;
   let h=opt('AI parsing','Optional. The instant parse always runs first; then your own model reads the line and fills in what the rules missed: times in words, notes, the right color. Your key, your bill.',tog('ai.enabled'));
   if(!a.enabled)return h;

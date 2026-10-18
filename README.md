@@ -21,11 +21,11 @@ Everything is one file: `%APPDATA%\app.sundial.desktop\sundial.json`. Paste `%AP
 
 ## Sync (optional)
 
-Sync keeps the same days on more than one Windows PC. You sign in with your email and a six-digit code, then choose a passphrase.
+Sync keeps the same days on more than one Windows PC. You sign in with your email and a six-digit code; that's it, syncing starts.
 
-Your tasks and notes are encrypted on your PC with that passphrase before they're sent. The server, in Switzerland, holds your email address, the names of your PCs and encrypted data it can't read.
+Your tasks and notes are encrypted on your PC before they're sent. The key is made on your first PC and shown to you once as a recovery code; save it somewhere. The server, in Switzerland, holds your email address, the names of your PCs and encrypted data it can't read.
 
-Nobody can recover the passphrase, including us. Lose it and the synced copy can't be opened; the data on your PCs is untouched.
+To add a second PC, sign in there with the same email. Your first PC asks whether to approve it: type the code the new PC shows, then type the finish code on the new PC. No recovery code needed while a PC of yours is around. The recovery code is for when none is: a lost PC, or a fresh start. Nobody can recover it, including us. Lose it with no PC left signed in and the synced copy can't be opened; the data on your PCs is untouched.
 
 Sync is free during the beta. After that it's $2.49 a month or $19.99 a year, and beta accounts keep $9.99 a year for as long as they stay subscribed. No card is asked for today.
 
@@ -33,7 +33,7 @@ What the server stores is written up in [PRIVACY.md](PRIVACY.md). You can also r
 
 ## Feedback
 
-Open an issue at https://github.com/zphat/Sundial/issues. Say what you did, what you expected and what happened; the version number is in Settings. An email address for feedback is coming. Issues are public, so keep private details out of them.
+Email hello@sundial.services. The Send feedback button in Settings starts the email with the version number in the subject. Say what you did, what you expected and what happened. Bugs that aren't private can also go to https://github.com/zphat/Sundial/issues; issues are public, so keep private details out of them.
 
 ## For developers
 

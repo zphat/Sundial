@@ -1,6 +1,6 @@
 # Sundial privacy
 
-Last updated 2026-10-17. This page covers the Sundial app for Windows and the optional Sundial Sync service. Both are run by zphat during the beta.
+Last updated 2026-10-18. This page covers the Sundial app for Windows and the optional Sundial Sync service. Both are run by zphat during the beta.
 
 ## What Sundial stores on your PC
 
@@ -45,13 +45,13 @@ On the server: the database is backed up every night on the same machine, so del
 
 ## Deleting your account
 
-Deleting your sync account removes your email, your devices' tokens and all of your encrypted data from the server. The data on your PCs stays. In Settings, under Data & sync, choose Erase synced copy; it asks for a fresh sign-in code, then deletes the account on the server. Or ask through the contact below; we'll confirm you control the email address first, privately, not in a public issue.
+Deleting your sync account removes your email, your devices' tokens and all of your encrypted data from the server. The data on your PCs stays. In Settings, under Data & sync, choose Erase synced copy; it asks for a fresh sign-in code, then deletes the account on the server. Or email the contact below from the address on the account; we'll confirm it's you first.
 
 Signing out on a PC removes that PC's token from the server; the account and its encrypted data stay until the account is deleted.
 
 ## Contact
 
-https://github.com/zphat/Sundial/issues for now. An email address is coming. Issues are public, so don't post your email address or anything private there; say you need a private channel and we'll set one up.
+hello@sundial.services. Bugs that aren't private can also go to https://github.com/zphat/Sundial/issues; issues are public, so don't post your email address or anything private there.
 
 ## Changes
 
