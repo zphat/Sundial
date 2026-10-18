@@ -582,16 +582,24 @@ async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncR
             rejected.push(json!({ "id": id, "kind": kind, "reason": reason }));
             continue;
         }
-        let stored: Option<(i64, i64)> = tx
-            .query_row("SELECT updated_at,LENGTH(ct) FROM docs WHERE account=?1 AND id=?2", params![acct, d.id], |r| Ok((r.get(0)?, r.get(1)?)))
+        // the keycheck lives at one id, is set exactly once and is never withdrawn or re-typed: a second first-time
+        // setup loses (two PCs signing in at the same moment), and no token holder can lock new PCs out
+        if d.kind == "keycheck" && d.id != "keycheck" {
+            rejected.push(json!({ "id": d.id, "kind": d.kind, "reason": "id" }));
+            continue;
+        }
+        let stored: Option<(i64, i64, String)> = tx
+            .query_row("SELECT updated_at,LENGTH(ct),kind FROM docs WHERE account=?1 AND id=?2", params![acct, d.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .optional()
             .map_err(internal)?;
         let mut old_len = 0i64;
-        if let Some((u, len)) = stored {
-            // the account's key is set exactly once and never withdrawn: a second first-time setup loses (two PCs
-            // signing in at the same moment), and a tombstone cannot lock new PCs out
-            if d.kind == "keycheck" {
+        if let Some((u, len, stored_kind)) = stored {
+            if d.kind == "keycheck" || stored_kind == "keycheck" {
                 rejected.push(json!({ "id": d.id, "kind": d.kind, "reason": "exists" }));
+                continue;
+            }
+            if stored_kind != d.kind {
+                rejected.push(json!({ "id": d.id, "kind": d.kind, "reason": "kind" }));
                 continue;
             }
             if u > d.updated_at {

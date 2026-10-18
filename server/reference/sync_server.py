@@ -133,8 +133,10 @@ class Store:
             reason = ("id" if not did or len(did) > 128 else "kind" if kind not in KINDS else "size" if len(ct) > MAX_CT * 4 // 3 + 8
                       else "future" if up > t + FUTURE_MS else None)
             if reason: rejected.append({"id": did[:128], "kind": kind[:32], "reason": reason}); continue
-            cur = self.db.execute("SELECT updated_at, LENGTH(ct) FROM docs WHERE account=? AND id=?", (account, did)).fetchone()
-            if cur and kind == "keycheck": rejected.append({"id": did, "kind": kind, "reason": "exists"}); continue   # the key is set once and never withdrawn
+            if kind == "keycheck" and did != "keycheck": rejected.append({"id": did, "kind": kind, "reason": "id"}); continue
+            cur = self.db.execute("SELECT updated_at, LENGTH(ct), kind FROM docs WHERE account=? AND id=?", (account, did)).fetchone()
+            if cur and (kind == "keycheck" or cur[2] == "keycheck"): rejected.append({"id": did, "kind": kind, "reason": "exists"}); continue   # the key is set once, never withdrawn or re-typed
+            if cur and cur[2] != kind: rejected.append({"id": did, "kind": kind, "reason": "kind"}); continue
             if cur and cur[0] > up: continue   # the stored version is newer; it comes back in the pull
             if deleted: ct = ""
             nxt = used - (cur[1] if cur else 0) + len(ct)

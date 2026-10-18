@@ -1,6 +1,6 @@
 {
   "name": "sundial",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "license": "MIT",
   "private": true,
   "description": "Sundial: days, tasks, notes. Static UI in ./ui, desktop shell in ./src-tauri.",
