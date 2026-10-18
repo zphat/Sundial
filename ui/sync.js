@@ -11,6 +11,8 @@ const Sync=(()=>{
   const HOSTED_URL='https://sync.sundial.services';
   const PAIR_TTL=15*60*1000,PAIR_UNOPENED=2*60*1000,PAIR_INFO='sundial-pair-1';
   let key=null,timer=null,running=false,queued=false,applying=false,gen=0,machine='';const listeners=[];
+  // switching: an account change is under way, no sync may start. pendingServer: where a signed-in device asked for a code.
+  let switching=false,pendingServer='';
   let pairing=null,approvalTimer=null;const pairReqs={};const pairSeen={};const ownPairIds={};
   const fresh=()=>({mode:'off',server:'',token:'',accountId:'',email:'',salt:'',cursor:0,dirty:{},lastSync:0,lastError:'',keyOk:false,epoch:0,rejected:{}});
   const st=()=>{if(!state.sync)state.sync=fresh();if(!state.sync.dirty)state.sync.dirty={};if(!state.sync.rejected)state.sync.rejected={};return state.sync};
@@ -62,8 +64,9 @@ const Sync=(()=>{
     if(status>=500)return 'The sync server had a problem (HTTP '+status+'). Nothing was lost; it will retry.';
     return serverMsg||('HTTP '+status);
   }
-  async function api(path,body,method,token,ctx){const s=st();const tk=token===undefined?s.token:token;let r;
-    try{r=await fetch(s.server.replace(/\/+$/,'')+path,{method:method||(body?'POST':'GET'),headers:{'content-type':'application/json',...(tk?{authorization:'Bearer '+tk}:{})},body:body?JSON.stringify(body):undefined})}
+  // server: another base URL than the one signed in to (asking a code of, or signing out from, a server we are not on yet / any more).
+  async function api(path,body,method,token,ctx,server){const s=st();const tk=token===undefined?s.token:token;let r;
+    try{r=await fetch(String(server||s.server).replace(/\/+$/,'')+path,{method:method||(body?'POST':'GET'),headers:{'content-type':'application/json',...(tk?{authorization:'Bearer '+tk}:{})},body:body?JSON.stringify(body):undefined})}
     catch(e){const err=new Error(friendly(0,'',ctx));err.status=0;throw err}
     if(r.status===204)return null;const j=await r.json().catch(()=>({}));
     if(!r.ok){const err=new Error(friendly(r.status,j.error,ctx));err.status=r.status;throw err}return j}
@@ -108,7 +111,7 @@ const Sync=(()=>{
   async function lostKey(msg){const s=st();await forgetKey(false);s.keyOk=false;s.lastError=msg;save();emit('lostkey',msg)}
 
   // ----- the sync itself -----
-  async function syncNow(){const s=st();if(s.mode==='off'||!s.server||!s.token||!key)return false;
+  async function syncNow(){const s=st();if(switching||s.mode==='off'||!s.server||!s.token||!key)return false;
     if(running){queued=true;return false}running=true;emit('start');
     try{
       const snapshot={...s.dirty};const docs=[];
@@ -136,9 +139,17 @@ const Sync=(()=>{
 
   // ----- setup flows -----
   async function health(server){const s=st();const keep=s.server;s.server=server;try{return await api('/v1/health',null,'GET','')}finally{s.server=keep}}
-  async function requestCode(server,email){const s=st();s.server=(server||HOSTED_URL).trim();save();await api('/v1/auth/request',{email},'POST','','code')}
-  async function verifyCode(email,code){const s=st();const r=await api('/v1/auth/verify',{email,code:String(code).replace(/\D/g,''),device:{id:state.device,name:deviceName(),platform:navigator.platform}},'POST','','code');
-    Object.assign(s,{token:r.token,accountId:r.account_id,salt:r.salt,email,mode:'hosted',plan:r.plan||'beta',cursor:0,keyOk:false,lastError:'',epoch:0,rejected:{}});save()}
+  const trimUrl=u=>String(u||'').trim().replace(/\/+$/,'');
+  const sameServer=(a,b)=>trimUrl(a).toLowerCase()===trimUrl(b).toLowerCase();
+  // A device that is signed out takes the server at once. One that is signed in keeps its server and token until the
+  // new sign-in has worked (signInByEmailKeepingKey), so a wrong code or a dead network leaves it as it was.
+  async function requestCode(server,email){const s=st();const url=(server||HOSTED_URL).trim();
+    if(s.mode==='off'){s.server=url;save();pendingServer=''}else pendingServer=sameServer(url,s.server)?'':url;
+    await api('/v1/auth/request',{email},'POST','','code',url)}
+  // The one verify request both sign-in paths send; the desktop's name is the machine name when the shell has told us it.
+  const verifyRequest=(email,code,server)=>api('/v1/auth/verify',{email,code:String(code).replace(/\D/g,''),device:{id:state.device,name:deviceName(),platform:navigator.platform}},'POST','','code',server);
+  async function verifyCode(email,code){const s=st();await ensureMachine();const server=pendingServer||s.server;const r=await verifyRequest(email,code,server);
+    Object.assign(s,{server,token:r.token,accountId:r.account_id,salt:r.salt,email,mode:'hosted',plan:r.plan||'beta',cursor:0,keyOk:false,lastError:'',epoch:0,rejected:{}});pendingServer='';save()}
   async function connectSelf(server,token){const s=st();s.server=server.trim();const r=await api('/v1/account',null,'GET',token.trim());
     Object.assign(s,{token:token.trim(),accountId:r.account_id,salt:r.salt,email:'',mode:'self',plan:r.plan||'',cursor:0,keyOk:false,lastError:'',epoch:0,rejected:{}});save()}
   // Does this account already have a key (a keycheck document)? Decides between "first PC" and "another PC".
@@ -163,6 +174,57 @@ const Sync=(()=>{
   // First PC: invent the secret, prove the key, keep both, start syncing. Returns the code to show once.
   async function setupFirst(){const s=st();const code=makeRecoveryCode();const k=await deriveKey(code,s.salt);await createKeycheck(k);await adopt(k,code,false);return code}
   const recoveryCode=()=>secretGet('sync:recovery');
+
+  // ----- signing in by email on a device that already holds a key -----
+  // A PC that has synced with a static token (or with another email) signs in with an email and keeps what it has.
+  // Three outcomes, told apart by the account's keycheck:
+  //   'same'      it opens with the key this PC holds (the operator attached the email to the old account, or it is the
+  //               same account): same days, same key; cursor 0 and everything dirty, so both sides merge in full.
+  //   'new'       the account is brand new. This PC sets it up. The account's salt is new, and the key is PBKDF2(code,
+  //               salt), so a key kept as it is would leave the recovery code this PC shows unable to open the account.
+  //               So the key is derived again from the recovery code this PC holds when that code really derives the
+  //               current key; failing that, a fresh code is invented and returned, to be shown once. The account is
+  //               empty, so nothing on the server needs the old key; everything local is offered under the new one.
+  //   'mismatch'  the account was set up elsewhere with another key. This PC is now a second device waiting for approval
+  //               (keyOk false, key forgotten like a plain sign-out: the recovery code stays), and the usual UI takes over.
+  //   'fresh'     no key was loaded; the ordinary sign-in ran instead.
+  // Nothing changes until the new token has answered; a failure before that puts server, token and mode back. The old
+  // token is signed out only once this PC syncs under the new one.
+  const ACCOUNT_FIELDS=['server','token','accountId','salt','email','mode','plan','cursor','keyOk','epoch','rejected','lastError'];
+  async function signInByEmailKeepingKey(email,code){const s=st();
+    if(!key){await verifyCode(email,code);return {how:'fresh',code:null}}
+    await ensureMachine();const server=pendingServer||s.server;
+    const r=await verifyRequest(email,code,server);   // a wrong code or no network: nothing has changed yet
+    const prev={};for(const f of ACCOUNT_FIELDS)prev[f]=s[f];
+    // switching is held for the whole switch and released in the finally, whatever rejects: a secret-store call that
+    // fails after the keycheck block must not leave every later syncNow() returning false until a restart.
+    try{
+      await quiesce();await cancelPairing();
+      let how='mismatch',newCode=null,k2=null;
+      try{
+        Object.assign(s,{server,token:r.token,accountId:r.account_id,salt:r.salt,email,mode:'hosted',plan:r.plan||'beta',cursor:0,keyOk:false,lastError:'',epoch:0,rejected:{}});
+        let kc=await findKeycheck();
+        if(!kc){
+          const rc=await secretGet('sync:recovery');
+          if(looksLikeCode(rc||'')){try{if(await rawOf(await deriveKey(rc,prev.salt))===await rawOf(key))k2=await deriveKey(rc,r.salt)}catch(e){k2=null}}
+          if(!k2){newCode=makeRecoveryCode();k2=await deriveKey(newCode,r.salt)}
+          try{await createKeycheck(k2);how='new'}
+          catch(e){if(!e.raced)throw e;k2=null;newCode=null;kc=await findKeycheck();if(!kc)throw e}}   // another device set it up in between: judge its key
+        if(kc)how=(await keyOpens(key,kc))?'same':'mismatch';
+      }catch(e){Object.assign(s,prev);save();logoutToken(server,r.token);schedule(0);throw e}   // back as it was; quiesce cleared the timer, so re-arm it
+      forgetPairs();pendingServer='';
+      if(how==='mismatch'){await forgetKey(false);s.keyOk=false;save();return {how,code:null}}
+      if(how==='new'){await storeKey(k2);if(newCode)await secretSet('sync:recovery',newCode);key=k2}
+      s.keyOk=true;s.cursor=0;s.lastError='';markAllDirty();save();
+      if(prev.token&&prev.token!==s.token)logoutToken(prev.server,prev.token);   // only now: the new token has worked
+      schedule(300);emit('ok');return {how,code:newCode}
+    }finally{switching=false}}
+  // Hold new syncs and let one in flight finish, so a change of account never races a request made against the old one.
+  async function quiesce(){switching=true;clearTimeout(timer);queued=false;for(let i=0;i<300&&running;i++)await new Promise(res=>setTimeout(res,100))}
+  // Best effort: a static token comes back when the server restarts anyway, and a failure here changes nothing for the user.
+  const logoutToken=(server,token)=>(!server||!token)?Promise.resolve():api('/v1/auth/logout',{},'POST',token,undefined,server).catch(()=>{});
+  // The desktop that has synced with a static token against the hosted server since before email sign-in existed.
+  const isSelfOnHosted=()=>{const s=st();return s.mode==='self'&&sameServer(s.server,HOSTED_URL)};
 
   // ----- approving another PC -----
   // Commit-then-reveal on both sides, prompts that cannot be harvested silently, and a finish code that only the real
@@ -316,15 +378,18 @@ const Sync=(()=>{
     const b=/Edge/.test(br)||/Edg\//.test(ua)?'Edge':/Opera/.test(br)||/OPR\//.test(ua)?'Opera':/Firefox\//.test(ua)?'Firefox':/Chrome/.test(br)||/Chrome\//.test(ua)?'Chrome':/Safari\//.test(ua)?'Safari':'Browser';
     return (os?b+' on '+os:b).slice(0,40)}
   function deviceName(){if(machine)return machine;if(window.SundialDesktop)return (navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||'this PC';return browserName()}
+  // The desktop shell knows the machine name; asked once at start, and again right before a sign-in so the server's
+  // device list and the approval prompt on other devices say "DANNY-PC", not "Win32".
+  async function ensureMachine(){if(machine||!window.SundialDesktop||!window.SundialDesktop.machineName)return;try{const n=await window.SundialDesktop.machineName();if(n)machine=String(n).slice(0,40)}catch(e){}}
   const emit=(ev,arg)=>listeners.forEach(f=>{try{f(ev,arg)}catch(e){}});
   // A visible window checks every 30 seconds, so an approval request from a new PC shows up quickly; hidden, every minute.
-  function start(){st();if(window.SundialDesktop&&window.SundialDesktop.machineName)window.SundialDesktop.machineName().then(n=>{if(n)machine=String(n).slice(0,40)}).catch(()=>{});
+  function start(){st();ensureMachine();
     loadKey().then(ok=>{const s=st();if(s.mode==='off')return;
       if(ok){schedule(1500);let n=0;setInterval(()=>{n++;if(!document.hidden||n%2===0)schedule(0)},30*1000);addEventListener('online',()=>schedule(0));
         // browsers freeze background tabs (phones especially): coming back, sync at once instead of waiting for the next tick
         if(!window.SundialDesktop)document.addEventListener('visibilitychange',()=>{if(!document.hidden)schedule(0)})}
       else if(s.keyOk){lostKey('This PC no longer has its sync key. Approve it again from another PC, or enter the recovery code.')}})}
-  return {st,markDirty,markAllDirty,syncNow,schedule,health,requestCode,verifyCode,connectSelf,checkAccount,setPassphrase:unlockWith,unlockWith,setupFirst,recoveryCode,normalizeSecret,
+  return {st,markDirty,markAllDirty,syncNow,schedule,health,requestCode,verifyCode,signInByEmailKeepingKey,isSelfOnHosted,connectSelf,checkAccount,setPassphrase:unlockWith,unlockWith,setupFirst,recoveryCode,normalizeSecret,
     startPairing,cancelPairing,finishPairing,pendingPairs,finishing,approvePair,denyPair,liftPairCap,isPairing:()=>!!pairing,pairingCode:()=>pairing?pairing.code:null,pairingSince:()=>pairing?pairing.since:0,pairingReady:()=>!!(pairing&&pairing.ready),setPromptable:f=>{promptable=f},setPromptHook:f=>{promptHook=f},
     signOut,deleteAccount,start,HOSTED_URL,hasKey:()=>!!key,isRunning:()=>running,pending:()=>Object.keys(st().dirty).length,rejected:()=>Object.keys(st().rejected).length,on:f=>listeners.push(f)};
 })();

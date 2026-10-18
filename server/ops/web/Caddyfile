@@ -81,6 +81,9 @@ app.sundial.services {
 	header @immutable Cache-Control "public, max-age=31536000, immutable"
 	@mutable not path /fonts/* /icons/*
 	header @mutable Cache-Control no-cache
+	# Go's mime table has no .webmanifest, so Caddy would send it without a type.
+	@manifest path /manifest.webmanifest
+	header @manifest Content-Type application/manifest+json
 	file_server
 	import privlog /var/log/caddy/app.log
 }
