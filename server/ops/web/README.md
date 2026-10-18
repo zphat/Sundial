@@ -27,11 +27,10 @@ At the domain's DNS, as plain A records (no proxy, "DNS only"):
 | --- | --- | --- |
 | `app` | A | 89.145.167.185 |
 | `@` | A | 89.145.167.185 |
-| `www` | A | 89.145.167.185 |
 
-Caddy gets certificates for every host named in the Caddyfile, so `www` needs a record too. If you do
-not want `www`, remove it from the last site block instead of leaving it unresolvable; otherwise Caddy
-retries the certificate forever and fills its log.
+Caddy gets certificates for every host named in the Caddyfile, so never name a host there that has no
+record; Caddy retries its certificate forever and fills the log. `www` is left out for that reason; add
+it to the last site block together with its A record if you want it.
 
 The first `sundial-web-update --force` needs a GitHub release that carries `sundial-web.tar.gz`, that is
 a tag built after the `web` job landed in `build.yml`. Until then step 3 fails with
@@ -108,10 +107,12 @@ and run everything from inside it.
 
        install -m 644 Caddyfile /etc/caddy/Caddyfile
        caddy validate --config /etc/caddy/Caddyfile
+       chown caddy:caddy /var/log/caddy/*.log     # validate ran as root and created the new log files root-owned
        systemctl reload caddy
        ls -l /var/log/caddy                                 # access.log, app.log, root.log
 
-   If `caddy validate` complains, put the backup back before reloading. The reload keeps the sync site
+   Without the `chown`, the reload fails with "open /var/log/caddy/app.log: permission denied" and Caddy
+   keeps the old config. If `caddy validate` complains, put the backup back before reloading. The reload keeps the sync site
    up; Caddy fetches the new certificates in the background, which takes a few seconds the first time.
 
 ## Check

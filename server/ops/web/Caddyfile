@@ -86,7 +86,8 @@ app.sundial.services {
 }
 
 # Landing page: one static file in /var/www/root (see root/index.html next to this file).
-sundial.services, www.sundial.services {
+# No www: only app and @ have DNS records. Add "www.sundial.services" here together with its A record.
+sundial.services {
 	root * /var/www/root
 	encode zstd gzip
 	import common_headers
