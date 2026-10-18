@@ -548,7 +548,8 @@ async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncR
     if body.protocol != PROTOCOL {
         return Err(bad("unsupported protocol"));
     }
-    if !allow(&app, &format!("sync:{token}"), 60, Duration::from_secs(60)) {
+    // per device, not per token: a self-hosted household shares one token across its PCs
+    if !allow(&app, &format!("sync:{token}:{}", body.device_id.chars().take(40).collect::<String>()), 60, Duration::from_secs(60)) {
         return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "slow down".into()));
     }
     let mut db = app.db.lock().unwrap();

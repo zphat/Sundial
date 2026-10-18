@@ -489,6 +489,7 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .pairbtns{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:10px;flex-wrap:wrap}
 .banner.fin .pc,.banner.withdrawn .k,.banner.pairwarn .k{font-family:var(--f-mono);letter-spacing:.1em}
 .banner.fin .pc{color:var(--accent-ink);font-size:15px}
+.banner .pairin{width:72px;min-width:0;text-align:center;letter-spacing:.2em;font-family:var(--f-mono);padding:5px 6px}
 .pairwait span{animation:blink 1.2s steps(2) infinite}.pairwait span:nth-child(2){animation-delay:.3s}.pairwait span:nth-child(3){animation-delay:.6s}
 .banner.pair .pc{font-family:var(--f-mono);color:var(--accent-ink);font-size:13px;letter-spacing:.1em}
 .warn{color:var(--sun-ink)}

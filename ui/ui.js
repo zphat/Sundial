@@ -305,8 +305,8 @@ function onToastAction(ev){const a=ev.action,p=ev.payload||{};const t=p.id?get(p
   if(a==='snooze'){SFX.stopRepeat();if(t)snooze(t);return}
   if(a==='open'){if(t){view='day';goDay(t.date);openId=t.id;render();revealTask(t.id)}return}
   if(a==='install'){installUpdate(null);return}
-  if(a==='approve'&&p.pair){Sync.approvePair(p.pair,p.code).then(fin=>approvedNote(fin)).catch(e=>toast(e.message||String(e)));return}
   if(a==='ignore'&&p.pair){Sync.denyPair(p.pair);return}
+  if(a==='open'&&p.pair){pairBanners();return}
   if(a==='later')return;
 }
 function takeover(x,demo){
@@ -808,11 +808,11 @@ function recoveryCard(code,first){if(code==null)return `<div class="opt" style="
 function pairBanners(){const host=bannerHost();const pend=Sync.pendingPairs();
   host.querySelectorAll('.banner.pair').forEach(el=>{if(!pend.some(p=>p.id===el.dataset.pair))dismissBanner(el)});
   for(const p of pend){if(host.querySelector(`.banner.pair[data-pair="${CSS.escape(p.id)}"]`))continue;const el=document.createElement('div');el.className='banner pair start';el.dataset.pair=p.id;
-    el.innerHTML=`<div class="ic">⇄</div><div class="tx"><span class="k">Add a PC to your sync?</span><b>${esc(p.name)}</b><small>Approve only if that PC shows <b class="pc">${esc(p.code)}</b>. Not yours? Not mine cancels it.</small></div><div class="bt"><button data-b="later">Not mine</button><button class="ok" data-b="go">Approve</button></div>`;
+    el.innerHTML=`<div class="ic">⇄</div><div class="tx"><span class="k">Add a PC to your sync?</span><b>Type the big code that PC shows</b><small>A PC called "${esc(p.name)}" is asking. If no PC of yours is showing a code right now, choose Not mine.</small></div><div class="bt"><input class="key pairin" inputmode="numeric" maxlength="5" placeholder="48 12" aria-label="Code shown on the other PC"><button data-b="later">Not mine</button><button class="ok" data-b="go">Approve</button></div>`;
     el.querySelector('[data-b="later"]').onclick=()=>{Sync.denyPair(p.id)};
-    el.querySelector('[data-b="go"]').onclick=()=>{const b=el.querySelector('[data-b="go"]');b.textContent='…';b.disabled=true;Sync.approvePair(p.id,p.code).then(fin=>approvedNote(fin)).catch(e=>{b.textContent='Approve';b.disabled=false;toast(e.message||String(e))})};
-    host.appendChild(el);setTimeout(pairBanners,Math.max(1000,p.ts+15*60*1000-Date.now()+500));
-    if(window.SundialDesktop&&S().toasts.enabled)window.SundialDesktop.toastShow({kind:'pair',label:'Add a PC?',title:p.name,meta:'Approve only if it shows '+p.code,corner:S().toasts.corner,secs:60,sticky:false,pair:p.id,code:p.code,actions:[{id:'ignore',label:'Not mine'},{id:'approve',label:'Approve',primary:true}]}).catch(()=>{})}
+    el.querySelector('[data-b="go"]').onclick=()=>{const b=el.querySelector('[data-b="go"]'),inp=el.querySelector('.pairin');b.textContent='…';b.disabled=true;Sync.approvePair(p.id,inp.value).then(fin=>approvedNote(fin)).catch(e=>{b.textContent='Approve';b.disabled=false;inp.value='';inp.focus();toast(e.message||String(e))})};
+    el.querySelector('.pairin').addEventListener('keydown',e=>{if(e.key==='Enter')el.querySelector('[data-b="go"]').click()});
+    host.appendChild(el);setTimeout(pairBanners,Math.max(1000,p.ts+15*60*1000-Date.now()+500))}
   // a corner toast for a request that has since gone must not stay clickable
   if(window.SundialDesktop&&window.SundialDesktop.toastCurrent)window.SundialDesktop.toastCurrent().then(cur=>{if(cur&&cur.kind==='pair'&&!pend.some(p=>p.id===cur.pair))window.SundialDesktop.toastDismiss()}).catch(()=>{})}
 function approvedNote(fin){const msg='Approved. On the other PC, type '+fin+' to finish.';if(window.SundialDesktop&&document.hidden)window.SundialDesktop.toastShow({kind:'info',label:'Approved',title:'Finish code '+fin,meta:'Type it on the other PC to finish.',corner:S().toasts.corner,secs:120,sticky:false,actions:[{id:'ok',label:'OK',primary:true}]}).catch(()=>{});else toast(msg)}
@@ -820,10 +820,10 @@ function approvedNote(fin){const msg='Approved. On the other PC, type '+fin+' to
 function finishBanners(){const host=bannerHost();const fins=Sync.finishing();
   host.querySelectorAll('.banner.fin').forEach(el=>{if(!fins.some(f=>f.id===el.dataset.pair))dismissBanner(el)});
   for(const f of fins){if(host.querySelector(`.banner.fin[data-pair="${CSS.escape(f.id)}"]`))continue;const el=document.createElement('div');el.className='banner fin start';el.dataset.pair=f.id;
-    el.innerHTML=`<div class="ic">⇄</div><div class="tx"><span class="k">Approved</span><b>Finish code <span class="pc">${esc(f.fin)}</span></b><small>Type it on ${esc(f.name)} to finish. Only that PC should be asking for it.</small></div><div class="bt"><button data-b="later">Done</button></div>`;
-    el.querySelector('[data-b="later"]').onclick=()=>dismissBanner(el);host.appendChild(el)}}
-function stickyNote(cls,title,text){const host=bannerHost();if(host.querySelector('.banner.'+cls))return;const el=document.createElement('div');el.className='banner '+cls+' start';
-  el.innerHTML=`<div class="ic">!</div><div class="tx"><span class="k">${esc(title)}</span><small>${esc(text)}</small></div><div class="bt"><button data-b="later">Dismiss</button></div>`;el.querySelector('[data-b="later"]').onclick=()=>dismissBanner(el);host.appendChild(el)}
+    el.innerHTML=`<div class="ic">⇄</div><div class="tx"><span class="k">Approved</span><b>Finish code <span class="pc">${esc(f.fin)}</span></b><small>Type it on the other PC to finish. This stays here until that PC is in, or for five minutes.</small></div>`;
+    host.appendChild(el)}}
+function stickyNote(cls,title,text,onDismiss){const host=bannerHost();if(host.querySelector('.banner.'+cls))return;const el=document.createElement('div');el.className='banner '+cls+' start';
+  el.innerHTML=`<div class="ic">!</div><div class="tx"><span class="k">${esc(title)}</span><small>${esc(text)}</small></div><div class="bt"><button data-b="later">Dismiss</button></div>`;el.querySelector('[data-b="later"]').onclick=()=>{dismissBanner(el);if(onDismiss)onDismiss()};host.appendChild(el)}
 // Forgot the passphrase, or want out: erase the synced copy (a code confirms it on the hosted service), then sign in fresh.
 function resetRows(s,opt){const r=syncSetup.reset;
   let h=`<div class="opt attention"><div>Erase the synced copy and start over<small>Removes everything the sync server holds for this account and signs out every PC. Nothing on any PC is deleted: the PC you continue from uploads its days again and shows a new recovery code.${s.mode==='hosted'?' A code goes to your email first, so nobody else can do this.':''}</small></div><div class="ctl">${s.mode==='hosted'&&r==='ask'?'<button class="btn primary" data-run="syncResetCode">Email me a code</button>':''}<button class="btn" data-run="syncResetCancel">Cancel</button></div></div>`;
@@ -897,14 +897,19 @@ async function init(){
     D.appVersion().then(v=>{appVersion=v}).catch(()=>{});setTimeout(()=>checkUpdates(false),4000);setInterval(()=>checkUpdates(false),6*3600*1000)}
   applyTheme();applyDensity();applyLayout();SFX.setVolume(S().sounds.volume);render();updateLogo();
   Sync.setPromptable(()=>!document.hidden||!!(window.SundialDesktop&&S().toasts.enabled));
+  // Before the key leaves this PC, the prompt must be where a person can see it: the window, or the corner toast.
+  Sync.setPromptHook(async p=>{if(!window.SundialDesktop||!S().toasts.enabled){if(document.hidden)throw new Error('hidden');return}
+    const show=window.SundialDesktop.toastShow({kind:'pair',label:'Add a PC?',title:'A PC wants to join your sync',meta:'Open Sundial and type the code that PC shows.',corner:S().toasts.corner,secs:90,sticky:false,pair:p.id,actions:[{id:'ignore',label:'Not mine'},{id:'open',label:'Open Sundial',primary:true}]});
+    if(document.hidden)await show;else show.catch(()=>{})});
   Sync.on((ev,arg)=>{
     if(ev==='start'||ev==='ok'||ev==='error'){const sm=document.querySelector('[data-run="syncNow"]')?.closest('.opt')?.querySelector('small');if(sm)sm.innerHTML=syncStatusText(Sync.st());return}
     if(ev==='signedout'||ev==='lostkey'){syncFlowReset();toast(arg||Sync.st().lastError||'Signed out of sync',()=>{sheetTab='data';settings()},'Open')}
     if(ev==='pair'){pairBanners();finishBanners()}if(ev==='pairready'){if(!$('.sheet-host')&&!$('.ob-host:not(.out)'))toast('Sundial needs one check before this PC can sync.',()=>{sheetTab='data';settings()},'Open')}if(ev==='paired'){syncFlowReset();toast('This PC is in. Syncing.')}
     if(ev==='pairwithdrawn')stickyNote('withdrawn','A request to add a PC was withdrawn',`"${arg||'A PC'}" asked to join your sync and pulled out before you answered. If that was not you, open Settings → Data & sync and erase the synced copy.`);
-    if(ev==='pairwarn')stickyNote('pairwarn','Something keeps asking to add a PC','More than five requests in an hour. Sundial has stopped answering them for now. If this is not you adding PCs, erase the synced copy and start over.');if(ev==='pairfail'){syncSetup.pairError=arg||'Approval did not go through.';toast(syncSetup.pairError,()=>{sheetTab='data';settings()},'Open')}
+    if(ev==='pairwarn')stickyNote('pairwarn','Something keeps asking to add a PC','Five requests in an hour, which is more than adding PCs normally takes. Sundial is holding the rest. If it is you, dismiss this to continue; if it is not you, leave it and consider erasing the synced copy.',()=>Sync.liftPairCap());if(ev==='pairfail'){syncSetup.pairError=arg||'Approval did not go through.';toast(syncSetup.pairError,()=>{sheetTab='data';settings()},'Open')}
     if($('.sheet-host')&&sheetTab==='data')renderSheet();else if($('.ob-host:not(.out)')&&obStep===2)renderOnboarding()});Sync.start();
   if(D&&D.deepLinkPending)D.deepLinkPending().then(u=>{if(u)deepLink(u)}).catch(()=>{});
+  addEventListener('beforeunload',()=>{if(Sync.isPairing())Sync.cancelPairing()});
   setTimeout(()=>{const s=Sync.st();if(s.mode!=='off'&&!s.keyOk&&!Sync.hasKey())toast('Sync is signed in, but this PC is not approved yet',()=>{sheetTab='data';settings()},'Open')},2500);
   if(!S().onboarded)setTimeout(onboarding,500);
   // first gesture: unlock audio and (browser only) ask once for OS notifications

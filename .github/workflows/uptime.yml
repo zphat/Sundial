@@ -1,0 +1,25 @@
+# Uptime check for the hosted sync server. GitHub emails the repository owner when a scheduled run fails,
+# so a failing health check is the alert: no extra service, no account to make.
+name: uptime
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: sync.sundial.services must answer healthy
+        run: |
+          set -o pipefail
+          body=$(curl -sS --max-time 15 https://sync.sundial.services/v1/health) || { echo "::error::sync server unreachable"; exit 1; }
+          echo "$body"
+          echo "$body" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("ok") is True and d.get("mode")=="hosted", d' \
+            || { echo "::error::sync server answered but is not healthy: $body"; exit 1; }
+          # the certificate must have more than 14 days left (Caddy renews at 30; this catches a stuck renewal)
+          exp=$(echo | openssl s_client -servername sync.sundial.services -connect sync.sundial.services:443 2>/dev/null | openssl x509 -noout -enddate | cut -d= -f2)
+          left=$(( ( $(date -d "$exp" +%s) - $(date +%s) ) / 86400 ))
+          echo "certificate expires in $left days ($exp)"
+          [ "$left" -gt 14 ] || { echo "::error::TLS certificate expires in $left days"; exit 1; }
