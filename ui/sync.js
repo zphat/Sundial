@@ -78,12 +78,12 @@ const Sync=(()=>{
   function markDirty(id){if(applying)return;const s=st();s.dirty[id]=++gen;delete s.rejected[id];if(s.mode!=='off'&&key)schedule(2000)}
   // Only things this device actually has: untouched defaults (labels never renamed, no routines, no note) must never
   // travel, or a brand-new second PC would overwrite the first one's.
-  function markAllDirty(){const s=st();for(const t of state.tasks)s.dirty['task:'+t.id]=++gen;for(const id in state.tombstones)s.dirty['task:'+id]=++gen;
+  function markAllDirty(){const s=st();for(const t of state.tasks){if(!t.example)s.dirty['task:'+t.id]=++gen}for(const id in state.tombstones)s.dirty['task:'+id]=++gen;
     for(const d in state.notes)if(state.notesTs[d]>0)s.dirty['note:'+d]=++gen;if(state.labelsTs>0)s.dirty.labels=++gen;if(state.routinesTs>0)s.dirty.routines=++gen}
 
   // ----- documents -----
   function buildDoc(did){
-    if(did.startsWith('task:')){const id=did.slice(5);const t=get(id);if(t)return {kind:'task',id,updated_at:t.updatedAt||t.createdAt||0,deleted:false,body:t};const ts=state.tombstones[id];return ts?{kind:'task',id,updated_at:ts,deleted:true,body:null}:null}
+    if(did.startsWith('task:')){const id=did.slice(5);const t=get(id);if(t&&t.example)return null;if(t)return {kind:'task',id,updated_at:t.updatedAt||t.createdAt||0,deleted:false,body:t};const ts=state.tombstones[id];return ts?{kind:'task',id,updated_at:ts,deleted:true,body:null}:null}
     if(did.startsWith('note:')){const d=did.slice(5);const has=!!state.notes[d];const ts=state.notesTs[d]||0;if(!ts)return null;return {kind:'note',id:d,updated_at:ts,deleted:!has,body:has?{html:state.notes[d]}:null}}
     if(did==='labels'){if(!state.labelsTs)return null;return {kind:'labels',id:'labels',updated_at:state.labelsTs,deleted:false,body:state.labels}}
     if(did==='routines'){if(!state.routinesTs)return null;return {kind:'routines',id:'routines',updated_at:state.routinesTs,deleted:false,body:state.routines}}
@@ -101,7 +101,7 @@ const Sync=(()=>{
       if(tomb>d.updated_at)return false;
       if(!body||typeof body!=='object'||!body.id)return false;
       if(!loc){state.tasks.push(body);delete state.tombstones[d.id];return true}
-      if((loc.updatedAt||0)<d.updated_at){Object.assign(loc,body);return true}
+      if((loc.updatedAt||0)<d.updated_at){for(const k in loc)delete loc[k];Object.assign(loc,body);return true}
       return false}
     if(d.kind==='note'){if((state.notesTs[d.id]||0)>=d.updated_at)return false;if(d.deleted)delete state.notes[d.id];else state.notes[d.id]=body.html;state.notesTs[d.id]=d.updated_at;return true}
     if(d.kind==='labels'){if((state.labelsTs||0)>=d.updated_at)return false;Object.assign(state.labels,body);state.labelsTs=d.updated_at;return true}

@@ -351,7 +351,7 @@ function renderSheet(){
     +(isPhone()?'':`<div class="opt"><div>Layout<small>Auto stacks the panes on tall screens and narrow windows. Drag the bar between two panes to resize them either way; double-click it to reset.</small></div><div class="ctl"><div class="seg">${[['auto','auto'],['row','side by side'],['column','stacked']].map(([v,l])=>`<button data-set="layout.mode" data-val="${v}" aria-pressed="${(state.layout.mode||'auto')===v}">${l}</button>`).join('')}</div>${effectiveMode()==='column'?'<button class="btn" data-run="fitWindow">Fit to window</button>':''}</div></div>`)
     +(effectiveMode()==='column'&&!isPhone()?`<div class="opt"><div>Stacked sections<small>Each box has a padlock by its ×. Locked: it keeps the height you gave it and scrolls inside. Unlocked: it grows to its content and the whole column scrolls. Drag a bar to set a height (locks it); double-click a bar to unlock.</small></div></div>`:'')
     +opt('Quick add from anywhere',`A floating add bar over whatever you are looking at; the + button does the same. System-wide in the desktop app. Style: <b>${hotkeyStyle()}</b>. Two modifiers plus a key stays out of games’ way; Pause or Scroll Lock alone also works. A system-wide shortcut cannot chord two regular keys.`,`<button class="key" data-run="recQuick">${esc(st.quick.hotkey)}</button><button class="btn" data-run="onboard">Choose a style</button>`)
-    +opt('Clear example tasks','Removes only the seeded examples.','<button class="btn" data-run="clearEx">Clear</button>')
+    +opt('Clear example tasks','Removes only the seeded examples and the example day note.','<button class="btn" data-run="clearEx">Clear</button>')
     +(window.SundialDesktop?desktopGeneralRows():webGeneralRows())
     +`<h3>Colors</h3><div class="opt" style="border:0;padding-top:0"><div><small>Six colors, your names. Type <code>#name</code> in a task line to pick one. The names are also editable right in the calendar pane.</small></div></div>`
     +COLORS.map(([k])=>`<div class="opt colorrow"><div class="rowx"><span class="swatch" style="--sw:var(--c-${k})"></span><input class="key" style="text-align:left;min-width:200px" data-color="${k}" value="${esc(state.labels[k])}" aria-label="Name for the ${k} color" spellcheck="false"></div><div class="ctl"><small class="mono">#${esc(state.labels[k].toLowerCase().replace(/\s+/g,''))}</small></div></div>`).join('');
@@ -519,7 +519,7 @@ document.addEventListener('click',e=>{
 });
 function runSetting(k,b){
   const s=$('.sheet-host');
-  if(k==='clearEx'){const n=state.tasks.filter(t=>t.example).length;pushUndo();state.tasks=state.tasks.filter(t=>!t.example);save();render();toast(n+' example tasks removed',()=>{undo();render()})}
+  if(k==='clearEx'){const r=clearExamples();render();const what=[r.tasks?r.tasks+' example tasks':'',r.notes?'the example note':''].filter(Boolean).join(' and ');toast(what?what+' removed':'No examples left',(r.tasks||r.notes)?()=>{if(r.tasks)undo();restoreExampleNotes(r.removedNotes);render()}:null)}
   if(k==='prevRemind'){previewNotify('remind')}
   if(k==='prevStart'){previewNotify('start')}
   if(k==='icsDay')copy(icsFor(dayTasks(sel)),'.ics for '+relDay(sel).toLowerCase());

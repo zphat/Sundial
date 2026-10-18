@@ -33,6 +33,8 @@ const uid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36);
 let saveFailed=false;
 const save=()=>{const j=JSON.stringify(state);try{localStorage.setItem(KEY,j);saveFailed=false}catch(e){if(!window.SundialDesktop&&!saveFailed){saveFailed=true;if(typeof onSaveFailed==='function')onSaveFailed(e)}}if(window.SundialDesktop)window.SundialDesktop.save(j)};
 const deepMerge=(a,b)=>{for(const k in b){if(b[k]&&typeof b[k]==='object'&&!Array.isArray(b[k])){a[k]=deepMerge(a[k]&&typeof a[k]==='object'?a[k]:{},b[k])}else a[k]=b[k]}return a};
+// The seeded demo note, matched exactly by clearExamples so an edited note is never mistaken for it.
+const EXAMPLE_NOTE='<h2>Example day note</h2><p>This page is per day. Select text and hit a highlighter, or <b>B</b> / <i>I</i> / list.</p><ul><li>Call back about the <mark style="background:'+HL.acid+'">invoice</mark></li><li>Idea for ep. 13: <mark style="background:'+HL.violet+'">the subscription trap</mark></li></ul>';
 function bootState(rawJson){
   const COLOR_MAP={coral:'cherry',mango:'tangerine',lime:'acid',pool:'aqua',lilac:'violet',sand:'chalk',peach:'tangerine',seafoam:'aqua',fog:'chalk'};
   let raw=null,ver=3;
@@ -69,7 +71,7 @@ function bootState(rawJson){
       ex('Dinner w/ Jess',addDays(t,4),{time:19*60,dur:120,color:'tangerine',order:1}),
       ex('Water the plants',addDays(t,-1),{color:'aqua',order:1}),
     ];
-    state.notes[t]='<h2>Example day note</h2><p>This page is per day. Select text and hit a highlighter, or <b>B</b> / <i>I</i> / list.</p><ul><li>Call back about the <mark style="background:'+HL.acid+'">invoice</mark></li><li>Idea for ep. 13: <mark style="background:'+HL.violet+'">the subscription trap</mark></li></ul>';
+    state.notes[t]=EXAMPLE_NOTE;
   }
   save();
 }
@@ -140,7 +142,7 @@ function pushUndo(){history.push(JSON.stringify(state.tasks));if(history.length>
 // Undo/redo swap the whole task list; tombstones for anything brought back are lifted, and the log notes the rewind so a sync layer re-diffs.
 function swapTasks(nextJson,kind){const before=state.tasks,after=JSON.parse(nextJson),now=Date.now();const bm=new Map(before.map(t=>[t.id,t])),am=new Map(after.map(t=>[t.id,t]));
   for(const id of bm.keys()){if(!am.has(id)){state.tombstones[id]=now;touch('task:'+id)}}
-  for(const [id,t] of am){const b=bm.get(id);if(!b||JSON.stringify(b)!==JSON.stringify(t)){t.updatedAt=now;touch('task:'+id)}delete state.tombstones[id]}
+  for(const [id,t] of am){const b=bm.get(id);if(b&&!b.example&&t.example)t.example=false;if(!b||JSON.stringify(b)!==JSON.stringify(t)){t.updatedAt=now;touch('task:'+id)}delete state.tombstones[id]}
   state.tasks=after;op(kind,null,{tasks:after.length})}
 function undo(){if(!history.length)return false;future.push(JSON.stringify(state.tasks));swapTasks(history.pop(),'undo');save();return true}
 function redo(){if(!future.length)return false;history.push(JSON.stringify(state.tasks));swapTasks(future.pop(),'redo');save();return true}
@@ -160,12 +162,12 @@ function addTask(raw,date,extra,skipUndo){
     notify:p.notify==null?S().notifyDefault:p.notify,remind:p.remind,repeat:p.repeat,createdAt:Date.now(),updatedAt:Date.now(),...(extra||{})};
   state.tasks.push(t);op('add',t.id,{...t});save();return t;
 }
-function upd(id,patch,silent){const t=get(id);if(!t)return;if(!silent)pushUndo();Object.assign(t,patch,{updatedAt:Date.now()});op('upd',id,patch);save()}
+function upd(id,patch,silent){const t=get(id);if(!t)return;if(!silent)pushUndo();Object.assign(t,patch,{updatedAt:Date.now()});if(t.example&&Object.keys(patch||{}).some(k=>k!=='order'&&k!=='snoozeUntil'))t.example=false;op('upd',id,patch);save()}
 function deleteTask(id){const t=get(id);if(!t)return null;pushUndo();state.tasks=state.tasks.filter(x=>x.id!==id);state.tombstones[id]=Date.now();op('del',id);save();return {...t}}
 function restoreTask(copy){pushUndo();delete state.tombstones[copy.id];state.tasks.push(copy);op('add',copy.id,{...copy});save()}
 function moveTo(id,date){const t=get(id);if(!t||t.date===date)return;upd(id,{date,order:nextOrder(date)})}
 function reorder(id,beforeId){const t=get(id);if(!t)return;pushUndo();const list=dayTasks(t.date).filter(x=>x.id!==id);const i=beforeId?list.findIndex(x=>x.id===beforeId):list.length;list.splice(i<0?list.length:i,0,t);list.forEach((x,k)=>{x.order=k+1;x.updatedAt=Date.now()});op('reorder',t.date,list.map(x=>x.id));save()}
-function duplicate(id){const t=get(id);if(!t)return null;pushUndo();const c={...t,id:uid(),done:false,createdAt:Date.now(),updatedAt:Date.now(),order:t.order+0.5,spawned:false};state.tasks.push(c);op('add',c.id,{...c});save();return c}
+function duplicate(id){const t=get(id);if(!t)return null;pushUndo();const c={...t,id:uid(),done:false,createdAt:Date.now(),updatedAt:Date.now(),order:t.order+0.5,spawned:false,example:false};state.tasks.push(c);op('add',c.id,{...c});save();return c}
 function nextDate(date,repeat){
   if(repeat==='daily')return addDays(date,1);
   if(repeat==='weekly')return addDays(date,7);
@@ -176,9 +178,9 @@ function nextDate(date,repeat){
 // Completing a repeating task plants the next one. Un-completing leaves the next one alone (it's a real task now).
 function completeTask(id,done){
   const t=get(id);if(!t)return null;pushUndo();
-  Object.assign(t,{done,updatedAt:Date.now()});op('upd',id,{done});
+  Object.assign(t,{done,updatedAt:Date.now()});if(t.example)t.example=false;op('upd',id,{done});
   let spawned=null;
-  if(done&&t.repeat&&!t.spawned){const nd=nextDate(t.date,t.repeat);spawned={...t,id:uid(),date:nd,done:false,spawned:false,order:nextOrder(nd),createdAt:Date.now(),updatedAt:Date.now(),seriesId:t.seriesId||t.id};t.spawned=true;state.tasks.push(spawned);op('add',spawned.id,{...spawned})}
+  if(done&&t.repeat&&!t.spawned){const nd=nextDate(t.date,t.repeat);spawned={...t,id:uid(),date:nd,done:false,spawned:false,order:nextOrder(nd),createdAt:Date.now(),updatedAt:Date.now(),seriesId:t.seriesId||t.id,example:false};t.spawned=true;state.tasks.push(spawned);op('add',spawned.id,{...spawned})}
   save();return spawned;
 }
 function clearDone(date){pushUndo();const gone=state.tasks.filter(x=>x.date===date&&x.done).map(x=>({...x}));state.tasks=state.tasks.filter(x=>!(x.date===date&&x.done));gone.forEach(x=>{state.tombstones[x.id]=Date.now();op('del',x.id)});save();return gone}
@@ -189,6 +191,12 @@ function carryAll(toDate){pushUndo();const ts=undoneBefore(toDate);ts.forEach(t=
 function ensureRoutines(){if(!state.routines.length){state.routines=ROUTINE_TEMPLATE.map(r=>({id:uid(),name:r.name,lines:[...r.lines]}));touchRoutines()}save()}
 function resetRoutines(){state.routines=ROUTINE_TEMPLATE.map(r=>({id:uid(),name:r.name,lines:[...r.lines]}));touchRoutines();save()}
 function newRoutine(){const r={id:uid(),name:'New routine',lines:[]};state.routines.push(r);touchRoutines();save();return r}
+function deleteTasks(ids){const set=new Set(ids);if(!set.size)return 0;pushUndo();const now=Date.now();state.tasks=state.tasks.filter(t=>!set.has(t.id));for(const id of set){state.tombstones[id]=now;op('del',id)}save();return set.size}
+// The seeded demo: example tasks are deleted properly (tombstones, so every synced device drops them too); the example
+// day note goes only while it is still the untouched seed (an edited note has a timestamp and is the user's).
+function clearExamples(){const n=deleteTasks(state.tasks.filter(t=>t.example).map(t=>t.id));const removedNotes={};for(const k of Object.keys(state.notes)){if(!state.notesTs[k]&&state.notes[k]===EXAMPLE_NOTE){removedNotes[k]=state.notes[k];delete state.notes[k]}}const notes=Object.keys(removedNotes).length;if(notes)save();return {tasks:n,notes,removedNotes}}
+// Undo of clearExamples: the tasks come back through the task history; the untouched seed note is put back by hand.
+function restoreExampleNotes(removed){let n=0;for(const k in removed){if(!state.notes[k]){state.notes[k]=removed[k];n++}}if(n)save();return n}
 function deleteRoutine(id){state.routines=state.routines.filter(r=>r.id!==id);touchRoutines();save()}
 // one undo step for the whole routine; lines that name a day go to that day, the rest to `date`
 function applyRoutine(id,date){const r=state.routines.find(x=>x.id===id);if(!r)return 0;pushUndo();let n=0;for(const line of r.lines){if(line.trim()&&addTask(line,date,null,true))n++}return n}
