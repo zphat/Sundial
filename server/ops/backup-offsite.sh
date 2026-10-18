@@ -7,12 +7,17 @@
 #   install -d -m 700 /etc/sundial
 #   head -c 48 /dev/urandom | base64 > /etc/sundial/backup.key && chmod 600 /etc/sundial/backup.key
 #   # keep a copy of /etc/sundial/backup.key somewhere safe OFF the box: without it the off-site copies are unreadable
+#   # Bucket: Exoscale Simple Object Storage (SOS) in zone ch-dk-2, a second Swiss site; the VPS itself is in ch-gva-2.
+#   # Not a non-Swiss bucket: the file holds email addresses under the encryption, and the privacy page says Switzerland.
+#   # The key pair is an Exoscale IAM key limited to SOS on this one bucket. Ubuntu 24.04 ships rclone 1.60, which has
+#   # no "Exoscale" provider name, hence PROVIDER=Other.
 #   cat > /etc/sundial/offsite.env <<EOF
 #   RCLONE_CONFIG_OFFSITE_TYPE=s3
-#   RCLONE_CONFIG_OFFSITE_PROVIDER=Cloudflare
+#   RCLONE_CONFIG_OFFSITE_PROVIDER=Other
 #   RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID=...
 #   RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY=...
-#   RCLONE_CONFIG_OFFSITE_ENDPOINT=https://<account id>.r2.cloudflarestorage.com
+#   RCLONE_CONFIG_OFFSITE_ENDPOINT=https://sos-ch-dk-2.exo.io
+#   RCLONE_CONFIG_OFFSITE_REGION=ch-dk-2
 #   OFFSITE_BUCKET=sundial-backups
 #   EOF
 #   chmod 600 /etc/sundial/offsite.env

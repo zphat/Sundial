@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for a new Sundial web bundle every 10 minutes
+
+[Timer]
+OnCalendar=*:0/10
+RandomizedDelaySec=60
+Persistent=true
+Unit=sundial-web-update.service
+
+[Install]
+WantedBy=timers.target

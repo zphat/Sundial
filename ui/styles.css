@@ -589,3 +589,174 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .sheet .colorrow .rowx{gap:10px}
 .sheet .mono{font-family:var(--f-mono);font-size:10.5px;color:var(--fg-3)}
 .banner.update .ic{background:var(--accent-soft);color:var(--accent-ink)}
+
+/* ---------- phones: web viewport up to 640px wide ----------
+   The desktop window never gets here (tauri.conf.json minWidth 720 logical px, no zoom hotkeys), so nothing below
+   reaches the Tauri app. Layout rules apply by width alone; touch-size rules also need a coarse pointer.
+   Motion: the global prefers-reduced-motion rule above (animation:none!important) already covers the keyframes here. */
+@media (max-width:640px){
+  /* the page scrolls; no pane has a fixed height. scroll-padding keeps a focused field out from under the sticky bar. */
+  html,body{height:auto;overflow:visible;overscroll-behavior-y:contain}
+  html{scroll-padding-top:calc(112px + env(safe-area-inset-top,0px))}
+  body{overflow-x:hidden;-webkit-tap-highlight-color:transparent}
+  body:has(.scrim:not(.out)){overflow:hidden}
+  .app{height:auto;min-height:100vh;min-height:100dvh;gap:8px;padding:0 max(12px,env(safe-area-inset-right,0px)) calc(12px + env(safe-area-inset-bottom,0px)) max(12px,env(safe-area-inset-left,0px))}
+  /* top bar: two rows, sticks to the top. Row 1: icon, title, Today, +, search, settings. Row 2: views, pane toggles.
+     The view segment's flex-basis is the row width minus room for the pane toggles, so it can never join row 1 and the toggles always fit beside it. */
+  .top{position:sticky;top:0;gap:8px;margin:0 calc(-1 * max(12px,env(safe-area-inset-right,0px))) 0 calc(-1 * max(12px,env(safe-area-inset-left,0px)));padding:calc(8px + env(safe-area-inset-top,0px)) max(12px,env(safe-area-inset-right,0px)) 8px max(12px,env(safe-area-inset-left,0px));background:color-mix(in srgb,var(--bg) 90%,transparent);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);border-bottom:1px solid var(--line-2)}
+  .brand{gap:0}
+  .brand>div{display:none}
+  .brand svg{width:26px;height:26px}
+  .title{flex:1 1 0;min-width:0;display:block;margin-left:0;font-size:15px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .title .y{display:none}
+  .title .ring{display:inline-block;vertical-align:-4px;margin-left:6px;width:18px;height:18px}
+  .top>.spacer{display:none}
+  .kbd{display:none}
+  #todayBtn{order:2;min-height:40px;padding:0 11px}
+  #quickBtn{order:3}#searchBtn{order:4}#settingsBtn{order:5}
+  .top .btn.icon{width:40px;height:40px;font-size:17px}
+  .top .seg:not(.icons){order:10;flex:1 1 calc(100% - 140px);display:flex;min-width:0;overflow-x:auto;scrollbar-width:none}
+  .top .seg:not(.icons)::-webkit-scrollbar{display:none}
+  .top .seg:not(.icons) button{flex:1 0 auto;min-height:34px;padding:0 8px;font-size:12px}
+  #paneSeg{order:11;flex:none}
+  #paneSeg button{min-width:38px;min-height:34px;padding:0 6px}
+  #layoutBtn{display:none}
+  .gutter{display:none!important}
+  .lk{display:none!important}
+  .foot-tip{display:none}
+  /* panes: a column, each as tall as its content */
+  .cols,.cols.stack{display:flex!important;flex-direction:column;flex:none;gap:8px;overflow:visible;padding-right:0}
+  .cols .panel{flex:0 0 auto!important}
+  .panel .calwrap,.panel .list,.panel .tl,.week .items,.nb .page{overflow:visible;flex:none}
+  .pane-hd{padding:10px 12px 6px}
+  .pane-hd .x{width:36px;height:36px}
+  .cols .grid7 .d,.cols.stack .grid7 .d{aspect-ratio:1;max-height:none;font-size:13px}
+  .mini{padding:4px 12px 8px}
+  .mini .nav button{width:36px;height:36px}
+  .legend,.upnext{padding-left:12px;padding-right:12px}
+  .legend .row{min-height:40px}
+  .legend .row input{padding:8px 4px}
+  .upnext .u{padding:8px 0;min-height:40px;align-items:center}
+  .rail{padding:10px 8px 0;gap:3px}
+  .rail button{padding:8px 2px 6px;min-height:52px}
+  .rail .arrow{flex:0 0 32px}
+  .now-strip,.carry,.qa{margin-left:10px;margin-right:10px}
+  .carry{flex-wrap:wrap}
+  .carry button,.rbtn{min-height:36px}
+  .qa input{min-height:48px;padding:12px 44px 12px 38px}
+  .qa .plus{top:15px}
+  .mic{top:4px;right:4px;width:40px;height:40px;min-width:40px}
+  .list{padding:4px 10px 10px}
+  .task{grid-template-columns:18px minmax(0,1fr) auto 28px;gap:8px;padding:10px 8px 10px 10px;min-height:46px;cursor:default}
+  .task .grip{display:none}
+  .task .dot,.task .check{position:relative}
+  .task .dot::before{content:"";position:absolute;inset:-13px}
+  .task .check::before{content:"";position:absolute;inset:-12px}
+  .task .check{width:24px;height:24px}
+  .task .check svg{width:13px;height:13px}
+  .task .acts{display:none}
+  .task.open .acts{display:flex;opacity:1}
+  .task .acts button{width:36px;height:36px}
+  .drawer .fields{grid-template-columns:1fr 1fr}
+  .drawer .f input,.drawer .f select{min-height:44px;padding:8px 10px}
+  .drawer .colors{gap:8px}
+  .drawer .colors button{width:28px;height:28px}
+  .drawer .actions button{min-height:40px;padding:0 12px}
+  .drawer .min{min-height:36px}
+  .tog{transform:scale(1.25);margin:0 5px}
+  /* week: one row per day instead of seven columns */
+  .week{display:flex;flex-direction:column;gap:1px;overflow:visible;margin-top:10px}
+  .week .hd{padding:10px 10px 4px;min-height:40px}
+  .week .items{padding:4px 10px}
+  .mini-task{padding:10px;min-height:44px;font-size:14px}
+  .mini-task .swatch{width:9px;height:9px}
+  .week .add{margin:4px 10px 10px}
+  .week .add input{min-height:44px;padding:10px}
+  /* month: day number plus up to three dots per cell */
+  .month{margin-top:10px}
+  .month .dows div{padding:4px 2px;text-align:center}
+  .month .cell{display:grid;grid-template-columns:repeat(4,auto);justify-content:start;align-content:start;gap:3px 4px;min-height:52px;padding:5px 4px}
+  .month .cell .n{grid-column:1/-1;font-size:12px}
+  .month .pill{padding:0;border:0;background:none;min-width:0}
+  .month .pill span:not(.swatch){display:none}
+  .month .pill .swatch{width:7px;height:7px}
+  .month .more{font-size:9px;align-self:center}
+  /* notes */
+  .nb{margin:10px}
+  .nb .tools button{min-width:40px;height:40px}
+  .nb .tools .hl{width:30px;height:30px}
+  .nb .daynav .arrow{width:40px;height:40px}
+  .nb .page{min-height:50vh;min-height:50dvh;padding:14px 16px}
+  /* timeline */
+  .tl{padding:0 10px 10px}
+  .anytime{gap:6px}
+  .anytime .chip{min-height:36px;padding:6px 12px;font-size:12px}
+  .hours .h span{width:36px;font-size:10px}
+  .hours .blk{left:44px;font-size:13px;padding:5px 8px 8px}
+  .hours .blk .rz{height:min(18px,45%)}
+  .hours .blk .rz::after{opacity:.6;width:28px;height:3px;margin-left:-14px;bottom:4px}
+  .hours .now{left:38px}
+  .zoom button{width:36px;height:36px}
+  /* overlays: settings and first-run fill the screen; search and quick add sit at the top, tap below to close */
+  .scrim{display:block;padding:0;-webkit-backdrop-filter:none;backdrop-filter:none}
+  .scrim>.card{width:100%;max-width:none;border-radius:0;border:0;animation:phoneSheetIn .28s var(--ease)}
+  .card.sheet{height:100%;max-height:none;padding:calc(16px + env(safe-area-inset-top,0px)) calc(16px + env(safe-area-inset-right,0px)) calc(24px + env(safe-area-inset-bottom,0px)) calc(16px + env(safe-area-inset-left,0px));overflow-y:auto;overscroll-behavior:contain}
+  .card.alarm{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:calc(26px + env(safe-area-inset-top,0px)) 26px calc(26px + env(safe-area-inset-bottom,0px))}
+  .scrim.search{padding-top:0}
+  .scrim.search .card{padding:calc(10px + env(safe-area-inset-top,0px)) calc(10px + env(safe-area-inset-right,0px)) 10px calc(10px + env(safe-area-inset-left,0px));border-radius:0 0 18px 18px;border-bottom:1px solid var(--line)}
+  .search input{min-height:48px;padding:12px 14px}
+  .search .res{max-height:55vh;max-height:55dvh}
+  .search .r{min-height:44px;padding:10px}
+  .search .r .when{width:64px}
+  /* only the sheet's own close button (a direct child); the routine delete buttons are also .x inside .sheet */
+  .sheet>.x{position:fixed;top:calc(10px + env(safe-area-inset-top,0px));right:calc(10px + env(safe-area-inset-right,0px));width:40px;height:40px;font-size:18px;background:var(--panel-3);border:1px solid var(--line);z-index:2}
+  .sheet h2{padding-right:48px}
+  .sheet .tabs{gap:6px;margin-bottom:10px}
+  .sheet .tabs button{min-height:36px;padding:0 12px}
+  .sheet .opt{flex-wrap:wrap;row-gap:8px;padding:12px 0}
+  .sheet .opt .ctl{flex-wrap:wrap;max-width:100%}
+  .sheet .opt .seg button{min-height:34px;padding:0 10px}
+  .sheet .opt .btn{min-height:40px}
+  .sheet .key{min-height:44px;min-width:0;max-width:100%}
+  select{min-height:40px;padding:6px 10px}
+  input[type=range]{width:min(100%,200px)}
+  .ob-cards{grid-template-columns:1fr}
+  .ob-card{min-height:56px}
+  .ob-foot{flex-wrap:wrap;gap:8px}
+  .ob-foot .btn{min-height:40px}
+  /* context menu (long press on Android) becomes a bottom sheet */
+  .menu{left:0!important;right:0;top:auto!important;bottom:0;min-width:0;border-radius:18px 18px 0 0;padding:8px 8px calc(8px + env(safe-area-inset-bottom,0px));transform-origin:bottom center;animation:phoneSheetIn .22s var(--ease)}
+  .menu button{min-height:46px;padding:0 12px;font-size:15px}
+  .menu button .k{display:none}
+  .menu .cl{gap:10px;padding:8px 12px}
+  .menu .cl button{width:32px;height:32px;min-height:0;padding:0}
+  /* banners and toasts: full width */
+  .banners{width:auto;left:max(10px,env(safe-area-inset-left,0px));right:max(10px,env(safe-area-inset-right,0px));transform:none}
+  .banners.top{top:calc(8px + env(safe-area-inset-top,0px))}
+  .banners.bottom{bottom:calc(8px + env(safe-area-inset-bottom,0px))}
+  .banner{grid-template-columns:auto minmax(0,1fr);padding:12px}
+  .banner .tx b{white-space:normal}
+  .banner .bt{grid-column:1/-1;justify-content:flex-end;flex-wrap:wrap;gap:6px}
+  .banner .bt button{min-height:40px;padding:0 14px;font-size:13px}
+  .banner .pairin{min-height:40px;width:100px;padding:0 8px;font-size:13px}
+  .toast{left:max(10px,env(safe-area-inset-left,0px));right:max(10px,env(safe-area-inset-right,0px));bottom:calc(10px + env(safe-area-inset-bottom,0px));transform:none;border-radius:14px;padding:12px 10px 12px 16px;justify-content:space-between;animation:phoneToastIn .3s var(--spring)}
+  .toast.out{animation:phoneToastOut .25s var(--ease) forwards}
+  .toast button{min-height:36px;padding:0 14px}
+  @keyframes phoneSheetIn{from{opacity:0;transform:translateY(24px)}}
+  @keyframes phoneToastIn{from{opacity:0;transform:translateY(14px)}}
+  @keyframes phoneToastOut{to{opacity:0;transform:translateY(10px)}}
+}
+@media (max-width:640px) and (prefers-reduced-motion:reduce){
+  .scrim>.card,.menu,.toast,.toast.out{animation:none}
+}
+/* touch: no double-tap zoom, no long-press text selection on draggables, 16px inputs so iOS does not zoom on focus, no sticky hover */
+@media (max-width:640px) and (pointer:coarse){
+  button,[data-act],[data-date],.grid7 .d{touch-action:manipulation}
+  .hours .blk .rz{touch-action:none}
+  .task,.mini-task,.hours .blk,.anytime .chip,.rail button,.grid7 .d,.month .cell{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+  input:not([type=range]),select,textarea,.nb .page,.drawer .f input,.drawer .f select,.drawer .ttl,.drawer textarea,.sheet .key,.sheet textarea,.rt textarea,.rt-name,.week .add input,.legend .row input,.banner .pairin{font-size:16px}
+  .task:hover,.mini-task:hover,.hours .blk:hover{transform:none}
+  .hours .blk:hover{filter:none}
+  .grid7 .d:hover{background:none}
+  .legend .row::after{display:none}
+}

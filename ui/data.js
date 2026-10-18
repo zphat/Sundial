@@ -28,7 +28,10 @@ const ROUTINE_TEMPLATE=[
 let state={tasks:[],labels:Object.fromEntries(COLORS),notes:{},notesTs:{},labelsTs:0,routinesTs:0,tombstones:{},fired:{},oplog:[],routines:[],device:null,schema:SCHEMA,
   layout:{cal:true,board:true,tl:true,wl:240,wr:320,hc:300,hb:0,ht:320,mode:'auto',lock:{cal:false,board:true,tl:true}},settings:JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),carryDismissed:null};
 const uid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36);
-const save=()=>{const j=JSON.stringify(state);try{localStorage.setItem(KEY,j)}catch(e){}if(window.SundialDesktop)window.SundialDesktop.save(j)};
+// In a browser localStorage is the only store, so a failed write (quota, blocked site data) is reported once through
+// onSaveFailed, which ui.js defines. The desktop still writes through its own bridge regardless.
+let saveFailed=false;
+const save=()=>{const j=JSON.stringify(state);try{localStorage.setItem(KEY,j);saveFailed=false}catch(e){if(!window.SundialDesktop&&!saveFailed){saveFailed=true;if(typeof onSaveFailed==='function')onSaveFailed(e)}}if(window.SundialDesktop)window.SundialDesktop.save(j)};
 const deepMerge=(a,b)=>{for(const k in b){if(b[k]&&typeof b[k]==='object'&&!Array.isArray(b[k])){a[k]=deepMerge(a[k]&&typeof a[k]==='object'?a[k]:{},b[k])}else a[k]=b[k]}return a};
 function bootState(rawJson){
   const COLOR_MAP={coral:'cherry',mango:'tangerine',lime:'acid',pool:'aqua',lilac:'violet',sand:'chalk',peach:'tangerine',seafoam:'aqua',fog:'chalk'};

@@ -25,10 +25,14 @@ Environment:
 | `RESEND_API_KEY`  | unset                       | hosted mode: send codes through Resend; unset = print to log |
 | `SUNDIAL_FROM`    | `Sundial <sign-in@…>`       | hosted mode: sender address                                 |
 | `SUNDIAL_PUBLIC_URL` | `https://sync.sundial.services` | hosted mode: base of the email's button link (`GET /signin?code=`) |
+| `SUNDIAL_APP_URL` | `https://app.sundial.services` | base of the code page's "Open in the browser" button (`/?code=`); set it empty to hide the button |
 | `RUST_LOG`        | `info`                      | log level                                                   |
 
 Put it behind HTTPS (Caddy does this in two lines). The app refuses nothing over plain HTTP, but your sync
 token travels in the header, so use TLS for anything beyond your own LAN.
+
+To use the web app at https://app.sundial.services with your own server, set `SUNDIAL_ORIGINS=https://app.sundial.services`
+(comma-separate more origins); the browser only talks to an https server, so plain HTTP will not work from the web app.
 
 Docker:
 
@@ -99,7 +103,7 @@ For the hosted server, mask the address and drop the code in the Caddyfile (Cadd
 sync.sundial.services {
     reverse_proxy 127.0.0.1:8768
     log {
-        output file /var/log/caddy/sync.log {
+        output file /var/log/caddy/access.log {
             roll_keep_for 14d
         }
         format filter {
@@ -116,10 +120,15 @@ sync.sundial.services {
                 request>uri query {
                     delete code
                 }
+                request>headers delete
             }
         }
     }
 }
 ```
+
+`request>headers delete` drops every request header (user agent, language, client hints, cookies, Authorization),
+so an entry is the time, method, host, path, protocol, status, size, duration and the masked address, which is
+what PRIVACY.md says. The hosted box uses the same filter from the `privlog` snippet in `ops/web/Caddyfile`.
 
 Caddy redacts `Authorization` headers unless `log_credentials` is turned on; leave it off.

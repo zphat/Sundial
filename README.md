@@ -1,6 +1,6 @@
 # Sundial
 
-Sundial is a calendar, a task list and a page of notes for each day, in one window. It is fast, and it works without an internet connection. Everything you type is saved on your own PC. It runs on Windows only, and it is a beta: expect rough edges, and say so when you find them.
+Sundial is a calendar, a task list and a page of notes for each day, in one window. It is fast, and it works without an internet connection. Everything you type stays on your own PC, or in your own browser. There is a Windows app and a web app at https://app.sundial.services. It is a beta: expect rough edges, and say so when you find them.
 
 ## Download for Windows
 
@@ -13,19 +13,27 @@ Sundial isn't signed with a paid certificate yet, so Windows doesn't know it. Th
 
 The warning means Windows hasn't seen this app before. It isn't a virus detection. The installer needs no admin password and installs for your user only. Updates are signed and install on their own.
 
-If Windows says Smart App Control blocked the file, there's no Run anyway button. Don't change any settings. That PC can't run Sundial until a signed build exists.
+If Windows says Smart App Control blocked the file, there's no Run anyway button. Don't change any settings. That PC can't run Sundial until a signed build exists; the browser version below works there.
+
+## In the browser
+
+Sundial also runs at https://app.sundial.services, on a phone, a Mac or any PC, with nothing to install. It is the same app and the same account: sign in with your email and it joins your sync like another PC.
+
+Your days live in that browser until you sign in to Sync. Clearing the site's data removes them, so turn Sync on if you want to keep them. On a phone, "Add to Home Screen" installs it with its own icon. On an iPhone the installed copy keeps its own data, so sign in to Sync before you install it. Safari also deletes the site's data on its own if you do not open it for seven days, unless Sundial is on the Home Screen; add it, or keep Sync on and keep the recovery code, which is what brings the synced copy back into a cleared browser.
+
+Drag and drop does not work on phones yet. To move a task, open it and change the time or the day.
 
 ## Where your data lives
 
-Everything is one file: `%APPDATA%\app.sundial.desktop\sundial.json`. Paste `%APPDATA%pp.sundial.desktop` into the File Explorer address bar to open the folder. Next to the file, a `backups` folder keeps one copy for each day you used Sundial, the newest 30. Your tasks and notes don't leave your PC unless you turn Sync on. On its own the app only contacts github.com to check for updates and Google for its fonts; [PRIVACY.md](PRIVACY.md) lists everything.
+Everything is one file: `%APPDATA%\app.sundial.desktop\sundial.json`. Paste `%APPDATA%\app.sundial.desktop` into the File Explorer address bar to open the folder. Next to the file, a `backups` folder keeps one copy for each day you used Sundial, the newest 30. Your tasks and notes don't leave your PC unless you turn Sync on. On its own the app only contacts github.com to check for updates; its fonts ship with it. [PRIVACY.md](PRIVACY.md) lists everything.
 
 ## Sync (optional)
 
-Sync keeps the same days on more than one Windows PC. You sign in with your email and a six-digit code; that's it, syncing starts.
+Sync keeps the same days on more than one PC, and in the browser. You sign in with your email and a six-digit code; that's it, syncing starts.
 
 Your tasks and notes are encrypted on your PC before they're sent. The key is made on your first PC and shown to you once as a recovery code; save it somewhere. The server, in Switzerland, holds your email address, the names of your PCs and encrypted data it can't read.
 
-To add a second PC, sign in there with the same email. Your first PC asks whether to approve it: type the code the new PC shows, then type the finish code on the new PC. No recovery code needed while a PC of yours is around. The recovery code is for when none is: a lost PC, or a fresh start. Nobody can recover it, including us. Lose it with no PC left signed in and the synced copy can't be opened; the data on your PCs is untouched.
+To add a second PC, or the web app, sign in there with the same email. Your first PC asks whether to approve it: type the code the new PC shows, then type the finish code on the new PC. No recovery code needed while a PC of yours is around. The recovery code is for when none is: a lost PC, or a fresh start. Nobody can recover it, including us. Lose it with no PC left signed in and the synced copy can't be opened; the data on your PCs is untouched.
 
 Sync is free during the beta. After that it's $2.49 a month or $19.99 a year, and beta accounts keep $9.99 a year for as long as they stay subscribed. No card is asked for today.
 

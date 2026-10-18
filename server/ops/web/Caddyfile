@@ -1,0 +1,98 @@
+# Caddyfile for the Sundial VPS (Caddy v2.11): the sync API, the web app and the landing page.
+#
+#   install -m 644 Caddyfile /etc/caddy/Caddyfile
+#   caddy validate --config /etc/caddy/Caddyfile
+#   systemctl reload caddy
+#
+# Snippets come first; Caddy requires them before the first site block.
+
+# Headers every site sends. The sync block sends exactly these three and nothing else.
+(common_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+}
+
+# Extra browser hardening for the two static sites. The CSP differs per site, so it stays in the site block.
+(site_headers) {
+	header {
+		Referrer-Policy no-referrer
+		X-Frame-Options DENY
+		Permissions-Policy "camera=(), geolocation=(), payment=(), interest-cohort=(), browsing-topics=(), microphone=(self)"
+		Cross-Origin-Opener-Policy same-origin
+	}
+}
+
+# Access log with the privacy filter. Argument: the log file.
+# Client addresses are masked to /24 and /48, sign-in codes (?code=) are dropped from the URI, and the
+# request headers are dropped as a whole (user agent, language, client hints, cookies, Authorization).
+# An entry is: time, method, host, path, protocol, status, size, duration and the masked address.
+# PRIVACY.md ("Logs") describes exactly this; change the two together.
+(privlog) {
+	log {
+		output file {args[0]} {
+			roll_keep_for 336h
+		}
+		format filter {
+			wrap json
+			fields {
+				request>remote_ip ip_mask {
+					ipv4 24
+					ipv6 48
+				}
+				request>client_ip ip_mask {
+					ipv4 24
+					ipv6 48
+				}
+				request>uri query {
+					delete code
+				}
+				request>headers delete
+			}
+		}
+	}
+}
+
+# Sync API: the Rust server on 127.0.0.1:8768. This block was written from the repo's docs, not copied
+# from the box: before installing, copy the live sync block (and any global options block) over it
+# verbatim, keep the sslip.io name only if the live file has it, and keep the import privlog line
+# (README step 6). The log file keeps the name the box already rolls, access.log.
+sync.sundial.services, 89-145-167-185.sslip.io {
+	encode zstd gzip
+	import common_headers
+	reverse_proxy 127.0.0.1:8768
+	import privlog /var/log/caddy/access.log
+}
+
+# The web app: the newest release's ui/ files. /var/www/app/current is a symlink that
+# sundial-web-update (systemd timer) swaps atomically; Caddy follows it on every request.
+app.sundial.services {
+	root * /var/www/app/current
+	encode zstd gzip
+	import common_headers
+	import site_headers
+	header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https:; worker-src 'self'; manifest-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'"
+	# Fonts and icons only change under a new file name, so they may be cached for a year.
+	# Everything else (html, js, css, sw.js, manifest) is revalidated on every load, so a new
+	# release reaches open tabs on the next reload instead of after a cache expiry.
+	@immutable path /fonts/* /icons/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+	@mutable not path /fonts/* /icons/*
+	header @mutable Cache-Control no-cache
+	file_server
+	import privlog /var/log/caddy/app.log
+}
+
+# Landing page: one static file in /var/www/root (see root/index.html next to this file).
+sundial.services, www.sundial.services {
+	root * /var/www/root
+	encode zstd gzip
+	import common_headers
+	import site_headers
+	header Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
+	header Cache-Control no-cache
+	file_server
+	import privlog /var/log/caddy/root.log
+}

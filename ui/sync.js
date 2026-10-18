@@ -309,12 +309,20 @@ const Sync=(()=>{
   async function signOut(){const s=st();await cancelPairing();if(s.mode==='hosted'&&s.token){try{await api('/v1/auth/logout',{},'POST')}catch(e){}}await signOutLocal('',false);emit('ok')}
   // Erases the synced copy (every document, every device's access). Local data on every PC stays.
   async function deleteAccount(code){const s=st();await api('/v1/account',s.mode==='hosted'?{code:String(code||'').replace(/\D/g,'')}:null,'DELETE',undefined,'code');await signOutLocal('',true);emit('ok')}
-  function deviceName(){return (machine||((navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||'this PC'))+(window.SundialDesktop?'':' · browser')}
+  // "Chrome on Windows", "Safari on iPhone": what a browser calls itself in the approval prompt on the other device
+  function browserName(){const ua=navigator.userAgent||'',d=navigator.userAgentData,br=(d&&d.brands||[]).map(b=>b.brand).join(' ');
+    let os=(d&&d.platform)||'';if(!os)os=/iPhone/.test(ua)?'iPhone':/iPad/.test(ua)?'iPad':/Android/.test(ua)?'Android':/Windows/.test(ua)?'Windows':/Mac OS X/.test(ua)?'Mac':/CrOS/.test(ua)?'ChromeOS':/Linux/.test(ua)?'Linux':'';
+    if(os==='macOS')os='Mac';if(os==='Mac'&&navigator.maxTouchPoints>1)os='iPad';   // iPadOS Safari claims to be a Mac
+    const b=/Edge/.test(br)||/Edg\//.test(ua)?'Edge':/Opera/.test(br)||/OPR\//.test(ua)?'Opera':/Firefox\//.test(ua)?'Firefox':/Chrome/.test(br)||/Chrome\//.test(ua)?'Chrome':/Safari\//.test(ua)?'Safari':'Browser';
+    return (os?b+' on '+os:b).slice(0,40)}
+  function deviceName(){if(machine)return machine;if(window.SundialDesktop)return (navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||'this PC';return browserName()}
   const emit=(ev,arg)=>listeners.forEach(f=>{try{f(ev,arg)}catch(e){}});
   // A visible window checks every 30 seconds, so an approval request from a new PC shows up quickly; hidden, every minute.
   function start(){st();if(window.SundialDesktop&&window.SundialDesktop.machineName)window.SundialDesktop.machineName().then(n=>{if(n)machine=String(n).slice(0,40)}).catch(()=>{});
     loadKey().then(ok=>{const s=st();if(s.mode==='off')return;
-      if(ok){schedule(1500);let n=0;setInterval(()=>{n++;if(!document.hidden||n%2===0)schedule(0)},30*1000);addEventListener('online',()=>schedule(0))}
+      if(ok){schedule(1500);let n=0;setInterval(()=>{n++;if(!document.hidden||n%2===0)schedule(0)},30*1000);addEventListener('online',()=>schedule(0));
+        // browsers freeze background tabs (phones especially): coming back, sync at once instead of waiting for the next tick
+        if(!window.SundialDesktop)document.addEventListener('visibilitychange',()=>{if(!document.hidden)schedule(0)})}
       else if(s.keyOk){lostKey('This PC no longer has its sync key. Approve it again from another PC, or enter the recovery code.')}})}
   return {st,markDirty,markAllDirty,syncNow,schedule,health,requestCode,verifyCode,connectSelf,checkAccount,setPassphrase:unlockWith,unlockWith,setupFirst,recoveryCode,normalizeSecret,
     startPairing,cancelPairing,finishPairing,pendingPairs,finishing,approvePair,denyPair,liftPairCap,isPairing:()=>!!pairing,pairingCode:()=>pairing?pairing.code:null,pairingSince:()=>pairing?pairing.since:0,pairingReady:()=>!!(pairing&&pairing.ready),setPromptable:f=>{promptable=f},setPromptHook:f=>{promptHook=f},

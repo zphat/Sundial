@@ -1,5 +1,8 @@
 # Builds the Windows installer on every push to main (download it from the run's Artifacts),
 # and publishes a GitHub Release with the installer attached when a tag like v0.1.0 is pushed.
+# The same release carries the sync server tarball and the web bundle (sundial-web.tar.gz), which
+# the VPS installs on its own (server/ops/web). Every job waits for 'check' so a syntax error in
+# ui/*.js can never ship through the auto-updater.
 name: build
 
 on:
@@ -11,17 +14,70 @@ on:
 permissions:
   contents: write
 
+# Third-party actions are pinned to commit SHAs (the comment names the version). A moving tag like @v2 lets
+# whoever controls that repo run code in a job that can publish release assets, and the VPS installs the web
+# bundle from the release unsigned (server/ops/web/README.md, "What the box trusts"). To move one: look up
+# the new tag's commit, for example `git ls-remote https://github.com/<owner>/<repo> 'refs/tags/<tag>^{}'`
+# (without `^{}` for a lightweight tag), then change the SHA and the comment together. GitHub's own
+# actions/* stay on their major tags.
+
 jobs:
+  # Syntax gate. The UI is plain files with no build step, so nothing else would notice a broken ui/*.js
+  # before the auto-updater delivered it to every installed copy.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Syntax-check every ui/*.js
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in ui/*.js; do
+            echo "node --check $f"
+            node --check "$f"
+          done
+      # index.html loads the ui scripts as classic <script> tags, so they share one global scope: a top-level
+      # let/const declared in two files throws "already been declared" at load and blanks the app, and
+      # node --check of each file alone cannot see it. Parse them concatenated, in index.html's own order.
+      - name: Parse the ui scripts as one shared scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(grep -oE '<script src="[^"]+\.js"' ui/index.html | sed -E 's/^<script src="//; s/"$//')
+          [ "${#files[@]}" -gt 0 ] || { echo '::error file=ui/index.html::no <script src> tags found'; exit 1; }
+          echo "script order: ${files[*]}"
+          node -e '
+            const fs = require("fs");
+            const body = process.argv.slice(1).map(f => fs.readFileSync("ui/" + f, "utf8")).join("\n;\n");
+            new Function(body);
+            console.log("shared scope ok");
+          ' "${files[@]}"
+      - name: Validate ui/manifest.webmanifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f ui/manifest.webmanifest ]; then
+            python3 -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8")); print("manifest ok")' ui/manifest.webmanifest
+          else
+            echo "no ui/manifest.webmanifest, skipped"
+          fi
+
   windows:
+    needs: check
     runs-on: windows-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
 
@@ -88,7 +144,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build installer (and release on tags)
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -121,7 +177,7 @@ jobs:
 
       - name: Attach Sundial-Setup.exe to the release
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: Sundial-Setup.exe
           fail_on_unmatched_files: true
@@ -144,13 +200,16 @@ jobs:
 
   # The sync server: a Linux binary on every push, attached to the release on tags.
   sync-server:
+    needs: check
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: server
       - name: Build
@@ -179,11 +238,47 @@ jobs:
           name: sundial-sync-linux-x86_64
           path: sundial-sync-linux-x86_64.tar.gz
 
-  # Attaches the server tarball only once the Windows job has published the installer: a release must never
-  # exist without latest.json, or every installed copy's update check breaks.
-  attach-server:
+  # The web bundle for app.sundial.services: ui/ as it is, minus the two desktop-only windows, with the
+  # version stamped in. The VPS timer (server/ops/web/sundial-web-update) installs it from the release.
+  web:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package the web bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER=$(python3 -c 'import json; print(json.load(open("package.json", encoding="utf-8"))["version"])')
+          echo "version $VER"
+          rm -rf dist-web
+          mkdir dist-web
+          cp -r ui/. dist-web/
+          rm -f dist-web/toast.html dist-web/sundial.html
+          if [ -f dist-web/sw.js ]; then
+            sed -i "s/__VERSION__/$VER/g" dist-web/sw.js
+            grep -qF "$VER" dist-web/sw.js
+          fi
+          # index.html must already carry the tag; never ship an unstamped page
+          if ! grep -Eq '<meta name="sundial-version" content="[^"]*" */?>' dist-web/index.html; then
+            echo '::error file=ui/index.html::missing <meta name="sundial-version" content="..."> tag'
+            exit 1
+          fi
+          sed -i -E "s|<meta name=\"sundial-version\" content=\"[^\"]*\" */?>|<meta name=\"sundial-version\" content=\"$VER\">|" dist-web/index.html
+          grep -F "<meta name=\"sundial-version\" content=\"$VER\">" dist-web/index.html
+          tar -C dist-web -czf sundial-web.tar.gz .
+          tar -tzf sundial-web.tar.gz | sort
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sundial-web
+          path: sundial-web.tar.gz
+          if-no-files-found: error
+
+  # Attaches the server and web tarballs only once the Windows job has published the installer: a release must
+  # never exist without latest.json, or every installed copy's update check breaks.
+  attach-assets:
     if: github.ref_type == 'tag'
-    needs: [windows, sync-server]
+    needs: [windows, sync-server, web]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -191,6 +286,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: sundial-sync-linux-x86_64
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/download-artifact@v4
         with:
-          files: sundial-sync-linux-x86_64.tar.gz
+          name: sundial-web
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          files: |
+            sundial-sync-linux-x86_64.tar.gz
+            sundial-web.tar.gz
+          fail_on_unmatched_files: true

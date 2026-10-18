@@ -52,6 +52,8 @@ struct App {
     resend_key: Option<String>,
     from: String,
     public_url: String,
+    /// Base of the web app, for the code page's "Open in the browser" button. Empty hides the button.
+    app_url: String,
     http: reqwest::Client,
 }
 
@@ -672,10 +674,16 @@ async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncR
     Ok(Json(json!({ "protocol": PROTOCOL, "cursor": last_seq, "docs": out, "more": more, "epoch": epoch, "rejected": rejected })))
 }
 
-/// Landing page for the email button: shows the code large with a copy button and tries the app's deep link.
-async fn signin_page(Query(q): Query<HashMap<String, String>>) -> Html<String> {
+/// Landing page for the email button: shows the code large with a copy button, offers the app's deep link and,
+/// for a phone or a browser, the web app with the code in its URL.
+async fn signin_page(State(app): State<App>, Query(q): Query<HashMap<String, String>>) -> Html<String> {
     let code: String = q.get("code").map(|c| c.chars().filter(|ch| ch.is_ascii_digit()).take(6).collect()).unwrap_or_default();
     let shown = if code.len() == 6 { pretty_code(&code) } else { "no code".to_string() };
+    let web_btn = if app.app_url.is_empty() || code.len() != 6 {
+        String::new()
+    } else {
+        format!(r#"<a class="btn" href="{}/?code={code}">Open in the browser</a>"#, app.app_url)
+    };
     Html(format!(r##"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sundial sign-in</title>
 <style>body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#0B0C0B;color:#E9ECE2;font-family:'Segoe UI',Helvetica,Arial,sans-serif}}
 .card{{width:min(440px,calc(100% - 32px));background:#121412;border:1px solid #262B24;border-radius:20px;padding:28px 30px;box-shadow:0 30px 80px -30px #000}}
@@ -685,8 +693,8 @@ p{{color:#9BA392;font-size:14px;line-height:1.55}}.row{{display:flex;gap:10px;fl
 button,a.btn{{font:inherit;font-weight:bold;font-size:14px;border-radius:999px;padding:11px 20px;cursor:pointer;text-decoration:none;border:1px solid #2A3027;background:#1B2117;color:#E9ECE2}}
 .primary{{background:#D1FF4A;color:#0B0D06;border-color:transparent}}small{{color:#7E8679;font-size:12px;display:block;margin-top:18px;line-height:1.5}}</style></head>
 <body><div class="card"><div class="brand">&#9680;&nbsp; SUNDIAL</div><h1>Your sign-in code</h1><div class="code" id="c">{shown}</div>
-<p>Type it into Sundial within 10 minutes, or copy it.</p>
-<div class="row"><button class="primary" id="cp">Copy code</button><a class="btn" href="sundial://signin?code={code}">Open Sundial</a></div>
+<p>Type it into Sundial within 10 minutes, or copy it. Open Sundial is for the Windows app, Open in the browser for the web app.</p>
+<div class="row"><button class="primary" id="cp">Copy code</button><a class="btn" href="sundial://signin?code={code}">Open Sundial</a>{web_btn}</div>
 <small>If you didn&#8217;t ask for this, close this page; nothing happens without the code.</small></div>
 <script>document.getElementById('cp').onclick=function(){{navigator.clipboard.writeText('{code}').then(function(){{document.getElementById('cp').textContent='Copied'}},function(){{}})}}</script></body></html>"##))
 }
@@ -719,6 +727,7 @@ async fn main() {
         resend_key: std::env::var("RESEND_API_KEY").ok().filter(|s| !s.is_empty()),
         from: std::env::var("SUNDIAL_FROM").unwrap_or_else(|_| "Sundial <sign-in@sundial.services>".into()),
         public_url: std::env::var("SUNDIAL_PUBLIC_URL").unwrap_or_else(|_| "https://sync.sundial.services".into()).trim_end_matches('/').to_string(),
+        app_url: std::env::var("SUNDIAL_APP_URL").unwrap_or_else(|_| "https://app.sundial.services".into()).trim_end_matches('/').to_string(),
         http: reqwest::Client::builder().timeout(Duration::from_secs(10)).build().expect("http client"),
     };
     let mut origins: Vec<HeaderValue> = ORIGINS.into_iter().map(HeaderValue::from_static).collect();

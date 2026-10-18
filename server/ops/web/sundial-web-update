@@ -1,0 +1,155 @@
+#!/bin/bash
+# Keeps /var/www/app/current (the files Caddy serves at https://app.sundial.services) at the newest
+# GitHub release's web bundle, sundial-web.tar.gz. Run by sundial-web-update.timer every 10 minutes,
+# as the caddy user (User=caddy in the unit): neither the download nor the unpack runs as root, and
+# /var/www/app must belong to caddy. By hand, run it the same way: sudo -u caddy sundial-web-update.
+#
+#   sundial-web-update            install the latest release if it is newer than the one serving
+#   sundial-web-update --force    reinstall even when the version is the same
+#
+# Layout:  /var/www/app/releases/<version>/   one directory per installed release (newest 3 kept)
+#          /var/www/app/current               symlink to the release being served, swapped atomically
+#          /var/www/app/current/VERSION       the version string, compared with the release tag
+#
+# The bundle is only installed when its sha256 matches the digest GitHub reports for the asset.
+# Nothing downloaded is ever executed; the archive is unpacked and served as files, and only plain files
+# and directories are accepted (a symlink member could point Caddy outside the release).
+# The bundle is not signed: the digest proves the file is the one GitHub holds, not who built it (README).
+set -euo pipefail
+
+REPO="zphat/Sundial"
+ASSET="sundial-web.tar.gz"
+ROOT=/var/www/app
+RELEASES="$ROOT/releases"
+CURRENT="$ROOT/current"
+KEEP=3
+UA="sundial-web-update (+https://sundial.services)"
+
+FORCE=0
+for arg in "$@"; do
+	case "$arg" in
+		--force) FORCE=1 ;;
+		-h|--help) echo "usage: sundial-web-update [--force]"; exit 0 ;;
+		*) echo "sundial-web-update: unknown argument '$arg'" >&2; exit 2 ;;
+	esac
+done
+
+die() { echo "sundial-web-update: $*" >&2; exit 1; }
+
+umask 022
+install -d -m 755 "$ROOT" "$RELEASES"
+if [ -e "$CURRENT" ] && [ ! -L "$CURRENT" ]; then
+	die "$CURRENT exists but is not a symlink; move it aside (it must point into $RELEASES)"
+fi
+
+# One run at a time (the timer and a manual --force must not race).
+exec 9>"$ROOT/.update.lock"
+flock -n 9 || { echo "sundial-web-update: another run is in progress"; exit 0; }
+
+# Leftovers from an earlier run that died part way (set -e) go first, so a persistent failure never piles up copies.
+rm -rf "$RELEASES"/.incoming.* "$RELEASES"/.replaced.*
+
+WORK=$(mktemp -d)
+# $STAGE names the unpack directory only between its mktemp and the mv into place; after that the path is gone
+# and the trap's rm is a no-op, so a failure anywhere in between leaves nothing behind.
+STAGE=''
+trap 'rm -rf "$WORK" ${STAGE:+"$STAGE"}' EXIT
+
+# 1. What is the newest release? Parsed with python3 (no jq on a stock box). -I: isolated mode, so no
+#    module can be shadowed from the working directory or the environment.
+curl -fsSL --proto '=https' --max-time 30 --retry 2 -A "$UA" -H 'Accept: application/vnd.github+json' \
+	"https://api.github.com/repos/$REPO/releases/latest" -o "$WORK/release.json" \
+	|| die "could not fetch the latest release from GitHub"
+
+python3 -I - "$WORK/release.json" "$ASSET" >"$WORK/meta" <<'PY' || die "the latest release has no $ASSET asset (or no tag)"
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    rel = json.load(f)
+tag = rel.get("tag_name") or ""
+asset = next((a for a in rel.get("assets") or [] if a.get("name") == sys.argv[2]), None)
+if not tag or asset is None:
+    sys.exit(3)
+print(tag)
+print(asset.get("browser_download_url") or "")
+print(asset.get("digest") or "")
+PY
+{ read -r TAG; read -r URL; read -r DIGEST; } <"$WORK/meta"
+
+NEW=${TAG#v}
+[[ $NEW =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || die "unexpected tag name '$TAG'"
+case "$URL" in
+	"https://github.com/$REPO/releases/download/"*) ;;
+	*) die "unexpected download URL '$URL'" ;;
+esac
+
+OLD=none
+if [ -f "$CURRENT/VERSION" ]; then
+	OLD=$(tr -d '[:space:]' <"$CURRENT/VERSION")
+fi
+if [ "$NEW" = "$OLD" ] && [ "$FORCE" = 0 ]; then
+	exit 0
+fi
+
+# 2. Download and verify. The digest comes from the GitHub API over TLS, separately from the file itself.
+case "$DIGEST" in
+	sha256:*) WANT=${DIGEST#sha256:}; WANT=${WANT,,} ;;
+	*) die "refusing $TAG: GitHub reports no sha256 digest for $ASSET (got '${DIGEST:-nothing}')" ;;
+esac
+curl -fsSL --proto '=https' --max-time 300 --retry 2 -A "$UA" -o "$WORK/$ASSET" "$URL" \
+	|| die "could not download $URL"
+GOT=$(sha256sum "$WORK/$ASSET" | cut -d' ' -f1)
+if [ "$GOT" != "$WANT" ]; then
+	die "refusing $TAG: sha256 mismatch for $ASSET (GitHub says $WANT, file is $GOT)"
+fi
+# No absolute paths or '..' members, whatever the archive says.
+if tar -tzf "$WORK/$ASSET" | grep -Eq '^/|(^|/)\.\.(/|$)'; then
+	die "refusing $TAG: $ASSET contains an unsafe path"
+fi
+# Plain files and directories only. A symlink member (say, to Caddy's certificate directory) passes the path
+# check, is created by tar as it is, and is followed by file_server at serve time. The verbose listing starts
+# each member with its type: '-' file, 'd' directory, anything else is refused.
+if tar -tvzf "$WORK/$ASSET" | grep -Evq '^[-d]'; then
+	die "refusing $TAG: $ASSET has a member that is not a plain file or directory"
+fi
+
+# 3. Unpack into a fresh directory beside the others, check it, then make it the release dir.
+STAGE=$(mktemp -d "$RELEASES/.incoming.XXXXXX")
+chmod 755 "$STAGE"
+tar -xzf "$WORK/$ASSET" -C "$STAGE" --no-same-owner --no-same-permissions
+# Belt to the listing check above: nothing but files and directories may exist in the unpacked tree.
+if [ -n "$(find "$STAGE" ! -type f ! -type d -print -quit)" ]; then
+	die "refusing $TAG: unexpected file type in $ASSET"
+fi
+printf '%s\n' "$NEW" >"$STAGE/VERSION"
+for f in index.html ui.js; do
+	[ -f "$STAGE/$f" ] || die "refusing $TAG: $f missing from $ASSET"
+done
+chmod -R a+rX "$STAGE"
+
+DEST="$RELEASES/$NEW"
+if [ -e "$DEST" ]; then
+	REPLACED="$RELEASES/.replaced.$NEW.$$"
+	mv -T "$DEST" "$REPLACED"
+	mv -T "$STAGE" "$DEST"
+	rm -rf "$REPLACED"
+else
+	mv -T "$STAGE" "$DEST"
+fi
+
+# 4. Switch the symlink atomically: build it under a temporary name, then rename over current.
+TMPLINK="$ROOT/.current.$$"
+ln -sfn "releases/$NEW" "$TMPLINK"
+mv -T "$TMPLINK" "$CURRENT"
+
+# 5. Keep the newest KEEP release directories (and always the one being served).
+SERVING=$(readlink -f "$CURRENT")
+KEPT=0
+while IFS=$'\t' read -r _ dir; do
+	if [ "$(readlink -f "$dir")" = "$SERVING" ] || [ "$KEPT" -lt "$KEEP" ]; then
+		KEPT=$((KEPT + 1))
+		continue
+	fi
+	rm -rf "$dir"
+done < <(find "$RELEASES" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%T@\t%p\n' | sort -rn)
+
+echo "web $OLD -> $NEW"

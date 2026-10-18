@@ -1,0 +1,23 @@
+[Unit]
+Description=Sundial web app: install the newest release bundle into /var/www/app
+Documentation=https://github.com/zphat/Sundial
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as the caddy user (the one the Caddy package created and runs Caddy as), so neither the download nor
+# the unpack happens as root. /var/www/app must belong to caddy (README step 1).
+User=caddy
+Group=caddy
+ExecStart=/usr/local/bin/sundial-web-update
+# The script needs the network, a private /tmp and /var/www/app. Nothing else is writable.
+ProtectSystem=strict
+ReadWritePaths=/var/www/app
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
