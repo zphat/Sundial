@@ -13,7 +13,7 @@ Sundial isn't signed with a paid certificate yet, so Windows doesn't know it. Th
 
 The warning means Windows hasn't seen this app before. It isn't a virus detection. The installer needs no admin password and installs for your user only. Updates are signed and install on their own.
 
-If Windows says Smart App Control blocked the file, there's no Run anyway button. Don't change any settings. That PC can't run Sundial until a signed build exists; the browser version below works there.
+If Windows says Smart App Control blocked the file, there's no Run anyway button. Don't change any settings. That PC can't run Sundial until a signed build exists; the browser version below works there. The plan for signing is in [docs/CODE-SIGNING.md](docs/CODE-SIGNING.md).
 
 ## In the browser
 
@@ -45,6 +45,6 @@ Email hello@sundial.services. The Send feedback button in Settings starts the em
 
 ## For developers
 
-Repo layout, build and release notes: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Sync protocol: [docs/SYNC-PROTOCOL.md](docs/SYNC-PROTOCOL.md).
+Repo layout, build and release notes: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Sync protocol: [docs/SYNC-PROTOCOL.md](docs/SYNC-PROTOCOL.md). What comes next: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 The app (everything outside `server/`) is MIT licensed, see [LICENSE](LICENSE). The sync server in `server/` is AGPL-3.0, see [server/LICENSE](server/LICENSE).

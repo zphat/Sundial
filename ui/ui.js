@@ -386,7 +386,7 @@ function renderSheet(){
     +opt('Import JSON','Paste a backup and press Import. Merges by id, newest wins.','<button class="btn" data-run="impJson">Import</button>')
     +`<textarea id="impBox" placeholder="{ &quot;tasks&quot;: [ … ] }"></textarea>`
     +`<h3>Input</h3>`+opt('AI parsing','“lunch with Kai next thursday, same place” → task with time and notes.','<span class="soon">Planned</span>');
-  body.innerHTML=h;if(sheetAnim){sheetAnim=false;body.classList.add('tab-in');s.querySelector('.card').scrollTop=0}else{body.classList.remove('tab-in');s.querySelector('.card').scrollTop=sc}
+  body.innerHTML=h;bindFinBox();if(sheetAnim){sheetAnim=false;body.classList.add('tab-in');s.querySelector('.card').scrollTop=0}else{body.classList.remove('tab-in');s.querySelector('.card').scrollTop=sc}
 }
 const getPath=(o,p)=>p.split('.').reduce((a,k)=>a&&a[k],o);
 const setPath=(o,p,v)=>{const ks=p.split('.');const last=ks.pop();const t=ks.reduce((a,k)=>a[k],o);t[last]=v};
@@ -545,7 +545,7 @@ function runSetting(k,b){
   if(k==='syncShowPass'){syncSetup.showPass=!syncSetup.showPass;const a=$('#syncPass')?.value||'';syncRefresh();if($('#syncPass'))$('#syncPass').value=a}
   if(k==='syncPass'){const p=$('#syncPass')?.value||'';const label=b.textContent;b.textContent='…';b.disabled=true;Sync.unlockWith(p).then(()=>{syncFlowReset();syncRefresh();toast('Unlocked. Syncing.')}).catch(e=>{b.textContent=label;b.disabled=false;if(e.raced){syncSetup.existing=true}toast(e.message||String(e));if(e.raced)syncRefresh()})}
   if(k==='syncRetryPair'){syncSetup.pairError=null;syncRefresh()}
-  if(k==='syncPairFinish'){const typed=$('#syncFinIn')?.value||'';b.textContent='…';b.disabled=true;Sync.finishPairing(typed).catch(e=>{b.textContent='Finish';b.disabled=false;toast(e.message||String(e));if(!Sync.isPairing())syncRefresh()})}
+  if(k==='syncPairFinish'){const cb=$('#syncFinIn')?._cb;const typed=cb?cb.value:'';if(typed.length<4){if(cb){cb.bad();cb.focus()}return}if(b.disabled)return;b.textContent='…';b.disabled=true;Sync.finishPairing(typed).then(()=>Sync.schedule(0)).catch(e=>{b.textContent='Finish';b.disabled=false;toast(e.message||String(e));if(!Sync.isPairing())syncRefresh();else if(cb){cb.bad();cb.clear()}})}
   if(k==='syncPairCancel'){Sync.cancelPairing().then(()=>{syncSetup.pairError='Cancelled. If that approval was not yours, change nothing on the other PC and tell whoever runs the server.';syncRefresh()})}
   if(k==='syncUseCode'){syncSetup.useCode=!syncSetup.useCode;syncRefresh()}
   if(k==='syncRetrySetup'){syncSetup.setupError=null;syncSetup.existing=null;syncRefresh()}
@@ -761,6 +761,7 @@ function renderOnboarding(){const host=document.querySelector('.ob-host:not(.out
     </div>
     ${obSync!=='local'||connected?`<div class="ob-sync">${syncRows(S(),optRow,true)}</div>`:''}
     <div class="ob-foot">${obKeysStep?'<button class="btn" data-run="obBack">Back</button>':''}<span class="spacer"></span><button class="btn primary" data-run="obDone">${done}</button></div>`;
+  bindFinBox();
 }
 function finishOnboarding(style){const st=S();if(HOTKEY_STYLES[style]){st.quick.hotkey=HOTKEY_STYLES[style].quick;st.voice.hotkey=HOTKEY_STYLES[style].voice}st.onboarded=true;save();syncHotkeys();closeScrim();
   // web: the Start click is a user gesture, the right moment to ask the browser to keep the data and to allow notifications
@@ -793,6 +794,9 @@ function openExternal(u){if(window.SundialDesktop)window.SundialDesktop.openUrl(
 const optRow=(label,sub,ctl)=>`<div class="opt"><div>${label}${sub?`<small>${sub}</small>`:''}</div><div class="ctl">${ctl}</div></div>`;
 // The sync rows live in Settings and in first-run setup; after any sync action, redraw whichever is open.
 function syncRefresh(){if($('.ob-host:not(.out)'))renderOnboarding();else renderSheet()}
+// the finish-code box is rebuilt by every sheet render: wire it, and focus it unless the person is typing somewhere else
+const typingElsewhere=()=>{const a=document.activeElement;return !!a&&(/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)||a.isContentEditable)};
+function bindFinBox(){const el=$('#syncFinIn');if(!el||el._cb)return;const cb=bindCodeBox(el,()=>{const b=$('[data-run="syncPairFinish"]');if(b)runSetting('syncPairFinish',b)},true);if(!typingElsewhere())cb.focus()}
 const syncSetup={mode:'hosted',url:'',email:'',codeSent:false,advanced:false,existing:null,checking:false,showPass:false,reset:null,outArmed:false,settingUp:false,setupError:null,recovery:null,showRecovery:false,revealRecovery:false,recoveryShown:null,useCode:false,pairError:null,pairStarting:false,triedStored:false,migEmail:'',migSent:false,migError:null,firstHere:false};
 function syncRows(st,opt,bare){const s=Sync.st();const D=window.SundialDesktop;let h=bare?'':`<h3>Sync</h3>`;
   if(s.mode==='off'){
@@ -829,8 +833,8 @@ function syncRows(st,opt,bare){const s=Sync.st();const D=window.SundialDesktop;l
       else{
         if(!Sync.isPairing()&&!syncSetup.pairError&&!syncSetup.pairStarting){syncSetup.pairStarting=true;Sync.startPairing().then(()=>syncRefresh()).catch(e=>{syncSetup.pairError=e.message||String(e);syncRefresh()}).finally(()=>{syncSetup.pairStarting=false})}
         const code=Sync.pairingCode(),age=Sync.pairingSince()?Date.now()-Sync.pairingSince():0;
-        const wait=Sync.pairingReady()?`<div class="pairconfirm">An approval arrived. Look at your other PC: under "Approved" it now shows a four-digit finish code. Type it here. If your other PC shows nothing, choose No.</div><div class="pairbtns"><input class="key" id="syncFinIn" inputmode="numeric" placeholder="4812" maxlength="5" style="min-width:90px;text-align:center;letter-spacing:.2em"><button class="btn" data-run="syncPairCancel">No, it shows nothing</button><button class="btn primary" data-run="syncPairFinish">Finish</button></div>`
-          :code?`<div class="paircode">${esc(code)}</div><div class="pairwait">Waiting for the approval<span>.</span><span>.</span><span>.</span></div><small class="pairhint">${bare?'You can close this; it says here when the other PC has approved.':'It says here when the other PC has approved.'}</small>`
+        const wait=Sync.pairingReady()?`<div class="pairconfirm">Approved on your other ${DEV()}. It now shows a finish code in two boxes like these. Type it here. If it shows nothing, choose No.</div><div class="pairbtns">${codeBox({entry:true,id:'syncFinIn',label:'Finish code'})}<button class="btn" data-run="syncPairCancel">No, it shows nothing</button><button class="btn primary" data-run="syncPairFinish">Finish</button></div>`
+          :code?`<div class="paircode">${codeBox({value:code})}</div><div class="pairwait">Waiting for the approval<span>.</span><span>.</span><span>.</span></div><small class="pairhint">Type this code on your other ${DEV()} when it asks. ${bare?'You can close this; it says here when the other PC has approved.':'It says here when the other PC has approved.'}</small>`
           :(syncSetup.pairError?`<small class="warn">${esc(syncSetup.pairError)}</small> <button class="btn" data-run="syncRetryPair">Try again</button>`
           :`<div class="pairwait">Waiting for your other PC to notice<span>.</span><span>.</span><span>.</span></div><small class="pairhint">${age>45000?'Still nothing. ':''}If Sundial on the other PC is tucked away in the tray, open its window. If it is a browser tab, bring it to the front; a tab in the background cannot answer. It can take up to a minute.</small>`);
         h+=`<div class="opt attention paircard"><div>Approve this ${DEV()} from your other ${DEV()}<small>Your days are locked with a key only your PCs hold. Open Sundial on the PC that already syncs: it asks to add this one. Approve it there if it shows the same code.</small>${wait}</div></div>`;
@@ -853,24 +857,51 @@ function syncFlowReset(){Object.assign(syncSetup,{existing:null,checking:false,p
 // The secret that unlocks the synced copy on another PC. Shown once right after setup, and on request later.
 function recoveryCard(code,first){if(code==null)return `<div class="opt" style="border:0;padding-top:0"><div><small>This PC does not hold the recovery code. A PC that set sync up, or was approved by one, shows it under Settings → Data & sync. If this account was made in an older version with a passphrase you chose, that passphrase is the code.</small></div></div>`;
   return `<div class="opt attention recovery"><div>${first?'Syncing. Save your recovery code':'Your recovery code'}<small>${first?'You only need it to add another PC when this one is not nearby, or if this PC is lost. Nobody can recover it for you, not even Sundial. Settings → Data & sync shows it again.':'Anyone with this code and your email can read your synced days. Keep it private.'}</small><div class="rc">${esc(code)}</div></div><div class="ctl"><button class="btn" data-run="syncCopyRecovery">Copy</button>${first?'<button class="btn primary" data-run="syncRecoveryDone">I saved it</button>':''}</div></div>`}
+// ---------- the two-box code ----------
+// A four-digit pairing code is always two cells of two digits, whether a device shows one or asks for one, so what you type
+// looks like what the other device shows. codeBox({value}) shows; {entry:true,id,label} asks; {wait:true} is two empty cells that pulse.
+function codeBox(o){o=o||{};const d=String(o.value||'').replace(/\D/g,''),id=o.id?` id="${esc(o.id)}"`:'';
+  if(!o.entry)return `<span class="cb${o.wait?' wait':''}"${id}><b>${d.slice(0,2)}</b><b>${d.slice(2,4)}</b></span>`;
+  const cell=n=>`<input inputmode="numeric" maxlength="2" autocomplete="off" aria-label="${esc(o.label||'Code')}, digits ${n?'3 and 4':'1 and 2'}">`;
+  return `<span class="cb entry"${id}>${cell(0)}${cell(1)}</span>`}
+// Wires an entry box: digits only, the first cell hands over to the second, Backspace on an empty second cell steps back, a pasted
+// code fills both, Enter submits a full code, and with auto the fourth digit submits. Returns {value,clear,bad,focus}; also kept on el._cb.
+function bindCodeBox(el,onSubmit,auto){const [a,b]=el.querySelectorAll('input');const val=()=>(a.value+b.value).replace(/\D/g,'').slice(0,4);const ok=()=>el.classList.remove('bad');
+  const api={get value(){return val()},clear(){a.value=b.value='';a.focus()},bad(){ok();void el.offsetWidth;el.classList.add('bad')},focus(){(a.value.length<2?a:b).focus()}};
+  const put=s=>{s=s.replace(/\D/g,'').slice(0,4);a.value=s.slice(0,2);b.value=s.slice(2);(s.length<2?a:b).focus();if(s.length===4&&auto)onSubmit(s)};
+  a.addEventListener('input',()=>{ok();const s=a.value.replace(/\D/g,'');if(s.length>=2)put(s+b.value);else a.value=s});
+  b.addEventListener('input',()=>{ok();b.value=b.value.replace(/\D/g,'').slice(0,2);if(val().length===4&&auto)onSubmit(val())});
+  b.addEventListener('keydown',e=>{if(e.key==='Backspace'&&!b.value){e.preventDefault();a.value=a.value.slice(0,-1);a.focus()}});
+  el.addEventListener('keydown',e=>{if(e.key!=='Enter')return;e.preventDefault();if(val().length===4)onSubmit(val());else api.bad()});
+  el.addEventListener('paste',e=>{const t=(e.clipboardData||window.clipboardData||{}).getData?.('text')||'';if(/\d/.test(t)){e.preventDefault();put(t)}});
+  el._cb=api;return api}
+
 // Another PC wants in: one banner per request, and a corner toast on the desktop. Approving sends it the key.
+const pairBanner=(id,name)=>{const el=document.createElement('div');el.className='banner pair start';el.dataset.pair=id;el.dataset.name=name||'';el.innerHTML='<div class="ic">⇄</div><div class="tx"><span class="k"></span><b></b><small></small></div><div class="bt"></div>';return el};
+// One banner per request walks ask -> busy -> fin, or back to ask with the error. The typed digits leave the screen the moment
+// Approve is clicked, so nothing on the banner but the finish code can ever be read as the finish code.
+function pairState(el,state,arg){const id=el.dataset.pair;el.dataset.state=state;const k=el.querySelector('.tx .k'),b=el.querySelector('.tx b'),sm=el.querySelector('.tx small'),bt=el.querySelector('.bt');sm.classList.toggle('warn',state==='ask'&&!!arg);
+  if(state==='busy'){k.textContent='Approving';b.textContent='Approving…';sm.textContent=`Sending the key to "${el.dataset.name}".`;bt.innerHTML=codeBox({wait:true});return}
+  if(state==='fin'){k.textContent='Approved';b.textContent=`Type this on the other ${DEV()} to finish`;sm.textContent=`It stays here until that ${DEV()} is in, or for five minutes.`;bt.innerHTML=codeBox({value:arg});return}
+  k.textContent=`Add a ${DEV()} to your sync?`;b.textContent=`Type the big code that ${DEV()} shows`;sm.textContent=arg||`A ${DEV()} called "${el.dataset.name}" is asking. If no ${DEV()} of yours is showing a code right now, choose Not mine.`;
+  bt.innerHTML=codeBox({entry:true,label:'Code shown on the other '+DEV()})+`<button data-b="later">Not mine</button><button class="ok" data-b="go">Approve</button>`;
+  const go=bt.querySelector('[data-b="go"]'),cb=bindCodeBox(bt.querySelector('.cb'),()=>go.click(),true);
+  bt.querySelector('[data-b="later"]').onclick=()=>Sync.denyPair(id);
+  go.onclick=()=>{const typed=cb.value;if(typed.length<4){cb.bad();cb.focus();return}pairState(el,'busy');
+    Sync.approvePair(id,typed).then(fin=>{Sync.schedule(0);if(Sync.finishing().some(f=>f.id===id)){if(el.dataset.state!=='fin')pairState(el,'fin',fin);approvedNote(fin)}else dismissBanner(el)})
+      .catch(e=>{const m=e.message||String(e);if(Sync.pendingPairs().some(p=>p.id===id))pairState(el,'ask',m);else{dismissBanner(el);toast(m)}})};
+  if(arg)cb.bad();if(arg||!typingElsewhere())cb.focus()}
 function pairBanners(){const host=bannerHost();const pend=Sync.pendingPairs();
-  host.querySelectorAll('.banner.pair').forEach(el=>{if(!pend.some(p=>p.id===el.dataset.pair))dismissBanner(el)});
-  for(const p of pend){if(host.querySelector(`.banner.pair[data-pair="${CSS.escape(p.id)}"]`))continue;const el=document.createElement('div');el.className='banner pair start';el.dataset.pair=p.id;
-    el.innerHTML=`<div class="ic">⇄</div><div class="tx"><span class="k">Add a ${DEV()} to your sync?</span><b>Type the big code that ${DEV()} shows</b><small>A ${DEV()} called "${esc(p.name)}" is asking. If no ${DEV()} of yours is showing a code right now, choose Not mine.</small></div><div class="bt"><input class="key pairin" inputmode="numeric" maxlength="5" placeholder="48 12" aria-label="Code shown on the other PC"><button data-b="later">Not mine</button><button class="ok" data-b="go">Approve</button></div>`;
-    el.querySelector('[data-b="later"]').onclick=()=>{Sync.denyPair(p.id)};
-    el.querySelector('[data-b="go"]').onclick=()=>{const b=el.querySelector('[data-b="go"]'),inp=el.querySelector('.pairin');b.textContent='…';b.disabled=true;Sync.approvePair(p.id,inp.value).then(fin=>approvedNote(fin)).catch(e=>{b.textContent='Approve';b.disabled=false;inp.value='';inp.focus();toast(e.message||String(e))})};
-    el.querySelector('.pairin').addEventListener('keydown',e=>{if(e.key==='Enter')el.querySelector('[data-b="go"]').click()});
-    host.appendChild(el);setTimeout(pairBanners,Math.max(1000,p.ts+15*60*1000-Date.now()+500))}
+  host.querySelectorAll('.banner.pair[data-state="ask"]').forEach(el=>{if(!pend.some(p=>p.id===el.dataset.pair))dismissBanner(el)});
+  for(const p of pend){if(host.querySelector(`.banner.pair[data-pair="${CSS.escape(p.id)}"]`))continue;const el=pairBanner(p.id,p.name);host.appendChild(el);pairState(el,'ask');setTimeout(pairBanners,Math.max(1000,p.ts+15*60*1000-Date.now()+500))}
   // a corner toast for a request that has since gone must not stay clickable
   if(window.SundialDesktop&&window.SundialDesktop.toastCurrent)window.SundialDesktop.toastCurrent().then(cur=>{if(cur&&cur.kind==='pair'&&!pend.some(p=>p.id===cur.pair))window.SundialDesktop.toastDismiss()}).catch(()=>{})}
-function approvedNote(fin){const msg='Approved. On the other '+DEV()+', type '+fin+' to finish.';if(window.SundialDesktop&&document.hidden)window.SundialDesktop.toastShow({kind:'info',label:'Approved',title:'Finish code '+fin,meta:'Type it on the other PC to finish.',corner:S().toasts.corner,secs:120,sticky:false,actions:[{id:'ok',label:'OK',primary:true}]}).catch(()=>{});else toast(msg)}
-// After Approve, the finish code stays on screen until the other PC has typed it (or three minutes).
+// Desktop with the window hidden: the finish code goes to the corner toast as before. Visible, the banner itself shows it, so no second toast.
+function approvedNote(fin){if(window.SundialDesktop&&document.hidden)window.SundialDesktop.toastShow({kind:'info',label:'Approved',title:'Finish code '+fin,meta:'Type it on the other PC to finish.',corner:S().toasts.corner,secs:120,sticky:false,actions:[{id:'ok',label:'OK',primary:true}]}).catch(()=>{})}
+// After Approve, the finish code stays on screen until the other PC has typed it (or five minutes).
 function finishBanners(){const host=bannerHost();const fins=Sync.finishing();
-  host.querySelectorAll('.banner.fin').forEach(el=>{if(!fins.some(f=>f.id===el.dataset.pair))dismissBanner(el)});
-  for(const f of fins){if(host.querySelector(`.banner.fin[data-pair="${CSS.escape(f.id)}"]`))continue;const el=document.createElement('div');el.className='banner fin start';el.dataset.pair=f.id;
-    el.innerHTML=`<div class="ic">⇄</div><div class="tx"><span class="k">Approved</span><b>Finish code <span class="pc">${esc(f.fin)}</span></b><small>Type it on the other ${DEV()} to finish. This stays here until that ${DEV()} is in, or for five minutes.</small></div>`;
-    host.appendChild(el)}}
+  host.querySelectorAll('.banner.pair[data-state="fin"]').forEach(el=>{if(!fins.some(f=>f.id===el.dataset.pair))dismissBanner(el)});
+  for(const f of fins){let el=host.querySelector(`.banner.pair[data-pair="${CSS.escape(f.id)}"]`);if(el&&el.dataset.state==='fin')continue;if(!el){el=pairBanner(f.id,f.name);host.appendChild(el)}pairState(el,'fin',f.fin)}}
 function stickyNote(cls,title,text,onDismiss){const host=bannerHost();if(host.querySelector('.banner.'+cls))return;const el=document.createElement('div');el.className='banner '+cls+' start';
   el.innerHTML=`<div class="ic">!</div><div class="tx"><span class="k">${esc(title)}</span><small>${esc(text)}</small></div><div class="bt"><button data-b="later">Dismiss</button></div>`;el.querySelector('[data-b="later"]').onclick=()=>{dismissBanner(el);if(onDismiss)onDismiss()};host.appendChild(el)}
 // web: data.js calls this once when localStorage refuses a write (quota, blocked site data)
@@ -977,7 +1008,7 @@ async function init(){
   Sync.on((ev,arg)=>{
     if(ev==='start'||ev==='ok'||ev==='error'){const sm=document.querySelector('[data-run="syncNow"]')?.closest('.opt')?.querySelector('small');if(sm)sm.innerHTML=syncStatusText(Sync.st());return}
     if(ev==='signedout'||ev==='lostkey'){syncFlowReset();toast(arg||Sync.st().lastError||'Signed out of sync',()=>{sheetTab='data';settings()},'Open')}
-    if(ev==='pair'){pairBanners();finishBanners()}if(ev==='pairready'){if(!$('.sheet-host')&&!$('.ob-host:not(.out)'))toast('Sundial needs one check before this PC can sync.',()=>{sheetTab='data';settings()},'Open')}if(ev==='paired'){syncFlowReset();toast('This PC is in. Syncing.')}
+    if(ev==='pair'){pairBanners();finishBanners()}if(ev==='pairdone')toast((arg?'"'+arg+'"':'The other '+DEV())+' is in.');if(ev==='pairready'){if(!$('.sheet-host')&&!$('.ob-host:not(.out)'))toast('Sundial needs one check before this PC can sync.',()=>{sheetTab='data';settings()},'Open')}if(ev==='paired'){syncFlowReset();toast('This PC is in. Syncing.')}
     if(ev==='pairwithdrawn')stickyNote('withdrawn','A request to add a PC was withdrawn',`"${arg||'A PC'}" asked to join your sync and pulled out before you answered. If that was not you, open Settings → Data & sync and erase the synced copy.`);
     if(ev==='pairwarn')stickyNote('pairwarn','Something keeps asking to add a PC','Five requests in an hour, which is more than adding PCs normally takes. Sundial is holding the rest. If it is you, dismiss this to continue; if it is not you, leave it and consider erasing the synced copy.',()=>Sync.liftPairCap());if(ev==='pairfail'){syncSetup.pairError=arg||'Approval did not go through.';toast(syncSetup.pairError,()=>{sheetTab='data';settings()},'Open')}
     if($('.sheet-host')&&sheetTab==='data')renderSheet();else if($('.ob-host:not(.out)')&&obStep===2)renderOnboarding()});Sync.start();

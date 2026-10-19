@@ -71,6 +71,10 @@ On the VPS (files in `server/ops/web/`):
 
 The four families (Silkscreen 400 and 700, Syne 600 to 800, Manrope 400 to 700, Space Mono 400 and 700) are self-hosted: `ui/fonts.css` and twelve woff2 files in `ui/fonts/`, latin and latin-ext subsets, about 177 KB. They are unmodified Google Fonts builds under the SIL Open Font License 1.1; `ui/fonts/OFL.txt` has the notices. Neither the desktop app nor the web app contacts Google. To regenerate: fetch the Google Fonts css2 URL for those families and weights with a current Chrome user agent (older agents get ttf instead of woff2), keep the latin and latin-ext `@font-face` blocks, download their files into `ui/fonts/` under new names and point the `url()`s in `fonts.css` at them. The service worker reads the font list from `fonts.css` at install time, so nothing else needs updating.
 
+## What comes next
+
+[ROADMAP.md](ROADMAP.md): the state at the end of the first beta week, the loose ends, and the platform order (Linux, macOS, Android with Obtainium/IzzyOnDroid/Accrescent/F-Droid, iOS).
+
 ## Decisions
 
 From the 2026-10-12 notes, as they stand now:

@@ -114,7 +114,7 @@ Self-hosted (token) accounts: bearer only, no body.
 ## Client behaviour
 
 - Every local mutation marks the affected document ids dirty. Dirty ids survive restarts.
-- Sync runs: 2 s after the last edit, on launch, every 5 minutes, and when the network returns.
+- Sync runs: 2 s after the last edit, on launch, every 10 seconds while the window is visible and every minute hidden, and when the network returns.
   One sync in flight at a time; a sync requested while one runs is queued once.
 - Push: encrypt every dirty document, send them with the current cursor. On success, clear the dirty marks that were
   set before the request started (edits made during the request stay dirty). Ids in `rejected` are not treated as synced: the app clears their dirty mark, keeps them in a rejected list it shows to the user, and sends them again the next time they are edited.
@@ -142,7 +142,8 @@ another.
 
 1. The new PC generates an ephemeral ECDH P-256 key pair (private key not extractable) and pushes the request
    `{"t":"req","commit":"<base64 SHA-256(raw public key)>","name":"<this PC's name>"}`. It shows nothing yet and polls
-   `/v1/sync` from the cursor it got back every 3 seconds, for up to 15 minutes.
+   `/v1/sync` from the cursor it got back every 2 seconds for the first two minutes (and again for two minutes after
+   the code is shown), then every 5 seconds, for up to 15 minutes.
 2. Every unlocked PC that pulls the request, and could show a prompt right now (window visible, or corner toasts
    on), generates its own ephemeral key pair and pushes its ack `{"t":"ack","commit":"<base64 SHA-256(its raw public
    key)>"}`. An ack reveals nothing and shows no prompt; a PC that cannot prompt waits until it can before answering.
@@ -154,7 +155,9 @@ another.
    `SHA-256("sundial-pair-1" | id | P_new | P_old)` as an unsigned integer modulo 10000, shown as two pairs of digits.
    A PC shows one prompt at a time (later requests wait their turn), only while a person can see it (window visible,
    or corner toasts on), and at most five an hour; past that it stops answering and shows a warning that only the
-   person can dismiss. A prompted request that is withdrawn by someone else leaves a note on screen.
+   person can dismiss. A prompted request that is withdrawn by someone else leaves a note on screen. An answering PC
+   polls every 2 seconds for 90 seconds after it acks, prompts or approves, otherwise every 5 seconds while a request
+   is open, and backs off to 5 seconds for a minute after a 429.
 5. The new PC verifies `SHA-256(P_old)` equals the ack commit (otherwise it fails: "tampered with on the way") and
    shows the same code.
 6. The person types the new PC's code on the old PC (three misses decline the request). On that match the old PC derives the shared secret with ECDH, runs it through
