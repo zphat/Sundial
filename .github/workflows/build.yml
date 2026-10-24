@@ -1,8 +1,10 @@
-# Builds the Windows installer on every push to main (download it from the run's Artifacts),
-# and publishes a GitHub Release with the installer attached when a tag like v0.1.0 is pushed.
+# Builds the Windows installer and the Linux bundles on every push to main (download them from the run's
+# Artifacts), and publishes a GitHub Release with everything attached when a tag like v0.1.0 is pushed.
 # The same release carries the sync server tarball and the web bundle (sundial-web.tar.gz), which
 # the VPS installs on its own (server/ops/web). Every job waits for 'check' so a syntax error in
-# ui/*.js can never ship through the auto-updater.
+# ui/*.js can never ship through the auto-updater. The linux job waits for the windows job: both rewrite
+# latest.json on the release through tauri-action (download, add own platform keys, upload again, no
+# locking), so they must never run at the same time.
 name: build
 
 on:
@@ -155,12 +157,14 @@ jobs:
           releaseBody: |
             ${{ steps.notes.outputs.body }}
 
-            **Install:** download `Sundial-Setup.exe`; the other files are for the updater and the sync server. Sundial isn't signed with a paid certificate yet, so Windows doesn't know it:
+            **Install**
 
-            1. If Edge says the file "isn't commonly downloaded": Keep, then Show more, then Keep anyway.
-            2. If a blue box says "Windows protected your PC": More info, then Run anyway.
+            - **Windows:** download `Sundial-Setup.exe`. Sundial isn't signed with a paid certificate yet, so Windows doesn't know it. If Edge says the file "isn't commonly downloaded": Keep, then Show more, then Keep anyway. If a blue box says "Windows protected your PC": More info, then Run anyway. No admin password is needed. If Smart App Control blocked it, don't change any settings; that PC needs a signed build.
+            - **Fedora, openSUSE and other rpm systems:** `sudo dnf install ./Sundial.rpm` (openSUSE: `sudo zypper install ./Sundial.rpm`).
+            - **Ubuntu, Mint, Debian and other deb systems:** `sudo apt install ./Sundial.deb`
+            - **Any other Linux** (Arch, CachyOS, Bazzite, SteamOS desktop mode, Fedora Atomic): `chmod +x Sundial.AppImage && ./Sundial.AppImage`
 
-            No admin password is needed, and updates install on their own. If Smart App Control blocked it, don't change any settings; that PC needs a signed build.
+            Updates install on their own on Windows and from the AppImage, which replaces itself in place and restarts. The rpm and deb builds show a Download button that opens this page; install the new file over the old one. The other files here are for the updater and the sync server.
           # Must stay a regular release: GitHub's /releases/latest (the updater endpoint) skips pre-releases.
           prerelease: false
 
@@ -197,6 +201,211 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src-tauri/Cargo.lock
           if git diff --cached --quiet; then echo "Cargo.lock unchanged"; else git commit -m "Cargo.lock from the CI build [skip ci]" && git push; fi
+
+  # Linux: AppImage (self-updating, any distro), .deb (Ubuntu, Mint, Debian) and .rpm (Fedora, openSUSE), built on
+  # Ubuntu 22.04 so the AppImage's WebKitGTK and the glibc floor (2.35) are the oldest still-supported baseline.
+  # Runs after 'windows' because both jobs rewrite latest.json on the release (see the header). The Ubuntu 22.04
+  # image has brownouts on 2027-03-23, 03-30, 04-06 and 04-13 and is retired on 2027-04-17 (actions/runner-images
+  # issue 14254): before then, move to runs-on ubuntu-24.04 with `container: ubuntu:22.04`, or accept the 24.04 floor.
+  linux:
+    needs: [check, windows]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      # The tray library the CLI writes into the deb/rpm dependencies and copies into the AppImage. Ayatana is what
+      # Ubuntu, Debian, Fedora and Arch ship; without this the CLI probes pkg-config and would take whichever it finds.
+      TAURI_LINUX_AYATANA_APPINDICATOR: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri 2's list for Debian/Ubuntu, plus: libdbus-1-dev and pkg-config for keyring's Secret Service backend,
+      # the GTK/GLib/pixbuf query tools the linuxdeploy gtk plugin calls, desktop-file-utils for appimagetool's
+      # desktop file check. libxdo and libssl are not linked by this app (rustls, no linux-libxdo feature) but are
+      # kept because Tauri's docs list them and they are cheap.
+      - name: Tauri 2 build prerequisites (Ubuntu 22.04)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf \
+            libdbus-1-dev pkg-config \
+            libglib2.0-bin libgtk-3-bin libgdk-pixbuf2.0-bin desktop-file-utils
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm install
+
+      # Updates are signed with src-tauri/updater.key, which is stored encrypted (see keygen.yml) and
+      # unlocked with the TAURI_UPDATER_KEY_PASSWORD secret. Without both, the build still works but
+      # produces no .sig / latest.json, so nothing unsigned can ever reach the updater.
+      #
+      # Key rotation: while src-tauri/updater.transition exists, the build signs with the previous key
+      # (TAURI_SIGNING_PRIVATE_KEY secret) so installed copies accept the release that carries the new
+      # public key. The switch lives here, not on a side branch, because GitHub refuses to publish a
+      # release whose commit has workflow files that differ from the default branch.
+      - name: Load the updater signing key
+        id: sig
+        shell: pwsh
+        env:
+          PASS: ${{ secrets.TAURI_UPDATER_KEY_PASSWORD }}
+          OLDKEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          OLDPASS: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ((Test-Path src-tauri/updater.transition) -and $env:OLDKEY) {
+            Write-Host "Signing with the previous key (rotation transition release)"
+            "TAURI_SIGNING_PRIVATE_KEY=$($env:OLDKEY.Trim())" >> $env:GITHUB_ENV
+            "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$env:OLDPASS" >> $env:GITHUB_ENV
+            "signed=true" >> $env:GITHUB_OUTPUT
+          } elseif ((Test-Path src-tauri/updater.key) -and $env:PASS) {
+            "TAURI_SIGNING_PRIVATE_KEY=$((Get-Content src-tauri/updater.key -Raw).Trim())" >> $env:GITHUB_ENV
+            "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$env:PASS" >> $env:GITHUB_ENV
+            "signed=true" >> $env:GITHUB_OUTPUT
+          } else { "signed=false" >> $env:GITHUB_OUTPUT }
+
+      # The AppImage runtime. Tauri's bundler runs linuxdeploy with the upstream linuxdeploy-plugin-appimage, whose
+      # appimagetool downloads the type 2 runtime from a moving "continuous" tag with no checksum (or, if that plugin
+      # download fails, uses whatever older appimagetool is inside linuxdeploy). The plugin passes LDAI_RUNTIME_FILE
+      # to appimagetool as --runtime-file, so we pin the static type 2 runtime (FUSE 3, statically linked: it runs
+      # on Fedora Atomic desktops and Bazzite, which have no libfuse2). Tag and sha256 move together; the digest is
+      # the one GitHub reports for the asset (api.github.com/repos/AppImage/type2-runtime/releases/tags/<tag>).
+      - name: AppImage runtime (static type 2, FUSE 3)
+        shell: bash
+        env:
+          TAG: "20251108"
+          SHA256: "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d"
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/appimage-runtime"
+          mkdir -p "$dir"
+          curl -fsSL --proto '=https' --retry 3 -o "$dir/runtime-x86_64" \
+            "https://github.com/AppImage/type2-runtime/releases/download/$TAG/runtime-x86_64"
+          echo "$SHA256  $dir/runtime-x86_64" | sha256sum -c -
+          echo "LDAI_RUNTIME_FILE=$dir/runtime-x86_64" >> "$GITHUB_ENV"
+
+      # Same command tauri-action runs, but with the compiler's complaints turned into annotations
+      # (readable through the public API; the web log viewer needs a login). tauri-action then
+      # rebuilds from the warm cache and does the release.
+      - name: Compile (errors as annotations)
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! npm run tauri build -- --bundles appimage,deb,rpm ${{ steps.sig.outputs.signed == 'true' && '--config src-tauri/tauri.updater.conf.json' || '' }} 2>&1 | tee build.log; then
+            # strip colour codes, then annotate the compiler errors and the end of the log
+            sed -r "s/$(printf '\033')\[[0-9;?]*[ -\/]*[@-~]//g" build.log > plain.log
+            { grep -nE "^(error|warning: unused)" -A 14 plain.log | head -160; echo "----- tail -----"; tail -n 70 plain.log; } | paste -sd '|' - | fold -w 1200 | head -10 | while IFS= read -r chunk; do echo "::error::${chunk}"; done
+            exit 1
+          fi
+
+      # Proof that the pin took: a type 2 AppImage whose runtime does not name libfuse.so.2 (the old AppImageKit
+      # runtime dlopens it and fails on Fedora Atomic / Bazzite), and that unpacks without FUSE at all.
+      - name: Check the AppImage runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=$(find src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' | head -n1)
+          [ -n "$f" ] || { echo "::error::no AppImage in src-tauri/target/release/bundle/appimage"; exit 1; }
+          chmod +x "$f"
+          magic=$(dd if="$f" bs=1 skip=8 count=3 2>/dev/null | od -An -tx1 | tr -d ' \n')
+          [ "$magic" = "414902" ] || { echo "::error::$f is not a type 2 AppImage (magic $magic)"; exit 1; }
+          off=$("$f" --appimage-offset)
+          if head -c "$off" "$f" | grep -aq 'libfuse.so.2'; then
+            echo "::error::$f carries the old libfuse2 runtime; LDAI_RUNTIME_FILE was not honoured"; exit 1
+          fi
+          d=$(mktemp -d)
+          (cd "$d" && "$GITHUB_WORKSPACE/$f" --appimage-extract >/dev/null)
+          test -x "$d/squashfs-root/usr/bin/sundial"
+          echo "AppImage ok: type 2, runtime $off bytes without libfuse2, extracts without FUSE"
+
+      # The release body is the annotated tag's message (git tag -a vX.Y.Z -m "what changed"), followed by the
+      # install note below. Multiline, so it goes through the GITHUB_OUTPUT heredoc form.
+      - name: Release notes from the tag message
+        id: notes
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          git fetch --tags --force || true
+          delim="NOTES_$RANDOM$RANDOM"
+          {
+            echo "body<<$delim"
+            git tag -l --format='%(contents)' "$GITHUB_REF_NAME"
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+      # The windows job created the release; this finds it by tag, uploads the AppImage, deb and rpm with their
+      # .sig files, and merges linux-x86_64 (AppImage), -appimage, -deb and -rpm into the existing latest.json.
+      # The body below must stay identical to the windows job's: tauri-action never rewrites an existing release,
+      # and the text is also the "notes" field of latest.json.
+      - name: Build bundles (and release on tags)
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --bundles appimage,deb,rpm ${{ steps.sig.outputs.signed == 'true' && '--config src-tauri/tauri.updater.conf.json' || '' }}
+          includeUpdaterJson: ${{ steps.sig.outputs.signed == 'true' }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseName: ${{ github.ref_type == 'tag' && format('Sundial {0}', github.ref_name) || '' }}
+          releaseBody: |
+            ${{ steps.notes.outputs.body }}
+
+            **Install**
+
+            - **Windows:** download `Sundial-Setup.exe`. Sundial isn't signed with a paid certificate yet, so Windows doesn't know it. If Edge says the file "isn't commonly downloaded": Keep, then Show more, then Keep anyway. If a blue box says "Windows protected your PC": More info, then Run anyway. No admin password is needed. If Smart App Control blocked it, don't change any settings; that PC needs a signed build.
+            - **Fedora, openSUSE and other rpm systems:** `sudo dnf install ./Sundial.rpm` (openSUSE: `sudo zypper install ./Sundial.rpm`).
+            - **Ubuntu, Mint, Debian and other deb systems:** `sudo apt install ./Sundial.deb`
+            - **Any other Linux** (Arch, CachyOS, Bazzite, SteamOS desktop mode, Fedora Atomic): `chmod +x Sundial.AppImage && ./Sundial.AppImage`
+
+            Updates install on their own on Windows and from the AppImage, which replaces itself in place and restarts. The rpm and deb builds show a Download button that opens this page; install the new file over the old one. The other files here are for the updater and the sync server.
+          # Must stay a regular release: GitHub's /releases/latest (the updater endpoint) skips pre-releases.
+          prerelease: false
+
+      # Second copies under fixed names, so one link always serves the newest build:
+      # https://github.com/zphat/Sundial/releases/latest/download/Sundial.AppImage (also Sundial.deb, Sundial.rpm)
+      - name: Copy the bundles to Sundial.AppImage, Sundial.deb and Sundial.rpm
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          b=src-tauri/target/release/bundle
+          cp "$(find $b/appimage -maxdepth 1 -name '*.AppImage' | head -n1)" Sundial.AppImage
+          cp "$(find $b/deb -maxdepth 1 -name '*.deb' | head -n1)" Sundial.deb
+          cp "$(find $b/rpm -maxdepth 1 -name '*.rpm' | head -n1)" Sundial.rpm
+          ls -l Sundial.AppImage Sundial.deb Sundial.rpm
+
+      - name: Attach Sundial.AppImage, Sundial.deb and Sundial.rpm to the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          files: |
+            Sundial.AppImage
+            Sundial.deb
+            Sundial.rpm
+          fail_on_unmatched_files: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sundial-linux-bundles
+          path: |
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+          if-no-files-found: error
+
+      # No Cargo.lock commit here. The windows job commits it: Cargo.lock lists every platform's crates whatever
+      # host resolved it, so Linux-only dependency changes reach the file through that one commit, and a second
+      # pusher would only race it.
 
   # The sync server: a Linux binary on every push, attached to the release on tags.
   sync-server:
@@ -274,11 +483,11 @@ jobs:
           path: sundial-web.tar.gz
           if-no-files-found: error
 
-  # Attaches the server and web tarballs only once the Windows job has published the installer: a release must
-  # never exist without latest.json, or every installed copy's update check breaks.
+  # Attaches the server and web tarballs only once the Windows and Linux jobs have published their bundles and
+  # latest.json: a release must never exist without latest.json, or every installed copy's update check breaks.
   attach-assets:
     if: github.ref_type == 'tag'
-    needs: [windows, sync-server, web]
+    needs: [windows, linux, sync-server, web]
     runs-on: ubuntu-latest
     permissions:
       contents: write

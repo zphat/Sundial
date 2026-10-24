@@ -1,16 +1,16 @@
 # Sundial privacy
 
-Last updated 2026-10-18. This page covers the Sundial app for Windows, the web app at app.sundial.services and the optional Sundial Sync service. All three are run by zphat during the beta.
+Last updated 2026-10-24. This page covers the Sundial app for Windows and Linux, the web app at app.sundial.services and the optional Sundial Sync service. All three are run by zphat during the beta.
 
 ## What Sundial stores on your PC
 
-Your tasks, daily notes, label names, routines and settings live in one file, `%APPDATA%\app.sundial.desktop\sundial.json`. A `backups` folder next to it keeps one copy for each day you used Sundial and deletes all but the newest 30 itself. If you turn Sync on, your sign-in token is kept in that file, and the key that encrypts your data is kept in Windows Credential Manager.
+Your tasks, daily notes, label names, routines and settings live in one file, `%APPDATA%\app.sundial.desktop\sundial.json`. On Linux the file is `~/.local/share/app.sundial.desktop/sundial.json`. A `backups` folder next to it keeps one copy for each day you used Sundial and deletes all but the newest 30 itself. If you turn Sync on, your sign-in token is kept in that file, and the key that encrypts your data is kept in Windows Credential Manager on Windows, or on Linux in your desktop's keyring (KWallet or GNOME Keyring, through the Secret Service). If no keyring service is running (no KWallet or GNOME Keyring on the session bus), Sundial keeps it instead in `secrets.json` next to the data file, readable only by your user account.
 
 The app makes one kind of request on its own: to github.com, to check for updates shortly after launch and every six hours. GitHub's own privacy statement covers that request. The fonts ship with the app; earlier versions fetched them from fonts.googleapis.com and fonts.gstatic.com, the current one contacts Google for nothing.
 
-If you turn on AI parsing in Settings, the text you type into the add box is sent to the provider you picked (Anthropic, OpenAI or a server you name) with your own API key. The key is kept in Windows Credential Manager.
+If you turn on AI parsing in Settings, the text you type into the add box is sent to the provider you picked (Anthropic, OpenAI or a server you name) with your own API key. The key is kept in Windows Credential Manager, or in the desktop keyring on Linux. If no keyring is running, it goes in `secrets.json` next to the data file, readable only by your user account.
 
-Nothing else leaves your PC unless you turn Sync on. The microphone button: if the Windows web view offers a speech engine, Sundial uses it for the words and the audio goes wherever that engine sends it; without one, only the level meter runs and no audio leaves your PC. Turn Voice off in Settings if you do not want the microphone used at all.
+Nothing else leaves your PC unless you turn Sync on. The microphone button: if the system web view offers a speech engine (Windows does; the Linux web view does not), Sundial uses it for the words and the audio goes wherever that engine sends it; without one, only the level meter runs and no audio leaves your PC. Turn Voice off in Settings if you do not want the microphone used at all.
 
 ## The web app (app.sundial.services)
 

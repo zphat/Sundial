@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name={{name}}
+GenericName=Calendar and tasks
+{{#if comment}}
+Comment={{comment}}
+{{/if}}
+Exec={{exec}} %u
+Icon={{icon}}
+Terminal=false
+Categories=Office;Calendar;
+Keywords=calendar;tasks;todo;notes;planner;agenda;
+StartupNotify=true
+StartupWMClass={{exec}}
+{{#if mime_type}}
+MimeType={{mime_type}}
+{{/if}}

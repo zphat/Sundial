@@ -18,10 +18,16 @@
     setHotkeys:spec=>invoke('set_hotkeys',{spec}),
     autostart:{get:()=>invoke('autostart_get'),set:on=>invoke('autostart_set',{on})},
     secret:{get:name=>invoke('secret_get',{name}),set:(name,value)=>invoke('secret_set',{name,value}),del:name=>invoke('secret_delete',{name})},
+    // which store answered the last secret call: 'credential-manager' | 'keychain' | 'secret-service' | 'file' | 'unknown' (secret_store in lib.rs)
+    secretStore:()=>invoke('secret_store'),
     aiParse:req=>invoke('ai_parse',{req}),
     appVersion:()=>invoke('app_version'),
     // the PC's own name, so an approval prompt says which machine is asking
     machineName:()=>invoke('machine_name'),
+    // os / session / install / tray of the shell (platform_info in lib.rs). Not cached: on Linux `tray` is asked over D-Bus at call
+    // time and can turn from false to true after login (plasmashell registers its tray late), so Settings asks again while it is false.
+    // Shape: {os:'windows'|'linux'|'macos', session:'x11'|'wayland'|null, install:'installer'|'appimage'|'package'|'dev', tray:true|false, desktop:'kde'|'gnome'|'xfce'|'x-cinnamon'|...|null}
+    platform:()=>invoke('platform_info').catch(()=>null),
     // corner toast window; actions come back through the 'sundial://toast-action' event
     toastShow:payload=>invoke('toast_show',{payload}),
     toastCurrent:()=>invoke('toast_payload'),

@@ -1,6 +1,6 @@
 [package]
 name = "sundial"
-version = "0.1.32"
+version = "0.1.33"
 description = "Sundial: days, tasks, notes"
 authors = ["Danny"]
 edition = "2021"
@@ -27,7 +27,21 @@ tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Version comparison for installs that cannot self-update (.deb/.rpm read latest.json themselves). Already in Cargo.lock through tauri.
+semver = "1"
+
+# keyring's store is a per-platform feature; with none on, it compiles a no-op mock and every secret_set fails.
+[target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+
+# Secret Service over D-Bus (KWallet on KDE, GNOME Keyring on GNOME) through dbus-secret-service, which links libdbus-1
+# dynamically (dbus/libdbus-sys are already in Cargo.lock); the runner needs libdbus-1-dev, the packages depend on the
+# dbus library. crypto-rust encrypts the session in pure Rust. No "vendored": it would build libdbus from source for nothing.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
 
 [profile.release]
 panic = "abort"

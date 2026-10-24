@@ -4,7 +4,7 @@ Paste the first block as it is. The link always serves the newest installer, so 
 
 ---
 
-Hey, I made a calendar / to-do / daily-notes app called Sundial and I'd like you to try it. It's a Windows app, and it's a beta.
+Hey, I made a calendar / to-do / daily-notes app called Sundial and I'd like you to try it. It's a Windows and Linux app, and it's a beta.
 
 https://github.com/zphat/Sundial/releases/latest/download/Sundial-Setup.exe
 
@@ -13,7 +13,9 @@ https://github.com/zphat/Sundial/releases/latest/download/Sundial-Setup.exe
 3. Everything stays on your PC. Sync is optional and free during the beta, and only useful if you also use it on a second PC or in the browser. If you turn it on, it shows a recovery code once: save it somewhere, nobody can recover it for you, not even me.
 4. It updates itself. Tell me anything that breaks, confuses you or annoys you, here or at hello@sundial.services.
 
-No Windows PC, or on your phone? The same thing runs in the browser at https://app.sundial.services (sign in with the same email and it syncs). On a phone, the sign-in email opens a page with the code and an "Open in the browser" button.
+On Linux? Get the rpm (Fedora), the deb (Ubuntu, Mint) or the AppImage (anything else; make it executable first) from https://github.com/zphat/Sundial/releases/latest.
+
+No PC, or on your phone? The same thing runs in the browser at https://app.sundial.services (sign in with the same email and it syncs). On a phone, the sign-in email opens a page with the code and an "Open in the browser" button.
 
 ---
 
@@ -25,4 +27,4 @@ For someone who asked again or lost the link.
 
 Sundial, newest version: https://github.com/zphat/Sundial/releases/latest/download/Sundial-Setup.exe
 
-Windows warns once because it isn't signed yet: Keep in Edge (Keep, Show more, Keep anyway), then More info and Run anyway in the blue "Windows protected your PC" box. Sync is optional; if you use it, save the recovery code it shows, I can't recover it. It updates itself. Tell me what breaks, here or at hello@sundial.services. No Windows PC, or on your phone? The same thing runs in the browser at https://app.sundial.services (sign in with the same email and it syncs). On a phone, the sign-in email opens a page with the code and an "Open in the browser" button.
+Windows warns once because it isn't signed yet: Keep in Edge (Keep, Show more, Keep anyway), then More info and Run anyway in the blue "Windows protected your PC" box. Sync is optional; if you use it, save the recovery code it shows, I can't recover it. It updates itself. Tell me what breaks, here or at hello@sundial.services. On Linux? Get the rpm (Fedora), the deb (Ubuntu, Mint) or the AppImage (anything else; make it executable first) from https://github.com/zphat/Sundial/releases/latest. No PC, or on your phone? The same thing runs in the browser at https://app.sundial.services (sign in with the same email and it syncs). On a phone, the sign-in email opens a page with the code and an "Open in the browser" button.

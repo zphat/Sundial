@@ -5,6 +5,7 @@ Where Sundial stands and what comes next, written at the end of the first beta w
 ## Where it stands
 
 - **Windows app**: feature-complete for the beta. Self-updating, tray, hotkeys, reminders, voice input, sync with the email flow, the add-a-device handshake, and the task bank on the timeline. Unsigned, so Windows warns once on first run.
+- **Linux app**: first release out. rpm, deb and a self-updating AppImage from an ubuntu-22.04 runner (glibc 2.35, WebKitGTK 4.1). Tray, close-to-tray, autostart, keyring and reminders work; system-wide hotkeys work on X11 only, Wayland gets a desktop-shortcut recipe (`xdg-open sundial://quick-add`); corner toasts are replaced by the desktop's notifications. Tested on Fedora KDE first.
 - **Web app** (https://app.sundial.services): the same code, served from the Swiss VPS, installable on phones, offline-capable. Phone layout for narrow viewports. Drag and drop does not work on touch yet.
 - **Sync**: end-to-end encrypted, hosted in Switzerland, free during the beta. Protocol 1 is documented in [SYNC-PROTOCOL.md](SYNC-PROTOCOL.md). Billing is not built; pricing is decided ($2.49 a month or $19.99 a year, founding price $9.99 a year for beta accounts that stay subscribed).
 - **Operations**: nightly on-box backups, uptime check every 15 minutes, privacy-filtered access logs, pull-based deploy of the web app, DMARC on the mail domain. Off-site backups to Exoscale object storage (zone ch-dk-2) are scripted and wait for a bucket.
@@ -18,8 +19,13 @@ Where Sundial stands and what comes next, written at the end of the first beta w
 
 ## Next platforms, in order
 
-### Linux
-Tauri builds a `.deb` and an AppImage on an `ubuntu-latest` runner; the updater works for AppImage. Add a Linux job to `build.yml` beside the Windows one, attach both files to the release, and extend `latest.json`. Tray icons on Linux need `libayatana-appindicator`; test on one GNOME and one KDE machine. Flatpak can come later through Flathub.
+### Linux: shipped, follow-ups
+- [x] First release: `Sundial.rpm`, `Sundial.deb`, `Sundial.AppImage` on every release, the AppImage in `latest.json`. The Linux job runs after the Windows job because tauri-action rewrites `latest.json` without locking.
+- [ ] **Flatpak on Flathub.** Needs a manifest with the GNOME or KDE runtime, a `app.sundial.desktop` metainfo file, and the keyring through the Secret Service portal; global shortcuts through the GlobalShortcuts portal once the plugin supports it. Submit to flathub/flathub once a release has been stable for a week.
+- [ ] **AUR package** (`sundial-bin`, repackaging the release deb or AppImage) for Arch, CachyOS and SteamOS desktop mode; later a `sundial` source package.
+- [ ] **Wayland shortcuts** through the xdg-desktop-portal GlobalShortcuts API, replacing the recipe when the Tauri plugin implements it.
+- [ ] **AppImage runtime**: keep the static type-2 runtime (FUSE 3); Fedora Atomic and Bazzite are dropping FUSE 2.
+- [ ] Test matrix before each Linux-affecting release: Fedora KDE (Wayland and X11), Bazzite, CachyOS, Mint, GNOME with and without the AppIndicator extension.
 
 ### macOS
 Tauri builds a `.dmg` on a `macos-latest` runner (universal binary). Without an Apple Developer account ($99 a year) the app is unsigned and Gatekeeper requires right-click → Open; with one, the build job notarizes it. Decide the account question first; the CI job is the same either way.

@@ -20,6 +20,20 @@ const reduced=()=>matchMedia('(prefers-reduced-motion: reduce)').matches||docume
 const phoneMQ=matchMedia('(max-width:640px)');const isPhone=()=>!window.SundialDesktop&&phoneMQ.matches;
 // the word for "this machine" in the few lines a web user reads while pairing: 'PC' in the desktop app, 'device' in a browser
 const DEV=()=>window.SundialDesktop?'PC':'device';
+// Platform of the desktop shell, filled by init() from SundialDesktop.platform(). The defaults are today's Windows behaviour,
+// so a shell without platform_info (or the web, which never reads this) changes nothing. Names are checked against the shared scope.
+let plat={os:'windows',session:null,install:'installer',tray:true,desktop:null};
+const isLinux=()=>!!window.SundialDesktop&&plat.os==='linux';
+const wayland=()=>isLinux()&&plat.session==='wayland';
+// Corner toasts are their own window placed at a screen corner. Wayland gives no absolute positions, so Linux uses the desktop's notifications instead.
+const cornerToasts=()=>!!window.SundialDesktop&&S().toasts.enabled&&plat.os!=='linux';
+// Which store answered the last secret call on Linux ('secret-service' | 'file' | 'unknown', from secret_store in lib.rs); null until asked.
+// 'file' means no keyring answered and lib.rs kept the key in secrets.json next to the data file, so the wording must say so.
+let secretKind=null;
+const secretStore=()=>plat.os==='linux'?(secretKind==='file'?'a file next to your data (no keyring answered)':'your desktop\'s keyring (KWallet or GNOME Keyring)'):plat.os==='macos'?'the macOS Keychain':'Windows Credential Manager';
+// Resolves to the current kind, or the cached one when the shell cannot say; never rejects, so it can sit in a .then chain.
+const refreshSecretKind=()=>{const D=window.SundialDesktop;if(!D||!D.secretStore||plat.os!=='linux')return Promise.resolve(secretKind);return D.secretStore().then(k=>{secretKind=k;return k}).catch(()=>secretKind)};
+const RELEASES_URL='https://github.com/zphat/Sundial/releases/latest';
 // a touch device with no keyboard worth picking shortcuts for
 const noKeys=()=>!window.SundialDesktop&&matchMedia('(hover:none) and (pointer:coarse)').matches;
 
@@ -280,8 +294,9 @@ function notify(ev,demo){
   const meta=(t.time!=null?fmtTime(t.time):'')+(t.dur?' · '+fmtDur(t.dur):'')+(t.notes?' · '+t.notes.slice(0,60):'');
   if(!popup)return;
   if(start&&style==='takeover'){takeover(t,demo,owner);return}
-  // desktop: a corner toast window (Steam-style) instead of the in-app banner and the OS toast
-  if(window.SundialDesktop&&st.toasts.enabled){
+  // desktop: a corner toast window (Steam-style) instead of the in-app banner and the OS toast. Not on Linux (see cornerToasts): there the
+  // fall-through below sends a desktop notification while the window is hidden or unfocused, and the in-app banner otherwise.
+  if(cornerToasts()){
     window.SundialDesktop.toastShow({id:t.id||null,kind:start?'start':'remind',label:label+(demo?' · preview':''),title:t.title,meta,corner:st.toasts.corner,secs:st.bannerSecs,sticky:!!owner,
       actions:start?[{id:'snooze',label:'10m'},{id:'continue',label:'Continue',primary:true}]:[{id:'open',label:'Open'},{id:'ok',label:'OK',primary:true}]}).catch(e=>{console.error('toast failed',e);inAppBanner()});
     return;
@@ -335,6 +350,8 @@ function settings(){
   const s=scrim(`<button class="x" data-close>×</button><h2>Settings</h2><div class="tabs" id="stabs"></div><div id="sbody"></div>`,'sheet');s.classList.add('sheet-host');
   s.querySelector('[data-close]').onclick=()=>closeScrim(s);sheetAnim=true;renderSheet();
   const D=window.SundialDesktop;if(D)D.autostart.get().then(v=>{autostartOn=!!v;if(sheetTab==='general')renderSheet()}).catch(()=>{});refreshAiKey();
+  // A no for the tray may be stale: at login plasmashell can register its tray after Sundial asked (lib.rs caches only a yes).
+  if(D&&D.platform&&plat.tray===false)D.platform().then(p=>{if(p&&p.os){plat=Object.assign(plat,p);renderSheet()}}).catch(()=>{});
 }
 function renderSheet(){
   const s=$('.sheet-host');if(!s)return;const st=S();const body=s.querySelector('#sbody');const sc=s.querySelector('.card').scrollTop;
@@ -350,7 +367,7 @@ function renderSheet(){
     +opt('Density','Compact fits more rows on screen.',seg('density',[['comfortable','comfortable'],['compact','compact']]))
     +(isPhone()?'':`<div class="opt"><div>Layout<small>Auto stacks the panes on tall screens and narrow windows. Drag the bar between two panes to resize them either way; double-click it to reset.</small></div><div class="ctl"><div class="seg">${[['auto','auto'],['row','side by side'],['column','stacked']].map(([v,l])=>`<button data-set="layout.mode" data-val="${v}" aria-pressed="${(state.layout.mode||'auto')===v}">${l}</button>`).join('')}</div>${effectiveMode()==='column'?'<button class="btn" data-run="fitWindow">Fit to window</button>':''}</div></div>`)
     +(effectiveMode()==='column'&&!isPhone()?`<div class="opt"><div>Stacked sections<small>Each box has a padlock by its ×. Locked: it keeps the height you gave it and scrolls inside. Unlocked: it grows to its content and the whole column scrolls. Drag a bar to set a height (locks it); double-click a bar to unlock.</small></div></div>`:'')
-    +opt('Quick add from anywhere',`A floating add bar over whatever you are looking at; the + button does the same. System-wide in the desktop app. Style: <b>${hotkeyStyle()}</b>. Two modifiers plus a key stays out of games’ way; Pause or Scroll Lock alone also works. A system-wide shortcut cannot chord two regular keys.`,`<button class="key" data-run="recQuick">${esc(st.quick.hotkey)}</button><button class="btn" data-run="onboard">Choose a style</button>`)
+    +opt('Quick add from anywhere',`A floating add bar over whatever you are looking at; the + button does the same. ${wayland()?hotkeyNote():'System-wide in the desktop app. '}Style: <b>${hotkeyStyle()}</b>. Two modifiers plus a key stays out of games’ way; Pause or Scroll Lock alone also works. A system-wide shortcut cannot chord two regular keys.`,`<button class="key" data-run="recQuick">${esc(st.quick.hotkey)}</button><button class="btn" data-run="onboard">Choose a style</button>`)
     +opt('Clear example tasks','Removes only the seeded examples and the example day note.','<button class="btn" data-run="clearEx">Clear</button>')
     +(window.SundialDesktop?desktopGeneralRows():webGeneralRows())
     +`<h3>Colors</h3><div class="opt" style="border:0;padding-top:0"><div><small>Six colors, your names. Type <code>#name</code> in a task line to pick one. The names are also editable right in the calendar pane.</small></div></div>`
@@ -360,8 +377,9 @@ function renderSheet(){
     +opt('Default reminder','How far ahead the reminder fires.',`<select data-sel="defaultRemind">${[[5,'5m before'],[15,'15m before'],[30,'30m before'],[60,'1h before'],[120,'2h before'],[1440,'1 day before']].map(([v,l])=>`<option value="${v}" ${st.defaultRemind===v?'selected':''}>${l}</option>`).join('')}</select>`)
     +opt('Reminder style','',seg('remindStyle',[['banner','banner'],['off','off']]))
     +opt('Start alert style','Banner stays until Continue when the sound repeats; otherwise it drains like a reminder.',seg('startStyle',[['banner','banner'],['takeover','full window'],['off','off']]))
-    +(window.SundialDesktop?opt('Corner notifications','Steam-style: a small Sundial window in a screen corner, over whatever you are doing, never taking focus. Off falls back to in-app banners and plain Windows toasts.',tog('toasts.enabled'))
-      +(st.toasts.enabled?opt('Corner','',`<select data-sel="toasts.corner">${[['bottom-left','bottom left'],['bottom-right','bottom right'],['top-left','top left'],['top-right','top right']].map(([v,l])=>`<option value="${v}" ${st.toasts.corner===v?'selected':''}>${l}</option>`).join('')}</select>`):''):'')
+    +(window.SundialDesktop?(isLinux()?opt('Corner notifications','Linux uses the desktop\'s own notifications. Reminders show as banners while Sundial is in front and as system notifications while it is hidden.','<span class="soon">System</span>')
+      :opt('Corner notifications','Steam-style: a small Sundial window in a screen corner, over whatever you are doing, never taking focus. Off falls back to in-app banners and plain Windows toasts.',tog('toasts.enabled'))
+      +(st.toasts.enabled?opt('Corner','',`<select data-sel="toasts.corner">${[['bottom-left','bottom left'],['bottom-right','bottom right'],['top-left','top left'],['top-right','top right']].map(([v,l])=>`<option value="${v}" ${st.toasts.corner===v?'selected':''}>${l}</option>`).join('')}</select>`):'')):'')
     +opt('Banner position','In-app banners (browser, or corner notifications off).',seg('bannerPos',[['top','top'],['bottom','bottom']]))
     +opt('Banner stays for','Reminders dismiss themselves when the bar runs out. Hover pauses it.',`<input type="range" min="5" max="120" step="5" value="${st.bannerSecs}" data-range="bannerSecs"><span class="key" id="secsLbl">${st.bannerSecs}s</span>`)
     +opt('Preview','Hear and see both.','<button class="btn" data-run="prevRemind">Reminder</button><button class="btn" data-run="prevStart">Start</button>');
@@ -372,9 +390,9 @@ function renderSheet(){
     +opt('Repeat start sound','Until you press Continue.',`<select data-sel="sounds.repeat">${[[0,'off'],[15,'every 15s'],[30,'every 30s'],[45,'every 45s'],[60,'every 60s']].map(([v,l])=>`<option value="${v}" ${st.sounds.repeat===v?'selected':''}>${l}</option>`).join('')}</select>`)
     +opt('Little sounds','Completing a task climbs a marimba ladder; clearing the day resolves it.',tog('sounds.ui')+'<button class="btn icon" data-play="ui.done" title="Play">▶</button>');
   if(sheetTab==='voice')h=opt('Microphone','Off means Sundial never asks for or opens the microphone: the voice button is hidden and the hotkey does nothing. On, the mic is live only while the button is lit.',tog('voice.enabled'))
-    +(st.voice.enabled?opt('Hotkey','Press it anywhere to start listening; press again to stop.',`<button class="key" id="hotkey" data-run="recHotkey">${esc(st.voice.hotkey)}</button>`)
+    +(st.voice.enabled?opt('Hotkey',wayland()?'Works while Sundial is focused. For anywhere on Wayland, add a desktop shortcut that runs <code>xdg-open sundial://voice</code> (steps under General, Quick add from anywhere).':'Press it anywhere to start listening; press again to stop.',`<button class="key" id="hotkey" data-run="recHotkey">${esc(st.voice.hotkey)}</button>`)
     +opt('Add on finish','Add the task the moment you stop talking. Off leaves it in the field for a look first.',tog('voice.autoAdd'))
-    +opt('Where the words come from',Voice.hasSR()?(window.SundialDesktop?'The Windows web view’s speech engine turns speech into text; while the button is lit the audio goes to Microsoft for that. Nothing is sent while the mic is off.':'This browser’s own speech engine turns speech into text (Chrome sends the audio to Google, Edge to Microsoft, Safari to Apple). Nothing is sent while the mic is off.'):'No speech engine here, so the mic button only shows the level meter. Transcription on your own machine is planned.','<span class="soon">'+(Voice.hasSR()?'Built in':'Meter only')+'</span>'):'');
+    +opt('Where the words come from',Voice.hasSR()?(window.SundialDesktop&&plat.os==='windows'?'The Windows web view’s speech engine turns speech into text; while the button is lit the audio goes to Microsoft for that. Nothing is sent while the mic is off.':'This browser’s own speech engine turns speech into text (Chrome sends the audio to Google, Edge to Microsoft, Safari to Apple). Nothing is sent while the mic is off.'):'No speech engine here, so the mic button only shows the level meter. Transcription on your own machine is planned.','<span class="soon">'+(Voice.hasSR()?'Built in':'Meter only')+'</span>'):'');
   if(sheetTab==='routines'){h=opt('Routines','Sets of tasks you add in one click: a morning, a launch day, a weekly reset. One task per line, in the same words you would type into the add field.',tog('routinesEnabled'));
     if(st.routinesEnabled)h+=`<div class="routines">`+state.routines.map(r=>`<div class="rt"><div class="rt-hd"><input class="rt-name" data-rt-name="${r.id}" value="${esc(r.name)}" aria-label="Routine name"><button class="btn" data-rt-apply="${r.id}" data-to="${todayStr()}">Add to today</button>${sel!==todayStr()?`<button class="btn" data-rt-apply="${r.id}" data-to="${sel}">Add to ${esc(relDay(sel))} ${fromYmd(sel).getDate()}</button>`:''}<button class="x" data-rt-del="${r.id}" title="Delete routine">×</button></div><textarea data-rt-lines="${r.id}" spellcheck="false" placeholder="Coffee and plan the day 8am 15m #admin">${esc(r.lines.join('\n'))}</textarea></div>`).join('')
       +`</div><div class="ctl" style="gap:8px;padding-top:8px"><button class="btn" data-run="rtNew">New routine</button><button class="btn" data-run="rtReset">Reset to starter set</button></div>`}
@@ -428,7 +446,7 @@ function openSearch(){
 // ----- voice button -----
 function drawViz(data){const c=$('#micViz');if(!c)return;const g=c.getContext('2d');const W=c.width,H=c.height;g.clearRect(0,0,W,H);g.fillStyle=getComputedStyle(c.parentElement).color;const n=18;
   for(let i=0;i<n;i++){const v=data[Math.floor(i*data.length/n/2)]/255;const h=Math.max(4,v*H*.95);const x=i*(W/n)+2,y=(H-h)/2,w=W/n-4;if(g.roundRect){g.beginPath();g.roundRect(x,y,w,h,3);g.fill()}else g.fillRect(x,y,w,h)}}
-function voiceError(code){const web=!window.SundialDesktop;const msg={nomic:'No microphone is available here.',denied:web?'Microphone is blocked for '+location.host+'. Allow it in the browser\'s site settings and try again.':'Microphone is blocked for Sundial. Allow it in Windows Settings → Privacy → Microphone and try again.',nosr:'No speech engine here, so the meter runs without words.',network:'Speech service unreachable; the mic stays on, no words.','not-allowed':'Speech recognition is blocked here; mic stays on, no words.','service-not-allowed':'Speech recognition is blocked here; mic stays on, no words.','audio-capture':'No microphone found.'}[code]||('Voice: '+code);
+function voiceError(code){const web=!window.SundialDesktop;const msg={nomic:'No microphone is available here.',denied:web?'Microphone is blocked for '+location.host+'. Allow it in the browser\'s site settings and try again.':'Microphone is blocked for Sundial. Allow it in '+(isLinux()?'your desktop\'s privacy settings':'Windows Settings → Privacy → Microphone')+' and try again.',nosr:'No speech engine here, so the meter runs without words.',network:'Speech service unreachable; the mic stays on, no words.','not-allowed':'Speech recognition is blocked here; mic stays on, no words.','service-not-allowed':'Speech recognition is blocked here; mic stays on, no words.','audio-capture':'No microphone found.'}[code]||('Voice: '+code);
   toast(msg);const m=$('#mic');if(m){m.classList.add('err');setTimeout(()=>m.classList.remove('err'),1200)}}
 let voiceHeard=false;
 async function toggleVoice(){
@@ -573,8 +591,9 @@ function runSetting(k,b){
   if(k==='fitWindow'){closeScrim();setTimeout(fitToWindow,260)}
   if(k==='updateCheck'){b.textContent='Checking…';checkUpdates(true).finally(()=>{b.textContent='Check now'})}
   if(k==='updateInstall'){installUpdate(null,b)}
+  if(k==='updateDownload')openExternal(RELEASES_URL);
   if(k==='aiSaveKey'){const v=($('#aiKey')?.value||'').trim();if(!v){toast('Paste a key first');return}const D=window.SundialDesktop;
-    if(D)D.secret.set('ai:'+S().ai.provider,v).then(()=>{aiKeySaved=true;renderSheet();toast('Key saved to Windows Credential Manager')}).catch(e=>toast('Could not save: '+e));
+    if(D)D.secret.set('ai:'+S().ai.provider,v).then(()=>refreshSecretKind()).then(()=>{aiKeySaved=true;renderSheet();toast('Key saved to '+secretStore())}).catch(e=>toast('Could not save: '+e));
     else{S().ai.keyInBrowser=v;save();aiKeySaved=true;renderSheet();toast('Key saved in this browser')}}
   if(k==='aiRemoveKey'){const D=window.SundialDesktop;if(D)D.secret.del('ai:'+S().ai.provider).then(()=>{aiKeySaved=false;renderSheet();toast('Key removed')}).catch(e=>toast(String(e)));else{S().ai.keyInBrowser='';save();aiKeySaved=false;renderSheet();toast('Key removed')}}
   if(k==='aiTest'){b.textContent='…';AI.parse('lunch with Sam at the usual place next thursday, bring the contract',sel).then(r=>{b.textContent='Test';toast('AI understood: '+[r.title,r.date,r.time!=null?fmtTime(r.time):null,r.notes].filter(Boolean).join(' · ').slice(0,160))}).catch(e=>{b.textContent='Test';toast('AI: '+(e.message||e))})}
@@ -735,6 +754,9 @@ if(phoneMQ.addEventListener)phoneMQ.addEventListener('change',()=>{applyLayout()
 // ---------- first-run setup: pick a hotkey style ----------
 const HOTKEY_STYLES={quick:{quick:'Ctrl+Space',voice:'Ctrl+Shift+Space'},gaming:{quick:'Ctrl+Alt+/',voice:'Ctrl+Alt+.'}};
 function hotkeyStyle(){const q=S().quick.hotkey,v=S().voice.hotkey;for(const k in HOTKEY_STYLES){if(HOTKEY_STYLES[k].quick===q&&HOTKEY_STYLES[k].voice===v)return k}return 'custom'}
+// Wayland: no app may grab a system-wide key, so the desktop's own shortcut settings run a sundial:// link instead.
+function hotkeyNote(){const steps=plat.desktop==='kde'?'KDE: System Settings → Keyboard → Shortcuts → Add New → Command or Script…, paste the command, select the new entry, press Add custom shortcut and press your keys.':plat.desktop==='gnome'?'GNOME: Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts → Add Shortcut. Give it a name, paste the command, press Set Shortcut and your keys, then Add.':'The steps are under your desktop\'s keyboard shortcut settings; add a custom shortcut whose command is the line above.';
+  return `System-wide shortcuts are not possible on Wayland, so this key works while Sundial is focused. For anywhere: in your desktop's keyboard settings, add a shortcut that runs <code>xdg-open sundial://quick-add</code> (and <code>xdg-open sundial://voice</code> for the microphone). ${steps} `}
 // obKeysStep: whether the hotkey step is part of this run. The desktop always has it; in a browser the combo only works while
 // the tab has focus, so first-run setup skips it there and starts at the sync step. Settings → "Choose a style" passes force.
 let obStep=1,obStyle='quick',obSync='local',obKeysStep=true;
@@ -746,7 +768,7 @@ function onboarding(force){
 function renderOnboarding(){const host=document.querySelector('.ob-host:not(.out) .ob');if(!host)return;
   if(obStep===1){
     const card=(k,title,sub,st)=>`<button class="ob-card" data-style="${k}" aria-pressed="${obStyle===k}"><b>${title}</b><span class="combo">${esc(st.quick)}</span><small>${sub}<br>Voice: <span style="font-family:var(--f-mono)">${esc(st.voice)}</span></small></button>`;
-    host.innerHTML=`<h2>Welcome to Sundial</h2><div class="ob-step">Step 1 of 2 · Quick add</div><p>Pick the shortcut that opens a small add-a-task box ${window.SundialDesktop?'from anywhere in Windows':'while Sundial is open'}. You can change it any time in Settings.</p>
+    host.innerHTML=`<h2>Welcome to Sundial</h2><div class="ob-step">Step 1 of 2 · Quick add</div><p>Pick the shortcut that opens a small add-a-task box ${window.SundialDesktop?(wayland()?'while Sundial is focused':'from anywhere on your desktop'):'while Sundial is open'}. You can change it any time in Settings.${wayland()?' On Wayland a system-wide key comes from your desktop\'s keyboard settings: add a shortcut that runs <code>xdg-open sundial://quick-add</code>. Settings → General shows the steps.':''}</p>
     <div class="ob-cards">${card('quick','Quick','Two keys. Best if you mostly type.',HOTKEY_STYLES.quick)}${card('gaming','Gaming','Three keys, out of the way of games.',HOTKEY_STYLES.gaming)}</div>
     <div class="ob-foot"><button class="btn" data-run="obCustom">Record my own…</button><span class="spacer"></span><button class="btn primary" data-run="obNext">Next</button></div>`;
     return}
@@ -756,7 +778,7 @@ function renderOnboarding(){const host=document.querySelector('.ob-host:not(.out
   host.innerHTML=`<h2>Where do your days live?</h2><div class="ob-step">${obKeysStep?'Step 2 of 2 · Optional':'Optional'}</div><p>Sundial is complete on this ${DEV()} alone. Sync is there when you want the same days on another device.</p>
     <div class="ob-cards three">
       ${pick('local',D?'Just this PC':'Just this browser',D?'Everything stays on this machine. Switch on sync any time in Settings → Data & sync.':'Everything stays in this browser on this device. Clearing site data for '+esc(location.host)+' deletes your days unless sync is on. Switch on sync any time in Settings → Data & sync.')}
-      ${pick('hosted','Sundial Sync <span class="plan">Free in beta</span>',D?'The same days on all your Windows PCs, end-to-end encrypted, hosted in Switzerland. Free during the beta, no card needed; afterwards $2.49 a month or $19.99 a year, and beta accounts keep $9.99 a year for as long as they stay subscribed.':'The same days everywhere you open Sundial: this browser, the Windows app, another browser. End-to-end encrypted, hosted in Switzerland. Free during the beta, no card needed; afterwards $2.49 a month or $19.99 a year, and beta accounts keep $9.99 a year for as long as they stay subscribed.')}
+      ${pick('hosted','Sundial Sync <span class="plan">Free in beta</span>',D?'The same days on all your PCs, end-to-end encrypted, hosted in Switzerland. Free during the beta, no card needed; afterwards $2.49 a month or $19.99 a year, and beta accounts keep $9.99 a year for as long as they stay subscribed.':'The same days everywhere you open Sundial: this browser, the Windows app, another browser. End-to-end encrypted, hosted in Switzerland. Free during the beta, no card needed; afterwards $2.49 a month or $19.99 a year, and beta accounts keep $9.99 a year for as long as they stay subscribed.')}
       ${pick('self','My own server','Run the open-source sync server yourself and point Sundial at it.')}
     </div>
     ${obSync!=='local'||connected?`<div class="ob-sync">${syncRows(S(),optRow,true)}</div>`:''}
@@ -768,11 +790,14 @@ function finishOnboarding(style){const st=S();if(HOTKEY_STYLES[style]){st.quick.
   if(!window.SundialDesktop){askPersist();askNotify()}
   const sy=Sync.st();if(sy.mode==='off')syncSetup.mode='hosted';if(sy.mode!=='off'&&!sy.keyOk)setTimeout(()=>toast('Sync is signed in, but this '+DEV()+' is not approved yet',()=>{sheetTab='data';settings()},'Open'),900);else if(obKeysStep)toast('Quick add: '+st.quick.hotkey)}
 
+// sundial:// links that opened or poked the app. sundial://quick-add opens the floating add bar and sundial://voice toggles the
+// microphone; both are what a Wayland desktop shortcut runs through xdg-open, and the shell shows the window first.
 // sundial://signin?code=482913 (the Open Sundial button on the email's code page): Data & sync opens with the code
 // in place, and signs in at once when this is the device that asked for the code.
 function deepLink(url){let u;try{u=new URL(String(url))}catch(e){return}if(u.protocol!=='sundial:')return;
   const what=(u.hostname||u.pathname.replace(/^\/+/,'')).toLowerCase();
   if(what==='quick-add'){openQuickAdd();return}
+  if(what==='voice'){if(S().voice.enabled)toggleVoice();return}
   if(what!=='signin')return;
   const code=(u.searchParams.get('code')||'').replace(/\D/g,'').slice(0,6);if(code.length!==6)return;
   // the token-to-email migration asked for this code while still signed in: hand it to the migration row instead of refusing it
@@ -802,7 +827,7 @@ function syncRows(st,opt,bare){const s=Sync.st();const D=window.SundialDesktop;l
   if(s.mode==='off'){
     if(!bare)h+=opt('Sync between devices','End-to-end encrypted: every task is sealed on this device before it leaves, and the server only ever stores ciphertext. Local data keeps working either way.',`<div class="seg">${[['hosted','Sundial Sync'],['self','My own server']].map(([v,l])=>`<button data-syncmode="${v}" aria-pressed="${syncSetup.mode===v}">${l}</button>`).join('')}</div>`);
     if(syncSetup.mode==='self')h+=opt('Your server','A Sundial Sync server you run (see server/README in the repo). The token is whatever you started it with.'+(D?'':' From a browser the server must use https, localhost included.'),`<input class="key" style="text-align:left;min-width:220px" id="syncUrl" placeholder="${D?'http://localhost:8768':'https://sync.example.com'}" value="${esc(syncSetup.url||s.server||'')}" spellcheck="false"><input class="key" style="text-align:left;min-width:150px" id="syncToken" type="password" placeholder="token" autocomplete="off"><button class="btn" data-run="syncConnect">Connect</button>`);
-    else{h+=opt(bare?'Your email':'Sundial Sync <span class="plan">Free in beta</span>',bare?'We email you a six-digit code; there is no password to invent. Your days are locked with a key only your PCs hold.':D?'Keeps your days the same on all your Windows PCs, end-to-end encrypted, hosted in Switzerland. Phone and Mac apps are not out yet. Your email and a six-digit code; that is all. Free during the beta, no card needed. Afterwards $2.49 a month or $19.99 a year; sign up during the beta and your price stays $9.99 a year for as long as you stay subscribed.':'Keeps your days the same everywhere you open Sundial: this browser, the Windows app, other browsers. End-to-end encrypted, hosted in Switzerland. Your email and a six-digit code; that is all. Free during the beta, no card needed. Afterwards $2.49 a month or $19.99 a year; sign up during the beta and your price stays $9.99 a year for as long as you stay subscribed.',`<input class="key" style="text-align:left;min-width:200px" id="syncEmail" type="email" placeholder="you@example.com" value="${esc(syncSetup.email||'')}" autocomplete="email"><button class="btn primary" data-run="syncCode">Send code</button>`);
+    else{h+=opt(bare?'Your email':'Sundial Sync <span class="plan">Free in beta</span>',bare?'We email you a six-digit code; there is no password to invent. Your days are locked with a key only your PCs hold.':D?'Keeps your days the same on all your PCs, end-to-end encrypted, hosted in Switzerland. Phone and Mac apps are not out yet. Your email and a six-digit code; that is all. Free during the beta, no card needed. Afterwards $2.49 a month or $19.99 a year; sign up during the beta and your price stays $9.99 a year for as long as you stay subscribed.':'Keeps your days the same everywhere you open Sundial: this browser, the Windows app, other browsers. End-to-end encrypted, hosted in Switzerland. Your email and a six-digit code; that is all. Free during the beta, no card needed. Afterwards $2.49 a month or $19.99 a year; sign up during the beta and your price stays $9.99 a year for as long as you stay subscribed.',`<input class="key" style="text-align:left;min-width:200px" id="syncEmail" type="email" placeholder="you@example.com" value="${esc(syncSetup.email||'')}" autocomplete="email"><button class="btn primary" data-run="syncCode">Send code</button>`);
       if(syncSetup.codeSent)h+=opt('Code from the email',`Sent to ${esc(syncSetup.email)}. Not there after a minute? Check spam, then press Send code again.`,`<input class="key" style="min-width:110px" id="syncCodeIn" inputmode="numeric" placeholder="482913"><button class="btn primary" data-run="syncVerify">Sign in</button>`);
       h+=`<div class="opt" style="border:0;padding-top:0"><div><small><button class="btn" style="padding:2px 8px;font-size:11px" data-run="syncAdvanced">${syncSetup.advanced?'Hide':'Advanced'}</button>${syncSetup.advanced?` <input class="key" style="text-align:left;min-width:220px;margin-left:6px" id="syncUrl" placeholder="${esc(Sync.HOSTED_URL)}" value="${esc(syncSetup.url||'')}" spellcheck="false"> another Sundial Sync server (email mode)`:''}</small></div></div>`}
     return h}
@@ -896,8 +921,10 @@ function pairBanners(){const host=bannerHost();const pend=Sync.pendingPairs();
   for(const p of pend){if(host.querySelector(`.banner.pair[data-pair="${CSS.escape(p.id)}"]`))continue;const el=pairBanner(p.id,p.name);host.appendChild(el);pairState(el,'ask');setTimeout(pairBanners,Math.max(1000,p.ts+15*60*1000-Date.now()+500))}
   // a corner toast for a request that has since gone must not stay clickable
   if(window.SundialDesktop&&window.SundialDesktop.toastCurrent)window.SundialDesktop.toastCurrent().then(cur=>{if(cur&&cur.kind==='pair'&&!pend.some(p=>p.id===cur.pair))window.SundialDesktop.toastDismiss()}).catch(()=>{})}
-// Desktop with the window hidden: the finish code goes to the corner toast as before. Visible, the banner itself shows it, so no second toast.
-function approvedNote(fin){if(window.SundialDesktop&&document.hidden)window.SundialDesktop.toastShow({kind:'info',label:'Approved',title:'Finish code '+fin,meta:'Type it on the other PC to finish.',corner:S().toasts.corner,secs:120,sticky:false,actions:[{id:'ok',label:'OK',primary:true}]}).catch(()=>{})}
+// Desktop with the window hidden: the finish code goes to the corner toast as before, or to a desktop notification on Linux. Visible, the banner itself shows it, so no second toast.
+function approvedNote(fin){const D=window.SundialDesktop;if(!D||!document.hidden)return;
+  if(isLinux()){D.notify('Sundial: finish code '+fin,'Type it on the other PC to finish. Open Sundial to see it again.').catch(()=>{});return}
+  D.toastShow({kind:'info',label:'Approved',title:'Finish code '+fin,meta:'Type it on the other PC to finish.',corner:S().toasts.corner,secs:120,sticky:false,actions:[{id:'ok',label:'OK',primary:true}]}).catch(()=>{})}
 // After Approve, the finish code stays on screen until the other PC has typed it (or five minutes).
 function finishBanners(){const host=bannerHost();const fins=Sync.finishing();
   host.querySelectorAll('.banner.pair[data-state="fin"]').forEach(el=>{if(!fins.some(f=>f.id===el.dataset.pair))dismissBanner(el)});
@@ -919,6 +946,8 @@ function resetRows(s,opt){const r=syncSetup.reset;
 
 // ---------- desktop + AI helpers ----------
 let globalHotkeys=false,autostartOn=false,aiKeySaved=false,appVersion='',updateInfo=null;
+// Linux with the window hidden: one desktop notification per pair request (the Sync.on 'pair' branch in init)
+const pairNotified=new Set();
 // web: the version comes from a meta tag the packaging stamps; unstamped (dev preview, Tauri) reads 'dev'
 function webVersion(){const m=document.querySelector('meta[name="sundial-version"]');const v=m&&m.content.trim();return v&&!/^__/.test(v)?v:'dev'}
 let storagePersistent=null;   // web: what navigator.storage says about this origin's data (null = unknown)
@@ -927,12 +956,14 @@ let installEvt=null;addEventListener('beforeinstallprompt',e=>{e.preventDefault(
 async function checkUpdates(manual){const D=window.SundialDesktop;if(!D)return;if(!manual&&!S().updates.auto)return;
   try{const u=await D.updateCheck();if(u&&u.version){updateInfo=u;updateBanner(u);if($('.sheet-host'))renderSheet()}else if(manual)toast('You have the latest version')}
   catch(e){if(manual)toast('Update check failed: '+(e.message||e))}}
-function updateBanner(u){const st=S();if(window.SundialDesktop&&st.toasts.enabled){window.SundialDesktop.toastShow({kind:'update',label:'Update ready',title:'Sundial '+u.version,meta:(u.notes||'').split('\n')[0].slice(0,80)||'Downloaded in the background. Restart whenever you like.',corner:st.toasts.corner,secs:45,sticky:false,actions:[{id:'later',label:'Later'},{id:'install',label:'Restart now',primary:true}]}).catch(()=>{});return}
+// A package install (rpm, deb) cannot replace itself: the banner and the Settings row offer a Download link to the release page instead.
+function updateBanner(u){const st=S(),pkg=plat.install==='package';
+  if(cornerToasts()){window.SundialDesktop.toastShow({kind:'update',label:'Update ready',title:'Sundial '+u.version,meta:(u.notes||'').split('\n')[0].slice(0,80)||'Downloaded in the background. Restart whenever you like.',corner:st.toasts.corner,secs:45,sticky:false,actions:[{id:'later',label:'Later'},{id:'install',label:'Restart now',primary:true}]}).catch(()=>{});return}
   const host=bannerHost();if(host.querySelector('.banner.update'))return;const el=document.createElement('div');el.className='banner update start';
-  el.innerHTML=`<div class="ic">↻</div><div class="tx"><span class="k">Update ready</span><b>Sundial ${esc(u.version)}</b><small>${esc((u.notes||'').split('\n')[0].slice(0,90))||'Downloaded in the background. Restart whenever you like.'}</small></div><div class="bt"><button data-b="later">Later</button><button class="ok" data-b="go">Restart now</button></div>`;
-  el.querySelector('[data-b="later"]').onclick=()=>dismissBanner(el);el.querySelector('[data-b="go"]').onclick=()=>installUpdate(el);host.appendChild(el)}
+  el.innerHTML=`<div class="ic">↻</div><div class="tx"><span class="k">${pkg?'Update available':'Update ready'}</span><b>Sundial ${esc(u.version)}</b><small>${esc((u.notes||'').split('\n')[0].slice(0,90))||(pkg?'Download the new rpm or deb and install it over this one.':'Downloaded in the background. Restart whenever you like.')}</small></div><div class="bt"><button data-b="later">Later</button><button class="ok" data-b="go">${pkg?'Download':'Restart now'}</button></div>`;
+  el.querySelector('[data-b="later"]').onclick=()=>dismissBanner(el);el.querySelector('[data-b="go"]').onclick=()=>{if(pkg){openExternal(RELEASES_URL);dismissBanner(el)}else installUpdate(el)};host.appendChild(el)}
 let installing=false;
-async function installUpdate(el,btn){const D=window.SundialDesktop;if(!D||installing)return;installing=true;const b=btn||el?.querySelector('[data-b="go"]');if(b){b.textContent='Installing…';b.disabled=true}
+async function installUpdate(el,btn){const D=window.SundialDesktop;if(!D||installing||plat.install==='package')return;installing=true;const b=btn||el?.querySelector('[data-b="go"]');if(b){b.textContent='Installing…';b.disabled=true}
   updateProgress({pct:0});
   try{await D.flush();await D.updateInstall()}
   catch(e){installing=false;const msg=e.message||String(e);updateProgress({error:msg});if(b){b.textContent='Restart now';b.disabled=false}}}
@@ -945,11 +976,21 @@ function updateProgress(p){const host=bannerHost();let el=host.querySelector('.b
   bt.innerHTML='';el.querySelector('.k').textContent='Updating';
   if(p.installing){b.textContent='Installing…';s.textContent='Sundial closes for a moment and comes back on the new version.';return}
   const pct=typeof p.pct==='number'&&p.pct>=0?p.pct:null;b.textContent=pct==null?'Downloading…':'Downloading… '+pct+'%';s.textContent=updateInfo?'Sundial '+updateInfo.version:''}
-function syncHotkeys(){const D=window.SundialDesktop;if(!D)return;D.setHotkeys({quick:S().quick.hotkey,voice:S().voice.enabled?S().voice.hotkey:null}).then(failed=>{globalHotkeys=!(failed&&failed.length);if(failed&&failed.length)toast('Hotkey taken by another app: '+failed.join(', '))}).catch(()=>{globalHotkeys=false})}
-function refreshAiKey(){const D=window.SundialDesktop;if(D)D.secret.get('ai:'+S().ai.provider).then(v=>{aiKeySaved=!!v;if(sheetTab==='ai')renderSheet()}).catch(()=>{});else aiKeySaved=!!S().ai.keyInBrowser}
-function desktopGeneralRows(){return `<div class="opt"><div>Updates<small>Sundial ${esc(appVersion||'')}. Checks on launch and every six hours, downloads in the background, and asks before restarting.${updateInfo?' <b>'+esc(updateInfo.version)+' is ready.</b>':''}</small></div><div class="ctl"><button class="tog" role="switch" data-tog="updates.auto" aria-checked="${!!S().updates.auto}"></button>${updateInfo?'<button class="btn" data-run="updateInstall">Restart to update</button>':'<button class="btn" data-run="updateCheck">Check now</button>'}</div></div>`
-  +`<div class="opt"><div>Start with Windows<small>Launches hidden in the tray at sign-in.</small></div><div class="ctl"><button class="tog" role="switch" data-autostart="1" aria-checked="${autostartOn}"></button></div></div>`
-  +`<div class="opt"><div>Closing the window<small>Hides Sundial to the tray so reminders keep firing. Quit is in the tray icon menu.</small></div><div class="ctl"><span class="soon">Tray</span></div></div>`
+function syncHotkeys(){const D=window.SundialDesktop;if(!D)return;
+  // Wayland has no system-wide shortcuts for apps. Register nothing: the keydown handler keeps the combos working while Sundial is focused, and Settings shows the desktop-shortcut recipe.
+  if(wayland()){globalHotkeys=false;D.setHotkeys({quick:null,voice:null}).catch(()=>{});return}
+  D.setHotkeys({quick:S().quick.hotkey,voice:S().voice.enabled?S().voice.hotkey:null}).then(failed=>{globalHotkeys=!(failed&&failed.length);if(failed&&failed.length)toast('Hotkey taken by another app: '+failed.join(', '))}).catch(()=>{globalHotkeys=false})}
+function refreshAiKey(){const D=window.SundialDesktop;if(D)D.secret.get('ai:'+S().ai.provider).then(v=>{aiKeySaved=!!v;return refreshSecretKind()}).then(()=>{if(sheetTab==='ai')renderSheet()}).catch(()=>{});else aiKeySaved=!!S().ai.keyInBrowser}
+// The desktop's General rows. Linux changes the wording: no "Windows", a Download button instead of Restart on an rpm/deb (they cannot
+// replace themselves), and a Quit note when the desktop shows no tray. With the Windows defaults in plat the output is today's, unchanged.
+function desktopGeneralRows(){const linux=isLinux(),pkg=plat.install==='package',tray=plat.tray!==false;
+  const updSub=pkg?`Sundial ${esc(appVersion||'')}. Checks on launch and every six hours. A package install cannot replace itself, so a Download button appears here when a new version is out.${updateInfo?' <b>'+esc(updateInfo.version)+' is out.</b>':''}`
+    :`Sundial ${esc(appVersion||'')}. Checks on launch and every six hours, downloads in the background, and asks before restarting.${updateInfo?' <b>'+esc(updateInfo.version)+' is ready.</b>':''}`;
+  const updBtn=updateInfo?(pkg?'<button class="btn" data-run="updateDownload">Download</button>':'<button class="btn" data-run="updateInstall">Restart to update</button>'):'<button class="btn" data-run="updateCheck">Check now</button>';
+  return `<div class="opt"><div>Updates<small>${updSub}</small></div><div class="ctl"><button class="tog" role="switch" data-tog="updates.auto" aria-checked="${!!S().updates.auto}"></button>${updBtn}</div></div>`
+  +`<div class="opt"><div>${linux?'Start with the system':'Start with Windows'}<small>${tray?(linux?'Launches hidden in the tray at login.':'Launches hidden in the tray at sign-in.'):'Launches at login.'}</small></div><div class="ctl"><button class="tog" role="switch" data-autostart="1" aria-checked="${autostartOn}"></button></div></div>`
+  +(tray?`<div class="opt"><div>Closing the window<small>Hides Sundial to the tray so reminders keep firing. Quit is in the tray icon menu.</small></div><div class="ctl"><span class="soon">Tray</span></div></div>`
+    :`<div class="opt"><div>Closing the window<small>Quits Sundial. This desktop shows no tray icon, so reminders fire only while the window is open.</small></div><div class="ctl"><span class="soon">Quit</span></div></div>`)
   +`<div class="opt"><div>Your data<small>One JSON file on this PC, plus a daily backup folder beside it.</small></div><div class="ctl"><button class="btn" data-run="revealData">Show folder</button></div></div>`
   +`<div class="opt"><div>About<small>Sundial ${esc(appVersion||'')} · beta. Tell me what breaks or annoys you: hello@sundial.services</small></div><div class="ctl"><button class="btn" data-run="openNotes">What's new</button><button class="btn" data-run="openIssues">Send feedback</button><button class="btn" data-run="openPrivacy">Privacy</button></div></div>`}
 // The web's own General rows: where the data lives, install, about. The desktop has desktopGeneralRows().
@@ -970,7 +1011,7 @@ function aiTab(st,opt,tog){const a=st.ai,D=window.SundialDesktop;
   h+=opt('Provider','',`<select data-sel="ai.provider">${[['anthropic','Anthropic (Claude)'],['openai','OpenAI'],['custom','OpenAI-compatible URL']].map(([v,l])=>`<option value="${v}" ${a.provider===v?'selected':''}>${l}</option>`).join('')}</select>`);
   h+=opt('Model',a.provider==='anthropic'?'claude-opus-5-5 by default; claude-haiku-5-5 is the fastest and cheapest.':'Type the model id your provider expects.',`<input class="key" style="min-width:210px;text-align:left" data-ai="model" value="${esc(a.model)}" placeholder="model id" spellcheck="false">`);
   if(a.provider==='custom')h+=opt('Base URL','Any server that speaks the OpenAI chat API (Ollama, LM Studio, OpenRouter…).'+(D?'':' From a browser the URL must be https, localhost included.'),`<input class="key" style="min-width:230px;text-align:left" data-ai="baseUrl" value="${esc(a.baseUrl||'')}" placeholder="${D?'http://localhost:11434/v1':'https://ai.example.com/v1'}" spellcheck="false">`);
-  h+=opt('API key',D?'Kept in Windows Credential Manager, never in the data file.':'Kept in this browser only. Remove it before sharing this device.',`<input class="key" style="min-width:200px;text-align:left" type="password" id="aiKey" placeholder="${aiKeySaved?'saved · paste to replace':'paste key'}" autocomplete="off"><button class="btn" data-run="aiSaveKey">Save</button>${aiKeySaved?'<button class="btn" data-run="aiRemoveKey">Remove</button>':''}`);
+  h+=opt('API key',D?(secretKind==='file'?'Kept in a file next to your data, secrets.json, because no keyring answered.':'Kept in '+secretStore()+', never in the data file.'):'Kept in this browser only. Remove it before sharing this device.',`<input class="key" style="min-width:200px;text-align:left" type="password" id="aiKey" placeholder="${aiKeySaved?'saved · paste to replace':'paste key'}" autocomplete="off"><button class="btn" data-run="aiSaveKey">Save</button>${aiKeySaved?'<button class="btn" data-run="aiRemoveKey">Remove</button>':''}`);
   h+=opt('Try it','Parses “lunch with Sam at the usual place next thursday, bring the contract”.','<button class="btn" data-run="aiTest">Test</button>');
   return h}
 let aiBusy=0;
@@ -995,20 +1036,25 @@ function tick(){
 }
 async function init(){
   const D=window.SundialDesktop;
-  if(D){try{const raw=await D.load();if(raw)hydrate(raw);else save()}catch(e){console.error('load failed',e)}
-    D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});D.on('sundial://deep-link',e=>deepLink(e.payload));D.on('sundial://hidden',()=>{if(S().trayNoticeShown)return;S().trayNoticeShown=true;save();D.toastShow({kind:'info',label:'Still running',title:'Sundial is in the tray',meta:'Reminders keep working. Quit from the tray icon menu.',corner:S().toasts.corner,secs:8,sticky:false,actions:[{id:'ok',label:'OK',primary:true}]}).catch(()=>{})});D.on('sundial://update-progress',e=>updateProgress(e.payload||{}));syncHotkeys();
+  // platform first: render() and syncHotkeys() below read plat. A shell without the command keeps the Windows defaults.
+  if(D){if(D.platform){try{const p=await D.platform();if(p&&p.os)plat=Object.assign(plat,p)}catch(_){}}
+    try{const raw=await D.load();if(raw)hydrate(raw);else save()}catch(e){console.error('load failed',e)}
+    D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});D.on('sundial://deep-link',e=>deepLink(e.payload));D.on('sundial://hidden',()=>{if(S().trayNoticeShown)return;S().trayNoticeShown=true;save();
+      if(isLinux())D.notify('Sundial is still running','It is in the system tray (under the panel arrow if you do not see it). Reminders keep working. Quit from the tray icon menu.').catch(()=>{});
+      else D.toastShow({kind:'info',label:'Still running',title:'Sundial is in the tray',meta:'Reminders keep working. Quit from the tray icon menu.',corner:S().toasts.corner,secs:8,sticky:false,actions:[{id:'ok',label:'OK',primary:true}]}).catch(()=>{})});D.on('sundial://update-progress',e=>updateProgress(e.payload||{}));syncHotkeys();
     D.appVersion().then(v=>{appVersion=v}).catch(()=>{});setTimeout(()=>checkUpdates(false),4000);setInterval(()=>checkUpdates(false),6*3600*1000)}
   else webInit();
   applyTheme();applyDensity();applyLayout();SFX.setVolume(S().sounds.volume);render();updateLogo();
-  Sync.setPromptable(()=>!document.hidden||!!(window.SundialDesktop&&S().toasts.enabled));
-  // Before the key leaves this PC, the prompt must be where a person can see it: the window, or the corner toast.
-  Sync.setPromptHook(async p=>{if(!window.SundialDesktop||!S().toasts.enabled){if(document.hidden)throw new Error('hidden');return}
+  Sync.setPromptable(()=>!document.hidden||cornerToasts());
+  // Before the key leaves this PC, the prompt must be where a person can see it: the window, or the corner toast. Linux has no corner
+  // toast, so there the window has to be visible, as in a browser.
+  Sync.setPromptHook(async p=>{if(!cornerToasts()){if(document.hidden)throw new Error('hidden');return}
     const show=window.SundialDesktop.toastShow({kind:'pair',label:'Add a PC?',title:'A PC wants to join your sync',meta:'Open Sundial and type the code that PC shows.',corner:S().toasts.corner,secs:90,sticky:false,pair:p.id,actions:[{id:'ignore',label:'Not mine'},{id:'open',label:'Open Sundial',primary:true}]});
     if(document.hidden)await show;else show.catch(()=>{})});
   Sync.on((ev,arg)=>{
     if(ev==='start'||ev==='ok'||ev==='error'){const sm=document.querySelector('[data-run="syncNow"]')?.closest('.opt')?.querySelector('small');if(sm)sm.innerHTML=syncStatusText(Sync.st());return}
     if(ev==='signedout'||ev==='lostkey'){syncFlowReset();toast(arg||Sync.st().lastError||'Signed out of sync',()=>{sheetTab='data';settings()},'Open')}
-    if(ev==='pair'){pairBanners();finishBanners()}if(ev==='pairdone')toast((arg?'"'+arg+'"':'The other '+DEV())+' is in.');if(ev==='pairready'){if(!$('.sheet-host')&&!$('.ob-host:not(.out)'))toast('Sundial needs one check before this PC can sync.',()=>{sheetTab='data';settings()},'Open')}if(ev==='paired'){syncFlowReset();toast('This PC is in. Syncing.')}
+    if(ev==='pair'){pairBanners();finishBanners();if(isLinux()&&document.hidden)for(const p of Sync.pendingPairs()){if(!pairNotified.has(p.id)){pairNotified.add(p.id);D.notify('A PC wants to join your sync','Open Sundial to approve or refuse it.').catch(()=>{})}}}if(ev==='pairdone')toast((arg?'"'+arg+'"':'The other '+DEV())+' is in.');if(ev==='pairready'){if(!$('.sheet-host')&&!$('.ob-host:not(.out)'))toast('Sundial needs one check before this PC can sync.',()=>{sheetTab='data';settings()},'Open')}if(ev==='paired'){syncFlowReset();toast('This PC is in. Syncing.')}
     if(ev==='pairwithdrawn')stickyNote('withdrawn','A request to add a PC was withdrawn',`"${arg||'A PC'}" asked to join your sync and pulled out before you answered. If that was not you, open Settings → Data & sync and erase the synced copy.`);
     if(ev==='pairwarn')stickyNote('pairwarn','Something keeps asking to add a PC','Five requests in an hour, which is more than adding PCs normally takes. Sundial is holding the rest. If it is you, dismiss this to continue; if it is not you, leave it and consider erasing the synced copy.',()=>Sync.liftPairCap());if(ev==='pairfail'){syncSetup.pairError=arg||'Approval did not go through.';toast(syncSetup.pairError,()=>{sheetTab='data';settings()},'Open')}
     if($('.sheet-host')&&sheetTab==='data')renderSheet();else if($('.ob-host:not(.out)')&&obStep===2)renderOnboarding()});Sync.start();
