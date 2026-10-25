@@ -614,6 +614,7 @@ input[type=range]{accent-color:var(--accent);width:120px}
 #calPane.wide .mini{flex:1 1 260px}
 #calPane.wide .legend,#calPane.wide .upnext{flex:1 1 200px;margin-top:0}
 #layoutBtn{font-size:13px}
+html.nomotion *{transition:none!important;animation:none!important}
 @media (prefers-reduced-motion: reduce){ *{transition:none!important;animation:none!important} }
 
 /* ---------- motion: view transitions, title swap, settings pop ---------- */

@@ -10,7 +10,7 @@
 <style>
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px 0;background:#0B0C0B;color:#E9ECE2;font-family:'Segoe UI',Helvetica,Arial,sans-serif}
-main{width:min(560px,calc(100% - 32px));background:#121412;border:1px solid #262B24;border-radius:20px;padding:32px 30px;box-shadow:0 30px 80px -30px #000}
+main{width:min(960px,calc(100% - 32px));background:#121412;border:1px solid #262B24;border-radius:20px;padding:32px 30px;box-shadow:0 30px 80px -30px #000}
 .brand{font-family:'Courier New',monospace;font-size:12px;letter-spacing:.22em;color:#D1FF4A;font-weight:bold}
 .beta{display:inline-block;margin-left:12px;padding:2px 8px;border:1px solid #2A3027;border-radius:999px;font-size:11px;letter-spacing:.08em;color:#9BA392}
 h1{font-size:30px;line-height:1.15;margin:16px 0 14px}
@@ -25,6 +25,15 @@ small a{color:#9BA392;text-decoration:underline;text-underline-offset:2px}small 
 nav{display:flex;gap:18px;flex-wrap:wrap;margin-top:22px;padding-top:16px;border-top:1px solid #262B24;font-size:13px}
 nav a{color:#9BA392;text-decoration:none}
 nav a:hover{color:#E9ECE2}
+.shots{display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-top:28px;padding-top:24px;border-top:1px solid #262B24}
+.shots figure{margin:0;min-width:0}
+.shots img{display:block;width:100%;height:auto;border-radius:12px;border:1px solid #262B24;background:#0B0C0B}
+.shots .hero{grid-column:1/-1}
+.shots figcaption{margin-top:8px;color:#7E8679;font-size:12.5px;line-height:1.5}
+.shots .phone{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:center}
+.shots .phone img{width:132px;border-radius:14px}
+.shots .phone figcaption{margin:0}
+@media (max-width:640px){.shots{grid-template-columns:1fr}.shots .phone{grid-template-columns:auto 1fr}.shots .phone img{width:108px}}
 @media (max-width:420px){main{padding:26px 20px}h1{font-size:26px}a.btn{width:100%;text-align:center}}
 </style>
 </head>
@@ -39,6 +48,11 @@ nav a:hover{color:#E9ECE2}
 <a class="btn" href="https://app.sundial.services">Open in your browser</a>
 </div>
 <small>Windows will warn once because the app is not signed yet: More info, then Run anyway.<br>Linux: <a href="https://github.com/zphat/Sundial/releases/latest/download/Sundial.rpm">rpm</a> for Fedora and openSUSE, <a href="https://github.com/zphat/Sundial/releases/latest/download/Sundial.deb">deb</a> for Ubuntu, Mint and Debian, <a href="https://github.com/zphat/Sundial/releases/latest/download/Sundial.AppImage">AppImage</a> for anything else. The AppImage updates itself.</small>
+<section class="shots" aria-label="What Sundial looks like">
+<figure class="hero"><img src="img/day.webp" width="1280" height="800" alt="Sundial on a desktop: the month calendar and colour legend on the left, the day's task list in the middle with a quick-add line, and the timeline on the right with the current time marked"><figcaption>One window for the day: calendar, the task list with a one-line add box, and the hour timeline with untimed tasks parked above it. Drag a task onto an hour, or stretch a block to how long it takes.</figcaption></figure>
+<figure><img src="img/notes.webp" width="1280" height="800" alt="The notes view: a page for the day with headings, highlights in the six colours and a short list"><figcaption>A page of notes for every day, with highlights in your six colours.</figcaption></figure>
+<figure class="phone"><img src="img/phone.webp" width="375" height="812" alt="Sundial in a phone browser: the same task list in a single column"><figcaption>The same app in your browser, on a phone too. Sign in and it syncs with your PC, end-to-end encrypted.</figcaption></figure>
+</section>
 <nav>
 <a href="https://github.com/zphat/Sundial/blob/main/PRIVACY.md">Privacy</a>
 <a href="https://github.com/zphat/Sundial">Source</a>

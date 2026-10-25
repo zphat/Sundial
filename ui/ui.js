@@ -1070,6 +1070,13 @@ async function init(){
 // ---------- browser only: nothing here runs under the desktop shell ----------
 function webInit(){
   appVersion=webVersion();
+  // ?demo=1 (web only, used for screenshots): skip first-run, dark theme, optional &view=day|week|month|notes. Nothing is persisted beyond this browser's own storage, as always.
+  try{const q=new URLSearchParams(location.search);if(q.get('demo')==='1'){document.documentElement.classList.add('nomotion');S().onboarded=true;S().theme='dark';const v=q.get('view');if(['day','week','month','notes'].includes(v))view=v;const pn=q.get('panes');if(pn){state.layout.cal=pn.includes('cal');state.layout.board=pn.includes('board');state.layout.tl=pn.includes('tl')}
+    if(state.tasks.every(t=>t.example)){const t=todayStr();state.tasks=[];state.tombstones={};
+      for(const [raw,d] of [['Standup 9:30am 15m #work',t],['Design review 11am 1h #work',t],['Lunch with Sam 12:30pm 45m #creative',t],['Pick up the dry cleaning 4pm #errands',t],['Gym 6pm 1h #health',t],['Call Mum',t],['Renew passport',t],['Book the dentist #health',t],['Draft the newsletter 10am 1h #work',t],['Dentist 10:15am #health',addDays(t,1)],['Rent #admin',addDays(t,2)],['Script read-through 2pm 1h #creative',addDays(t,3)],['Weekly reset 5pm 30m #admin',addDays(t,4)],['Hike 8am 3h #health',addDays(t,5)]])addTask(raw,d,undefined,true);
+      const done=state.tasks.find(x=>/newsletter/.test(x.title));if(done)completeTask(done.id,true);
+      state.notes[t]='<h2>'+new Date().toLocaleDateString('en-US',{weekday:'long'})+'</h2><p>Slow start, good coffee. Sam said yes to the <mark style="background:'+HL.acid+'">podcast idea</mark>; outline it before Thursday.</p><ul><li>Ask Priya about the <mark style="background:'+HL.violet+'">colour pass</mark></li><li>Passport photos: the place on Elm closes at 5</li></ul>';state.notesTs[t]=Date.now()}
+    save()}}catch(_){}
   // site data blocked or full: bootState() ran in memory and nothing will be kept
   try{localStorage.setItem('sundial.probe','1');localStorage.removeItem('sundial.probe')}catch(e){setTimeout(()=>stickyNote('storage','This browser is not saving','Site data is blocked or full here, so your days vanish when this tab closes. Allow site data for '+location.host+', or use another browser.'),1200)}
   try{if(navigator.storage&&navigator.storage.persisted)navigator.storage.persisted().then(v=>{storagePersistent=v}).catch(()=>{})}catch(_){}
