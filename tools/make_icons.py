@@ -92,6 +92,20 @@ def svg_paths():
     return out
 
 
+RASTER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "brand", "sundial-mark-1024.png")
+
+
+def raster(size, pad=0.0, plate=None):
+    """The rendered still mark (assets/brand/sundial-mark-1024.png) resized, optionally padded or on a plate."""
+    src = Image.open(RASTER).convert("RGBA")
+    inner = int(round(size * (1 - 2 * pad)))
+    im = src.resize((inner, inner), Image.LANCZOS)
+    out = Image.new("RGBA", (size, size), plate + (255,) if plate else (0, 0, 0, 0))
+    off = (size - inner) // 2
+    out.paste(im, (off, off), im)
+    return out
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--svg":
         for d in svg_paths():
@@ -103,16 +117,18 @@ def main():
     web = os.path.join(out, "ui", "icons")
     os.makedirs(tauri, exist_ok=True)
     os.makedirs(web, exist_ok=True)
-    big = render(1024)
+    # the still icons are the rendered mark when it exists, else the drawn one
+    pic = raster if os.path.exists(RASTER) else render
+    big = pic(1024)
     big.save(os.path.join(tauri, "icon.png"))
     big.resize((512, 512), Image.LANCZOS).save(os.path.join(tauri, "icon-512.png"))
     for n, name in [(32, "32x32.png"), (128, "128x128.png"), (256, "128x128@2x.png")]:
-        render(n).save(os.path.join(tauri, name))
-    render(256).save(os.path.join(tauri, "icon.ico"), sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+        pic(n).save(os.path.join(tauri, name))
+    pic(256).save(os.path.join(tauri, "icon.ico"), sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
     for n in (32, 128, 192, 256, 512):
-        render(n).save(os.path.join(web, f"icon-{n}.png"))
-    render(512, pad=0.1).save(os.path.join(web, "icon-512-maskable.png"))
-    render(180, pad=0.08, plate=(0x0B, 0x0C, 0x0B)).save(os.path.join(web, "apple-touch-icon.png"))
+        pic(n).save(os.path.join(web, f"icon-{n}.png"))
+    pic(512, pad=0.1).save(os.path.join(web, "icon-512-maskable.png"))
+    pic(180, pad=0.08, plate=(0x0B, 0x0C, 0x0B)).save(os.path.join(web, "apple-touch-icon.png"))
     print("icons written to", tauri, "and", web)
 
 
