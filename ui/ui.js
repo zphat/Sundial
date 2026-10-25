@@ -76,16 +76,17 @@ function applyLayout(){
   const lb=$('#layoutBtn');if(lb){lb.textContent=mode==='column'?'⇆':'⇅';lb.title=mode==='column'?'Side by side':'Stacked';lb.setAttribute('aria-pressed',String(mode==='column'))}
 }
 function togglePane(k){state.layout[k]=!state.layout[k];save();applyLayout();render()}
-// The mark's rings run as CSS animations. Their phase is set ONCE (and again when the window comes back from hidden);
-// re-seeding on every redraw restarts the animation and the rings visibly jump. The inline transform is only the
-// still fallback for prefers-reduced-motion; a running animation overrides it.
-let logoPhased=false;
-function updateLogo(force){const n=new Date(),sec=n.getHours()*3600+n.getMinutes()*60+n.getSeconds()+n.getMilliseconds()/1000,sinceNoon=(sec-12*3600+86400)%86400;
-  const rings=[['.mark .ring.h',86400,false,sinceNoon],['.mark .ring.m',150,true,sec%150],['.mark .ring.s',60,false,sec%60]];
-  for(const [sel,period,rev,t] of rings){const el=document.querySelector(sel);if(!el)continue;
-    if(force||!logoPhased)el.style.animationDelay=`-${t.toFixed(3)}s`;
-    el.style.transform=`rotate(${(t/period*360*(rev?-1:1)).toFixed(2)}deg)`}
-  logoPhased=true}
+// The mark's rings are turned from the system clock on every frame: outer = hour hand (one turn a day, noon at the
+// top), middle once per 150 s the other way, inner once a minute. Reading the clock each frame means the rings can
+// never drift or snap, whatever the window was doing in between. Under prefers-reduced-motion they are set once a
+// minute instead. requestAnimationFrame pauses on its own while the window is hidden.
+let logoRaf=0;
+function logoAngles(){const d=new Date(),sec=d.getHours()*3600+d.getMinutes()*60+d.getSeconds()+d.getMilliseconds()/1000;
+  return {h:((sec-43200+86400)%86400)/86400*360,m:-(sec%150)/150*360,s:(sec%60)/60*360}}
+function logoApply(){const a=logoAngles();for(const k of ['h','m','s']){const el=document.querySelector('.mark .ring.'+k);if(el)el.style.transform=`rotate(${a[k].toFixed(3)}deg)`}}
+function logoFrame(){logoApply();logoRaf=requestAnimationFrame(logoFrame)}
+function updateLogo(){if(matchMedia('(prefers-reduced-motion: reduce)').matches){if(logoRaf){cancelAnimationFrame(logoRaf);logoRaf=0}logoApply();return}
+  if(!logoRaf)logoFrame()}
 
 // ---------- render ----------
 let prevRects={};
@@ -1069,7 +1070,7 @@ async function init(){
     if($('.sheet-host')&&sheetTab==='data')renderSheet();else if($('.ob-host:not(.out)')&&obStep===2)renderOnboarding()});Sync.start();
   if(D&&D.deepLinkPending)D.deepLinkPending().then(u=>{if(u)deepLink(u)}).catch(()=>{});
   addEventListener('beforeunload',()=>{if(Sync.isPairing())Sync.cancelPairing()});
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden)updateLogo(true)});
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)updateLogo()});
   setTimeout(()=>{const s=Sync.st();if(s.mode!=='off'&&!s.keyOk&&!Sync.hasKey())toast('Sync is signed in, but this '+DEV()+' is not approved yet',()=>{sheetTab='data';settings()},'Open')},2500);
   if(!S().onboarded)setTimeout(onboarding,500);
   // first gesture: unlock audio and, in a browser that is past onboarding, ask it to keep the data (new users are asked when onboarding ends)

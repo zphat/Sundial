@@ -67,13 +67,9 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .brand .mark{position:relative;display:block;width:28px;height:28px;flex:none}
 .brand .mark svg{position:absolute;inset:0;width:100%;height:100%;display:block}
 .brand .mark .base{filter:drop-shadow(0 0 10px rgba(209,255,74,.35))}
-/* the mark: three comet rings on their own layers, rotated by the compositor so main-thread work never makes them skip.
-   outer = the hour hand (one turn a day, noon at the top); the inner two turn at their own rates, one against the other. updateLogo() sets the phase once. */
-.brand .ring{transform-origin:50% 50%;will-change:transform;animation:logoSpin linear infinite}
-.brand .ring.h{animation-duration:86400s}
-.brand .ring.m{animation-duration:150s;animation-direction:reverse}
-.brand .ring.s{animation-duration:60s}
-@keyframes logoSpin{to{transform:rotate(360deg)}}
+/* the mark: three comet rings on their own layers. ui.js rotates them from the system clock every frame (no CSS timeline,
+   which drifts and snaps when the window is throttled): outer = the hour hand, one turn a day, noon at the top. */
+.brand .ring{transform-origin:50% 50%;will-change:transform}
 .brand h1{font-family:var(--f-brand);font-weight:700;font-size:15px;letter-spacing:.06em;margin:0;text-transform:uppercase;line-height:1}
 .brand small{font-family:var(--f-brand);font-size:9px;color:var(--fg-3);letter-spacing:.14em;display:block;margin-top:3px}
 .title{font-family:var(--f-display);font-weight:700;font-size:21px;letter-spacing:-.01em;text-wrap:balance;margin-left:4px;display:flex;align-items:center;gap:10px}
