@@ -76,10 +76,16 @@ function applyLayout(){
   const lb=$('#layoutBtn');if(lb){lb.textContent=mode==='column'?'⇆':'⇅';lb.title=mode==='column'?'Side by side':'Stacked';lb.setAttribute('aria-pressed',String(mode==='column'))}
 }
 function togglePane(k){state.layout[k]=!state.layout[k];save();applyLayout();render()}
-function updateLogo(){const n=new Date(),sec=n.getHours()*3600+n.getMinutes()*60+n.getSeconds()+n.getMilliseconds()/1000;const sinceNoon=(sec-12*3600+86400)%86400;
-  const set=(sel,period,reverse)=>{const el=document.querySelector(sel);if(!el)return;const t=sec%period;el.style.animationDelay=`-${t.toFixed(3)}s`;const deg=t/period*360*(reverse?-1:1);el.style.transform=`rotate(${deg}deg)`};
-  set('#logo .ring.h',86400,false);const h=$('#logo .ring.h');if(h){h.style.animationDelay=`-${sinceNoon.toFixed(3)}s`;h.style.transform=`rotate(${sinceNoon/86400*360}deg)`}
-  set('#logo .ring.m',150,true);set('#logo .ring.s',60,false)}
+// The mark's rings run as CSS animations. Their phase is set ONCE (and again when the window comes back from hidden);
+// re-seeding on every redraw restarts the animation and the rings visibly jump. The inline transform is only the
+// still fallback for prefers-reduced-motion; a running animation overrides it.
+let logoPhased=false;
+function updateLogo(force){const n=new Date(),sec=n.getHours()*3600+n.getMinutes()*60+n.getSeconds()+n.getMilliseconds()/1000,sinceNoon=(sec-12*3600+86400)%86400;
+  const rings=[['#logo .ring.h',86400,false,sinceNoon],['#logo .ring.m',150,true,sec%150],['#logo .ring.s',60,false,sec%60]];
+  for(const [sel,period,rev,t] of rings){const el=document.querySelector(sel);if(!el)continue;
+    if(force||!logoPhased)el.style.animationDelay=`-${t.toFixed(3)}s`;
+    el.style.transform=`rotate(${(t/period*360*(rev?-1:1)).toFixed(2)}deg)`}
+  logoPhased=true}
 
 // ---------- render ----------
 let prevRects={};
@@ -1063,7 +1069,7 @@ async function init(){
     if($('.sheet-host')&&sheetTab==='data')renderSheet();else if($('.ob-host:not(.out)')&&obStep===2)renderOnboarding()});Sync.start();
   if(D&&D.deepLinkPending)D.deepLinkPending().then(u=>{if(u)deepLink(u)}).catch(()=>{});
   addEventListener('beforeunload',()=>{if(Sync.isPairing())Sync.cancelPairing()});
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden)updateLogo()});
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)updateLogo(true)});
   setTimeout(()=>{const s=Sync.st();if(s.mode!=='off'&&!s.keyOk&&!Sync.hasKey())toast('Sync is signed in, but this '+DEV()+' is not approved yet',()=>{sheetTab='data';settings()},'Open')},2500);
   if(!S().onboarded)setTimeout(onboarding,500);
   // first gesture: unlock audio and, in a browser that is past onboarding, ask it to keep the data (new users are asked when onboarding ends)
