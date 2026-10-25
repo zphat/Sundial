@@ -1,32 +1,32 @@
-"""Renders the Sundial mark (lime dial, three dark rings) to every icon the app ships.
+"""Renders the Sundial mark to every icon the app ships, and prints the SVG paths the header uses.
 
-Run from the repo root:  python tools/make_icons.py
-Needs Pillow. Writes src-tauri/icons/*.png + icon.ico and ui/icons/*.png. The geometry mirrors
-ui/index.html's inline SVG (viewBox 0 0 28 28); the rings here are frozen at the "hero" angles, the
-header's rings turn with the time of day.
+Run from the repo root:  python tools/make_icons.py          writes src-tauri/icons/* and ui/icons/*
+                         python tools/make_icons.py --svg    prints the three ring paths (head at 12 o'clock)
+Needs Pillow. The mark: a lime dial with three dark comet-like rings, each thick at its head and tapering to a
+point along its tail. In the app the rings turn (the outer one is the hour hand); the icons freeze them at HEADS.
 """
 import math, os, sys
 from PIL import Image, ImageDraw
 
 LIME = (0xD1, 0xFF, 0x4A, 255)
 INK = (0x0B, 0x0D, 0x06, 255)
-BOX = 28.0  # SVG units
+BOX = 28.0  # SVG units, centre at 14,14
 
-# ring radius, stroke width, start angle, sweep (degrees, clockwise from 12 o'clock). The end of the
-# sweep is the ring's "hand". Same numbers as the SVG paths in index.html.
+# (centre radius, head width, sweep in degrees, taper power). Head width is the stroke at the thick end; the
+# tail thins to a point. Taper power 1 = linear, higher = thins sooner.
 RINGS = [
-    (9.3, 2.0, 235, 195),    # hours: the outer volute; the end of its sweep is the hour hand
-    (6.3, 2.0, 335, 155),    # middle ring: turns slowly the other way
-    (3.3, 2.0, 80, 235),     # inner ring: turns once a minute
+    (9.4, 1.6, 205, 1.35),   # hours: the outer ring, its head is the hour hand
+    (6.4, 1.5, 160, 1.35),   # middle ring (turns the other way in the app)
+    (3.5, 1.4, 225, 1.35),   # inner ring
 ]
-# Below 40px the middle ring is dropped and the strokes thicken, or the rings melt together.
-RINGS_SMALL = [
-    (9.0, 2.4, 235, 195),
-    (3.9, 2.4, 80, 235),
-]
-DOT_R = 1.5
+# head angles for the still icons, degrees clockwise from 12 o'clock; 120 apart so the three tails swirl evenly
+HEADS = [70, 190, 310]
+# in the app the middle ring turns counter-clockwise, so its head leads the other way
+DIRS = [1, -1, 1]
+DOT_R = 1.45
 DISC_R = 12.5
 RIM = 1.5
+TAIL_MIN = 0.14
 
 
 def pt(cx, r, deg):
@@ -34,58 +34,66 @@ def pt(cx, r, deg):
     return (cx + r * math.cos(a), cx + r * math.sin(a))
 
 
-def render(size, pad=0.0, plate=None, dot=True):
-    """size in px. pad = fraction of the box kept clear around the disc (maskable icons). plate = opaque
-    background colour or None for transparency."""
-    ss = 4  # supersample
+def outline(cx, scale, r, w, sweep, head, d, power, n=36):
+    """Closed polygon (list of points) for one tapered ring, head at angle `head`, tail trailing against `d`."""
+    outer, inner = [], []
+    for i in range(n + 1):
+        t = i / n
+        ang = head - d * t * sweep
+        wt = max(TAIL_MIN, w * (1 - t) ** power)
+        outer.append(pt(cx, (r + wt / 2) * scale, ang))
+        inner.append(pt(cx, (r - wt / 2) * scale, ang))
+    # round head cap: a half circle over the front of the head, from the inner edge round to the outer edge.
+    # u points outward from the centre at the head, f points the way the head travels.
+    hx, hy = pt(cx, r * scale, head)
+    base = math.radians(head - 90)
+    ux, uy = math.cos(base), math.sin(base)
+    fx, fy = -d * uy, d * ux
+    cap = []
+    for k in range(1, 12):
+        phi = math.pi - math.pi * k / 12          # 180 deg (inner edge) down to 0 deg (outer edge) via the front
+        cap.append((hx + w / 2 * scale * (math.cos(phi) * ux + math.sin(phi) * fx),
+                    hy + w / 2 * scale * (math.cos(phi) * uy + math.sin(phi) * fy)))
+    return list(reversed(inner)) + cap + outer
+
+
+def render(size, pad=0.0, plate=None, dot=True, rings=None, heads=None):
+    """size in px. pad = fraction kept clear around the disc (maskable icons). plate = opaque background."""
+    rings = rings or RINGS
+    heads = heads or HEADS
+    ss = 4
     S = size * ss
     im = Image.new("RGBA", (S, S), plate + (255,) if plate else (0, 0, 0, 0))
-    d = ImageDraw.Draw(im)
+    dr = ImageDraw.Draw(im)
     scale = S / BOX * (1 - 2 * pad)
-    off = S * pad
-    c = off + 14 * scale
-
-    def px(v):
-        return v * scale
-
-    # disc with rim
-    r = px(DISC_R)
-    d.ellipse([c - r, c - r, c + r, c + r], fill=INK)
-    r2 = px(DISC_R - RIM)
-    d.ellipse([c - r2, c - r2, c + r2, c + r2], fill=LIME)
-    # rings: PIL draws an arc's width inward from the bounding box, so the box radius is R + W/2 and the
-    # stroke is centred on R; the round caps then sit exactly on the stroke.
-    for rad, w, start, sweep in (RINGS if size >= 40 else RINGS_SMALL):
-        R = px(rad)
-        W = px(w)
-        Rb = R + W / 2
-        a0 = start - 90
-        a1 = start + sweep - 90
-        d.arc([c - Rb, c - Rb, c + Rb, c + Rb], a0, a1, fill=INK, width=int(round(W)))
-        for deg in (start, start + sweep):
-            x, y = pt(c, R, deg)
-            d.ellipse([x - W / 2, y - W / 2, x + W / 2, y + W / 2], fill=INK)
+    c = S * pad + 14 * scale
+    R = DISC_R * scale
+    dr.ellipse([c - R, c - R, c + R, c + R], fill=INK)
+    R2 = (DISC_R - RIM) * scale
+    dr.ellipse([c - R2, c - R2, c + R2, c + R2], fill=LIME)
+    small = size < 40
+    for i, (r, w, sweep, power) in enumerate(rings):
+        if small and i == 1:
+            continue  # two rings read better under 40px
+        w2 = w * (1.3 if small else 1.0)
+        dr.polygon(outline(c, scale, r, w2, sweep, heads[i], DIRS[i], power, n=48), fill=INK)
     if dot:
-        rd = px(DOT_R)
-        d.ellipse([c - rd, c - rd, c + rd, c + rd], fill=INK)
+        rd = DOT_R * scale
+        dr.ellipse([c - rd, c - rd, c + rd, c + rd], fill=INK)
     return im.resize((size, size), Image.LANCZOS)
 
 
 def svg_paths():
-    """Path data for the header SVG: each ring is drawn with its hand at 12 o'clock, so a rotate() of the
-    current angle points the hand at the time."""
+    """Path data for the header: each ring with its head at 12 o'clock, so rotate(angle) points the head."""
     out = []
-    for rad, w, start, sweep in RINGS:
-        s0 = -sweep  # start so that the end lands at 0 degrees (12 o'clock)
-        x0, y0 = pt(14, rad, s0)
-        x1, y1 = pt(14, rad, 0)
-        large = 1 if sweep > 180 else 0
-        out.append(f'M{x0:.2f} {y0:.2f}A{rad} {rad} 0 {large} 1 {x1:.2f} {y1:.2f}')
+    for (r, w, sweep, power), d in zip(RINGS, DIRS):
+        pts = outline(14, 1.0, r, w, sweep, 0, d, power, n=28)
+        out.append("M" + "L".join(f"{x:.2f} {y:.2f}" for x, y in pts) + "Z")
     return out
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] == '--svg':
+    if len(sys.argv) > 1 and sys.argv[1] == "--svg":
         for d in svg_paths():
             print(d)
         return

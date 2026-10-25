@@ -81,7 +81,7 @@ function togglePane(k){state.layout[k]=!state.layout[k];save();applyLayout();ren
 // still fallback for prefers-reduced-motion; a running animation overrides it.
 let logoPhased=false;
 function updateLogo(force){const n=new Date(),sec=n.getHours()*3600+n.getMinutes()*60+n.getSeconds()+n.getMilliseconds()/1000,sinceNoon=(sec-12*3600+86400)%86400;
-  const rings=[['#logo .ring.h',86400,false,sinceNoon],['#logo .ring.m',150,true,sec%150],['#logo .ring.s',60,false,sec%60]];
+  const rings=[['.mark .ring.h',86400,false,sinceNoon],['.mark .ring.m',150,true,sec%150],['.mark .ring.s',60,false,sec%60]];
   for(const [sel,period,rev,t] of rings){const el=document.querySelector(sel);if(!el)continue;
     if(force||!logoPhased)el.style.animationDelay=`-${t.toFixed(3)}s`;
     el.style.transform=`rotate(${(t/period*360*(rev?-1:1)).toFixed(2)}deg)`}
