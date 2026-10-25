@@ -1,3 +1,5 @@
+<img src="ui/icons/icon-128.png" width="64" height="64" alt="Sundial" align="left">
+
 # Sundial
 
 Sundial is a calendar, a task list and a page of notes for each day, in one window. It is fast, and it works without an internet connection. Everything you type stays on your own PC, or in your own browser. There is a Windows app, a Linux app and a web app at https://app.sundial.services. It is a beta: expect rough edges, and say so when you find them.

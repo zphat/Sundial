@@ -65,6 +65,12 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;position:relative;z-index:3}
 .brand{display:flex;align-items:center;gap:10px}
 .brand svg{width:28px;height:28px;display:block;filter:drop-shadow(0 0 10px rgba(209,255,74,.35))}
+/* the mark: the outer ring is the hour hand (one turn a day, noon at the top); the inner two turn at their own rates, one against the other. updateLogo() sets the phase. */
+.brand .ring{transform-origin:14px 14px;transform-box:view-box;animation:logoSpin linear infinite}
+.brand .ring.h{animation-duration:86400s}
+.brand .ring.m{animation-duration:150s;animation-direction:reverse}
+.brand .ring.s{animation-duration:60s}
+@keyframes logoSpin{to{transform:rotate(360deg)}}
 .brand h1{font-family:var(--f-brand);font-weight:700;font-size:15px;letter-spacing:.06em;margin:0;text-transform:uppercase;line-height:1}
 .brand small{font-family:var(--f-brand);font-size:9px;color:var(--fg-3);letter-spacing:.14em;display:block;margin-top:3px}
 .title{font-family:var(--f-display);font-weight:700;font-size:21px;letter-spacing:-.01em;text-wrap:balance;margin-left:4px;display:flex;align-items:center;gap:10px}

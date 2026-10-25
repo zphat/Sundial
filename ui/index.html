@@ -23,13 +23,13 @@
 <body>
 <div class="app" id="app">
   <header class="top">
-    <div class="brand" title="The gnomon's shadow follows the real time of day">
+    <div class="brand" title="The outer ring turns with the hour">
       <svg viewBox="0 0 28 28" aria-hidden="true" id="logo">
-        <circle cx="14" cy="14" r="12.5" fill="var(--accent)"/>
-        <circle cx="14" cy="14" r="12.5" fill="none" stroke="var(--on-accent)" stroke-width="1" opacity=".35"/>
-        <g stroke="var(--on-accent)" stroke-width="1" opacity=".35"><line x1="14" y1="3" x2="14" y2="5.5"/><line x1="14" y1="22.5" x2="14" y2="25"/><line x1="3" y1="14" x2="5.5" y2="14"/><line x1="22.5" y1="14" x2="25" y2="14"/></g>
-        <line id="shadow" x1="14" y1="14" x2="14" y2="4" stroke="var(--on-accent)" stroke-width="2.4" stroke-linecap="round"/>
-        <circle cx="14" cy="14" r="2.2" fill="var(--on-accent)"/>
+        <circle cx="14" cy="14" r="11.75" fill="var(--accent)" stroke="var(--on-accent)" stroke-width="1.5"/>
+        <g class="ring h" id="shadow"><path d="M16.41 22.98A9.3 9.3 0 1 1 14.00 4.70" fill="none" stroke="var(--on-accent)" stroke-width="2.0" stroke-linecap="round"/></g>
+        <g class="ring m"><path d="M11.34 19.71A6.3 6.3 0 0 1 14.00 7.70" fill="none" stroke="var(--on-accent)" stroke-width="2.0" stroke-linecap="round"/></g>
+        <g class="ring s"><path d="M16.70 15.89A3.3 3.3 0 1 1 14.00 10.70" fill="none" stroke="var(--on-accent)" stroke-width="2.0" stroke-linecap="round"/></g>
+        <circle cx="14" cy="14" r="1.5" fill="var(--on-accent)"/>
       </svg>
       <div><h1>Sundial</h1><small>DAYS · TASKS · NOTES</small></div>
     </div>
