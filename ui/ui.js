@@ -1071,7 +1071,7 @@ async function init(){
 function webInit(){
   appVersion=webVersion();
   // ?demo=1 (web only, used for screenshots): skip first-run, dark theme, optional &view=day|week|month|notes. Nothing is persisted beyond this browser's own storage, as always.
-  try{const q=new URLSearchParams(location.search);if(q.get('demo')==='1'){document.documentElement.classList.add('nomotion');S().onboarded=true;S().theme='dark';const v=q.get('view');if(['day','week','month','notes'].includes(v))view=v;const pn=q.get('panes');if(pn){state.layout.cal=pn.includes('cal');state.layout.board=pn.includes('board');state.layout.tl=pn.includes('tl')}
+  try{const q=new URLSearchParams(location.search);if(q.get('demo')==='1'){document.documentElement.classList.add('nomotion');S().onboarded=true;S().theme='dark';const v=q.get('view');if(['day','week','month','notes'].includes(v))view=v;const pn=q.get('panes')||'cal,board,tl';state.layout.cal=pn.includes('cal');state.layout.board=pn.includes('board');state.layout.tl=pn.includes('tl');
     if(state.tasks.every(t=>t.example)){const t=todayStr();state.tasks=[];state.tombstones={};
       for(const [raw,d] of [['Standup 9:30am 15m #work',t],['Design review 11am 1h #work',t],['Lunch with Sam 12:30pm 45m #creative',t],['Pick up the dry cleaning 4pm #errands',t],['Gym 6pm 1h #health',t],['Call Mum',t],['Renew passport',t],['Book the dentist #health',t],['Draft the newsletter 10am 1h #work',t],['Dentist 10:15am #health',addDays(t,1)],['Rent #admin',addDays(t,2)],['Script read-through 2pm 1h #creative',addDays(t,3)],['Weekly reset 5pm 30m #admin',addDays(t,4)],['Hike 8am 3h #health',addDays(t,5)]])addTask(raw,d,undefined,true);
       const done=state.tasks.find(x=>/newsletter/.test(x.title));if(done)completeTask(done.id,true);
