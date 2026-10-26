@@ -184,10 +184,10 @@ function drawer(x){
 }
 function railHtml(){
   const ws=weekStart(sel),t=todayStr(),L=dowLabels();
-  let rail=`<div class="rail"><button class="arrow" data-nav="-7" aria-label="Previous week">‹</button>`;
+  let rail=`<div class="rail"><button class="arrow" data-nav="week:-1" aria-label="Previous week">‹</button>`;
   for(let i=0;i<7;i++){const ds=addDays(ws,i);const n=dayTasks(ds).filter(x=>!x.done).length;const note=!!state.notes[ds];
     rail+=`<button data-date="${ds}" class="${ds===sel?'sel':''} ${ds===t?'today':''} ${ds<t?'past':''}"><span class="w">${L[i]}</span><span class="n">${fromYmd(ds).getDate()}</span><span class="cnt">${n?n:''}${note?' ≡':''}</span></button>`}
-  return rail+`<button class="arrow" data-nav="7" aria-label="Next week">›</button>${lockBtn('board')}</div>`;
+  return rail+`<button class="arrow" data-nav="week:1" aria-label="Next week">›</button>${lockBtn('board')}</div>`;
 }
 function nowStrip(){
   if(sel!==todayStr())return'';
@@ -219,7 +219,7 @@ function renderDay(){
 }
 function renderWeek(){
   const ws=weekStart(sel),L=dowLabels();
-  let h=`<div class="rail" style="padding-bottom:0"><button class="arrow" data-nav="-7" aria-label="Previous week">‹</button><span class="spacer"></span><button class="arrow" data-nav="7" aria-label="Next week">›</button>${lockBtn('board')}</div><div class="week">`;
+  let h=`<div class="rail" style="padding-bottom:0"><button class="arrow" data-nav="week:-1" aria-label="Previous week">‹</button><span class="spacer"></span><button class="arrow" data-nav="week:1" aria-label="Next week">›</button>${lockBtn('board')}</div><div class="week">`;
   for(let i=0;i<7;i++){const ds=addDays(ws,i);const ts=dayTasks(ds);
     h+=`<div class="col ${ds===todayStr()?'today':''}" data-dropdate="${ds}"><div class="hd" data-date="${ds}" data-goto="day"><span class="n">${fromYmd(ds).getDate()}</span><span class="w">${L[i]}</span></div><div class="items">`+
     ts.map(x=>`<div class="mini-task ${x.done?'done':''} ${anim.enter===x.id?'enter':''}" draggable="true" data-id="${x.id}" data-act="open"><span class="swatch" style="--sw:var(--c-${x.color})"></span><span>${esc(x.title)}</span>${x.time!=null?`<span class="tm">${fmtTime(x.time)}</span>`:''}</div>`).join('')+
@@ -509,7 +509,10 @@ document.addEventListener('click',e=>{
   if(b.dataset.rtManage){closeMenu();sheetTab='routines';settings();return}
   if(b.id==='mic'){toggleVoice();return}
   if(b.id==='mPrev'||b.id==='mNext'){let[y,m]=miniMonth.split('-').map(Number);m+=b.id==='mNext'?1:-1;if(m<1){m=12;y--}if(m>12){m=1;y++}miniMonth=y+'-'+pad(m);renderMini();return}
-  if(b.dataset.nav){const n=b.dataset.nav;let ds;if(n.startsWith('month:')){const d=fromYmd(sel);d.setDate(1);d.setMonth(d.getMonth()+(+n.slice(6)));ds=ymd(d)}else ds=addDays(sel,+n);goDay(ds,+n<0?'slide-r':'slide-l');render();return}
+  if(b.dataset.nav){const n=b.dataset.nav;let ds,dir;if(n.startsWith('month:')){const d=fromYmd(sel);d.setDate(1);d.setMonth(d.getMonth()+(+n.slice(6)));ds=ymd(d);dir=+n.slice(6)}
+    // the week strip pages, and the selection lands on the nearest day of the new page: forward = its first day, back = its last day
+    else if(n.startsWith('week:')){dir=+n.slice(5);ds=dir>0?addDays(weekStart(sel),7):addDays(weekStart(sel),-1)}
+    else{ds=addDays(sel,+n);dir=+n}goDay(ds,dir<0?'slide-r':'slide-l');render();return}
   // fit: the stuck anytime bank covers the top of the hours, so its height comes off the room the day may take
   if(b.dataset.zoom){if(b.dataset.zoom==='fit'){const tl=$('#tlPane .tl');const bank=$('#tlPane .anytime');const bankH=bank&&!bank.classList.contains('empty')?bank.offsetHeight:0;const avail=(isPhone()?innerHeight-150:(tl?tl.clientHeight:600))-bankH;S().hh=Math.max(20,Math.min(120,Math.floor((avail-6)/24)))}else S().hh=Math.max(20,Math.min(120,S().hh+(+b.dataset.zoom)*12));save();renderSide();return}
   if(b.dataset.cmd){e.preventDefault();return}
