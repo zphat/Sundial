@@ -76,13 +76,13 @@ function applyLayout(){
   const lb=$('#layoutBtn');if(lb){lb.textContent=mode==='column'?'⇆':'⇅';lb.title=mode==='column'?'Side by side':'Stacked';lb.setAttribute('aria-pressed',String(mode==='column'))}
 }
 function togglePane(k){state.layout[k]=!state.layout[k];save();applyLayout();render()}
-// The mark's rings are turned from the system clock on every frame: outer = hour hand (one turn a day, noon at the
-// top), middle once per 150 s the other way, inner once a minute. Reading the clock each frame means the rings can
+// The mark's rings are turned from the system clock on every frame: outer = hour hand on a 12-hour dial (12 at the
+// top, so 3 pm points at 3), middle once per 150 s the other way, inner once a minute. Reading the clock each frame means the rings can
 // never drift or snap, whatever the window was doing in between. Under prefers-reduced-motion they are set once a
 // minute instead. requestAnimationFrame pauses on its own while the window is hidden.
 let logoRaf=0;
 function logoAngles(){const d=new Date(),sec=d.getHours()*3600+d.getMinutes()*60+d.getSeconds()+d.getMilliseconds()/1000;
-  return {h:((sec-43200+86400)%86400)/86400*360,m:-(sec%150)/150*360,s:(sec%60)/60*360}}
+  return {h:(sec%43200)/43200*360,m:-(sec%150)/150*360,s:(sec%60)/60*360}}
 function logoApply(){const a=logoAngles();for(const k of ['h','m','s']){const el=document.querySelector('.mark .ring.'+k);if(el)el.style.transform=`rotate(${a[k].toFixed(3)}deg)`}}
 function logoFrame(){logoApply();logoRaf=requestAnimationFrame(logoFrame)}
 function updateLogo(){if(matchMedia('(prefers-reduced-motion: reduce)').matches){if(logoRaf){cancelAnimationFrame(logoRaf);logoRaf=0}logoApply();return}

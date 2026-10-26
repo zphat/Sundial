@@ -1,6 +1,6 @@
 [package]
 name = "sundial"
-version = "0.1.40"
+version = "0.1.41"
 description = "Sundial: days, tasks, notes"
 authors = ["Danny"]
 edition = "2021"
