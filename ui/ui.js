@@ -34,6 +34,8 @@ const secretStore=()=>plat.os==='linux'?(secretKind==='file'?'a file next to you
 // Resolves to the current kind, or the cached one when the shell cannot say; never rejects, so it can sit in a .then chain.
 const refreshSecretKind=()=>{const D=window.SundialDesktop;if(!D||!D.secretStore||plat.os!=='linux')return Promise.resolve(secretKind);return D.secretStore().then(k=>{secretKind=k;return k}).catch(()=>secretKind)};
 const RELEASES_URL='https://github.com/zphat/Sundial/releases/latest';
+// Discord invite for feedback. Empty until the server exists: the welcome page and the About row show a Discord button only when this is set.
+const DISCORD_URL='';
 // a touch device with no keyboard worth picking shortcuts for
 const noKeys=()=>!window.SundialDesktop&&matchMedia('(hover:none) and (pointer:coarse)').matches;
 
@@ -129,7 +131,7 @@ function renderCore(){
   flip();
   const dr=document.querySelector('.drawer');if(dr)openDrawerEl(dr,wasOpen===openId);
   syncLocks();
-  $('#footTip').innerHTML=['↵ add','← → days','T today','N new','/ search','J K move','␣ done','⌫ delete','Ctrl+Z undo','1-4 views','[ \\ ] panes','right-click a task'].map(x=>`<span>${x}</span>`).join('');
+  $('#footTip').innerHTML=['↵ add','← → days','T today','N new','/ search','J K move','␣ done','⌫ delete','double-click an hour','Ctrl+Z undo','1-4 views','[ \\ ] panes','right-click a task'].map(x=>`<span>${x}</span>`).join('');
   anim.enter=null;anim.pop=null;anim.slide=null;
 }
 function renderMini(){
@@ -143,7 +145,7 @@ function renderMini(){
 function renderUpnext(){
   const t=todayStr(),m=nowMin();
   const up=state.tasks.filter(x=>!x.done&&x.time!=null&&(x.date>t||(x.date===t&&x.time>=m))).sort((a,b)=>a.date.localeCompare(b.date)||a.time-b.time).slice(0,4);
-  $('#upnext').innerHTML=up.length?`<div class="eyebrow" style="margin-bottom:4px">Up next</div>`+up.map(x=>`<div class="u" data-id="${x.id}" data-act="open"><span class="when">${x.date===t?'':dowName(x.date)+' '}${fmtTime(x.time)}</span><span class="swatch" style="--sw:var(--c-${x.color})"></span><span>${esc(x.title)}</span></div>`).join(''):'';
+  $('#upnext').innerHTML=up.length?`<div class="eyebrow" style="margin-bottom:4px">Up next</div>`+up.map(x=>`<div class="u" data-id="${x.id}" data-act="open" title="${esc(x.title)}"><span class="when">${x.date===t?'':dowName(x.date)+' '}${fmtTime(x.time)}</span><span class="swatch" style="--sw:var(--c-${x.color})"></span><span>${esc(x.title)}</span></div>`).join(''):'';
 }
 function renderLegend(){
   $('#legend').innerHTML=`<div class="eyebrow" style="margin-bottom:4px">Colors</div>`+COLORS.map(([k])=>`<div class="row"><span class="swatch" style="--sw:var(--c-${k})"></span><input data-color="${k}" value="${esc(state.labels[k])}" aria-label="Label for ${k}"></div>`).join('')+
@@ -222,7 +224,7 @@ function renderWeek(){
   let h=`<div class="rail" style="padding-bottom:0"><button class="arrow" data-nav="week:-1" aria-label="Previous week">‹</button><span class="spacer"></span><button class="arrow" data-nav="week:1" aria-label="Next week">›</button>${lockBtn('board')}</div><div class="week">`;
   for(let i=0;i<7;i++){const ds=addDays(ws,i);const ts=dayTasks(ds);
     h+=`<div class="col ${ds===todayStr()?'today':''}" data-dropdate="${ds}"><div class="hd" data-date="${ds}" data-goto="day"><span class="n">${fromYmd(ds).getDate()}</span><span class="w">${L[i]}</span></div><div class="items">`+
-    ts.map(x=>`<div class="mini-task ${x.done?'done':''} ${anim.enter===x.id?'enter':''}" draggable="true" data-id="${x.id}" data-act="open"><span class="swatch" style="--sw:var(--c-${x.color})"></span><span>${esc(x.title)}</span>${x.time!=null?`<span class="tm">${fmtTime(x.time)}</span>`:''}</div>`).join('')+
+    ts.map(x=>`<div class="mini-task ${x.done?'done':''} ${anim.enter===x.id?'enter':''}" draggable="true" data-id="${x.id}" data-act="open" title="${esc(x.title)}${x.time!=null?' · '+fmtTime(x.time):''}"><span class="swatch" style="--sw:var(--c-${x.color})"></span><span>${esc(x.title)}</span>${x.time!=null?`<span class="tm">${fmtTime(x.time)}</span>`:''}</div>`).join('')+
     `</div><div class="add"><input data-adddate="${ds}" placeholder="+" aria-label="Add task for ${ds}"></div></div>`}
   $('#boardPane').innerHTML=h+'</div>';
 }
@@ -231,7 +233,7 @@ function renderMonth(){
   let h=`<div class="rail" style="padding-bottom:0"><button class="arrow" data-nav="month:-1" aria-label="Previous month">‹</button><span class="spacer"></span><button class="arrow" data-nav="month:1" aria-label="Next month">›</button>${lockBtn('board')}</div><div class="month"><div class="dows">${dowLabels().map(x=>`<div>${x}</div>`).join('')}</div><div class="cells">`;
   for(let i=0;i<42;i++){const ds=addDays(start,i);const dd=fromYmd(ds);const ts=dayTasks(ds);
     h+=`<button class="cell ${dd.getMonth()!==d.getMonth()?'out':''} ${ds===todayStr()?'today':''} ${ds===sel?'sel':''}" data-date="${ds}" data-goto="day" data-dropdate="${ds}"><span class="n">${dd.getDate()}</span>`+
-    ts.slice(0,3).map(x=>`<span class="pill ${x.done?'done':''}"><span class="swatch" style="--sw:var(--c-${x.color})"></span><span>${esc(x.title)}</span></span>`).join('')+(ts.length>3?`<span class="more">+${ts.length-3}</span>`:'')+`</button>`}
+    ts.slice(0,3).map(x=>`<span class="pill ${x.done?'done':''}" title="${esc(x.title)}${x.time!=null?' · '+fmtTime(x.time):''}"><span class="swatch" style="--sw:var(--c-${x.color})"></span><span>${esc(x.title)}</span></span>`).join('')+(ts.length>3?`<span class="more">+${ts.length-3}</span>`:'')+`</button>`}
   $('#boardPane').innerHTML=h+'</div></div>';
 }
 function renderNotes(){
@@ -252,11 +254,11 @@ function renderSide(){
   let h=`<div class="pane-hd"><b>${relDay(sel)}${!today?' '+fromYmd(sel).getDate():''}</b><span class="hd-cnt">${timed.length} timed · ${any.length} anytime</span><span class="hd-acts"><span class="zoom"><button data-zoom="-1" title="Zoom out">−</button><button data-zoom="1" title="Zoom in">+</button><button data-zoom="fit" title="Fit the whole day in view">⤢</button></span>${lockBtn('tl')}<button class="x" data-pane="tl" title="Hide pane">×</button></span></div><div class="tl">`;
   // The anytime bank: tasks without a time. Drag one onto an hour to schedule it; drag a block back here to clear its time.
   // The outer div stays the drop zone and the sticky element; the chips scroll sideways inside it, three rows deep, column first.
-  h+=`<div class="anytime ${any.length?'':'empty'}" data-bank="1">${any.length?`<div class="chips">${any.map(x=>`<span class="chip" data-id="${x.id}" data-act="open" draggable="true" title="Drag onto an hour to give it a time"><span class="swatch" style="--sw:var(--c-${x.color})"></span><span class="t">${esc(x.title)}</span></span>`).join('')}</div>`:(timed.length?'<span class="hint">Anytime tasks sit here. Drop a block back to clear its time.</span>':'')}</div>`;
+  h+=`<div class="anytime ${any.length?'':'empty'}" data-bank="1">${any.length?`<div class="chips">${any.map(x=>`<span class="chip" data-id="${x.id}" data-act="open" draggable="true" title="${esc(x.title)} · drag onto an hour to give it a time"><span class="swatch" style="--sw:var(--c-${x.color})"></span><span class="t">${esc(x.title)}</span></span>`).join('')}</div>`:(timed.length?'<span class="hint">Anytime tasks sit here. Drop a block back to clear its time.</span>':'')}</div>`;
   h+=`<div class="hours" style="--rows:${rows};--hh:${hh}px">`;
   for(let i=0;i<rows;i++)h+=`<div class="h" data-hour="${H0+i}" style="top:${i*hh}px"><span>${fmtTime((H0+i)*60)}</span></div>`;
   for(const x of timed){const top=(x.time-H0*60)/60*hh;const hgt=Math.max(22,(x.dur||30)/60*hh-3);if(top<0||top>rows*hh)continue;const live=today&&!x.done&&m>=x.time&&m<x.time+(x.dur||30);
-    h+=`<div class="blk ${x.done?'done':''} ${live?'live':''} ${x.id===openId?'editing':''} ${anim.enter===x.id?'enter':''}" data-id="${x.id}" data-act="open" draggable="true" style="--sw:var(--c-${x.color});top:${top}px;height:${hgt}px">${esc(x.title)}${hgt>30?`<small>${fmtTime(x.time)}${x.dur?' · '+fmtDur(x.dur):''}</small>`:''}<span class="rz" data-rz="${x.id}" title="Drag to change how long it takes"></span></div>`}
+    h+=`<div class="blk ${x.done?'done':''} ${live?'live':''} ${x.id===openId?'editing':''} ${anim.enter===x.id?'enter':''}" data-id="${x.id}" data-act="open" draggable="true" title="${esc(x.title)} · ${fmtTime(x.time)}${x.dur?' · '+fmtDur(x.dur):''}" style="--sw:var(--c-${x.color});top:${top}px;height:${hgt}px">${esc(x.title)}${hgt>30?`<small>${fmtTime(x.time)}${x.dur?' · '+fmtDur(x.dur):''}</small>`:''}<span class="rz" data-rz="${x.id}" title="Drag to change how long it takes"></span></div>`}
   if(today&&m>=H0*60&&m<=H1*60)h+=`<div class="now" style="top:${(m-H0*60)/60*hh}px"><i>☉ ${fmtTime(m)}</i></div>`;
   const prev=side.querySelector('.tl');const keep=prev&&prev.dataset.date===sel&&prev.dataset.hh===String(hh)?prev.scrollTop:null;
   side.innerHTML=h+'</div></div>';
@@ -271,7 +273,12 @@ function toast(msg,undoFn,label){
   document.querySelectorAll('.toast').forEach(x=>x.remove());clearTimeout(toastT);
   const el=document.createElement('div');el.className='toast';el.innerHTML=`<span>${esc(msg)}</span>${undoFn?'<button>'+esc(label||'Undo')+'</button>':''}`;
   if(undoFn)el.querySelector('button').onclick=()=>{undoFn();el.remove()};
-  document.body.appendChild(el);toastT=setTimeout(()=>{el.classList.add('out');setTimeout(()=>el.remove(),260)},5000);
+  document.body.appendChild(el);
+  // long enough to read, longer when there is a button to press; hovering holds it, leaving gives it a moment more
+  const out=()=>{if(!el.isConnected)return;el.classList.add('out');setTimeout(()=>el.remove(),260)};
+  const arm=ms=>{clearTimeout(toastT);toastT=setTimeout(out,ms)};
+  arm(Math.min(9000,Math.max(undoFn?6000:3200,1800+msg.length*45)));
+  el.addEventListener('mouseenter',()=>{if(el.isConnected)clearTimeout(toastT)});el.addEventListener('mouseleave',()=>{if(el.isConnected)arm(1500)});
 }
 function closeMenu(){const m=$('.menu');if(m)m.remove()}
 function menu(x,y,id){
@@ -477,6 +484,10 @@ const comboOf=e=>{if(['Control','Shift','Alt','Meta'].includes(e.key))return nul
 
 // ---------- events ----------
 function revealTask(id){setTimeout(()=>{const el=document.querySelector('.task[data-id="'+id+'"]');if(!el)return;el.scrollIntoView({block:'center',behavior:reduced()?'auto':'smooth'});el.classList.remove('flash');void el.offsetWidth;el.classList.add('flash')},40)}
+// A timed task typed into the add field also appears as a block: when the timeline pane scrolls on its own, bring the block into view.
+// The stacked-unlocked and phone layouts scroll the whole column or page, which would pull the add field away, so they are left alone.
+function revealBlock(id){const b=document.querySelector(`.hours .blk[data-id="${id}"]`);const tl=b&&b.closest('.tl');if(!tl||getComputedStyle(tl).overflowY!=='auto')return;const r=b.getBoundingClientRect(),s=tl.getBoundingClientRect();const bank=tl.querySelector('.anytime:not(.empty)');const top=s.top+(bank?bank.offsetHeight:0);
+  if(r.top<top)tl.scrollTop-=top-r.top+8;else if(r.bottom>s.bottom)tl.scrollTop+=r.bottom-s.bottom+8}
 function closeDrawer(){const dr=$('.drawer');if(dr&&!reduced()){collapseDrawerEl(dr);setTimeout(()=>{openId=null;render()},240)}else{openId=null;render()}}
 function goDay(ds,dir){if(ds===sel)return;anim.slide=dir||(ds>sel?'slide-l':'slide-r');sel=ds;miniMonth=sel.slice(0,7);cursorId=null}
 function removeTask(id,animate){
@@ -596,9 +607,11 @@ function runSetting(k,b){
   if(k==='openPrivacy')openExternal('https://github.com/zphat/Sundial/blob/main/PRIVACY.md');
   if(k==='syncTab'){sheetTab='data';sheetAnim=true;renderSheet()}
   if(k==='installApp'&&installEvt){const ev=installEvt;installEvt=null;try{ev.prompt();ev.userChoice.finally(()=>renderSheet())}catch(_){renderSheet()}}
+  if(k==='obGo'){obStep=obKeysStep?1:2;renderOnboarding()}
   if(k==='obNext'){obStep=2;renderOnboarding()}
-  if(k==='obBack'){obStep=1;renderOnboarding()}
+  if(k==='obBack'){obStep=(obStep===2&&obKeysStep)?1:0;renderOnboarding()}
   if(k==='obDone'){finishOnboarding(obStyle)}
+  if(k==='openDiscord'&&DISCORD_URL)openExternal(DISCORD_URL);
   if(k==='obCustom'){S().onboarded=true;save();closeScrim();setTimeout(()=>{sheetTab='general';settings();setTimeout(()=>{const kb=document.querySelector('[data-run="recQuick"]');if(kb)kb.click()},250)},260)}
   if(k==='onboard'){closeScrim();setTimeout(()=>onboarding(true),260)}
   if(k==='fitWindow'){closeScrim();setTimeout(fitToWindow,260)}
@@ -670,8 +683,8 @@ document.addEventListener('keydown',e=>{
   if(!globalHotkeys){
     if(combo&&combo===S().quick.hotkey){e.preventDefault();openQuickAdd();return}
     if(combo&&S().voice.enabled&&combo===S().voice.hotkey){e.preventDefault();toggleVoice();return}}
-  if(e.key==='Enter'&&t.id==='qa'){if(Voice.isActive()){Voice.stop();resetMicUi()}const raw=t.value;const n=addTask(raw,sel);if(n){t.value='';previewParse();SFX.play('ui.add');if(n.date!==sel)goDay(n.date);render();$('#qa').focus();aiRefine(n,raw)}return}
-  if(e.key==='Enter'&&t.dataset.adddate){const n=addTask(t.value,t.dataset.adddate);if(n){SFX.play('ui.add');render();const i=document.querySelector(`[data-adddate="${n.date}"]`);if(i)i.focus()}return}
+  if(e.key==='Enter'&&t.id==='qa'){if(Voice.isActive()){Voice.stop();resetMicUi()}const raw=t.value;const n=addTask(raw,sel);if(n){t.value='';previewParse();SFX.play('ui.add');anim.enter=n.id;if(n.date!==sel)goDay(n.date);render();$('#qa').focus();revealBlock(n.id);aiRefine(n,raw)}return}
+  if(e.key==='Enter'&&t.dataset.adddate){const n=addTask(t.value,t.dataset.adddate);if(n){SFX.play('ui.add');anim.enter=n.id;render();const i=document.querySelector(`[data-adddate="${n.date}"]`);if(i)i.focus()}return}
   if(e.key==='Escape'){if($('.menu')){closeMenu();return}if($('.scrim')){closeScrim();return}if(openId){closeDrawer();return}if(cursorId){cursorId=null;render();return}if(typing)t.blur();return}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();openSearch();return}
   if((e.ctrlKey||e.metaKey)&&e.key===','){e.preventDefault();settings();return}
@@ -692,14 +705,17 @@ document.addEventListener('keydown',e=>{
   if(e.key==='1')view='day',render();if(e.key==='2')view='week',render();if(e.key==='3')view='month',render();if(e.key==='4')view='notes',render();
   if(e.key==='[')togglePane('cal');if(e.key===']')togglePane('tl');if(e.key==='\\')togglePane('board');
 });
-function moveCursor(d){if(view!=='day'){view='day';render()}const ids=[...document.querySelectorAll('#list .task[data-id]')].map(x=>x.dataset.id);if(!ids.length)return;let i=ids.indexOf(cursorId);i=i<0?(d>0?0:ids.length-1):Math.max(0,Math.min(ids.length-1,i+d));cursorId=ids[i];document.querySelectorAll('#list .task').forEach(x=>x.classList.toggle('cursor',x.dataset.id===cursorId));document.querySelector(`.task[data-id="${cursorId}"]`)?.scrollIntoView({block:'nearest'})}
+function moveCursor(d){if(view!=='day'){view='day';render()}const ids=[...document.querySelectorAll('#list .task[data-id]')].map(x=>x.dataset.id);if(!ids.length)return;let i=ids.indexOf(cursorId);
+  // K / ArrowUp on the top row hands focus back to the add field (ArrowDown in an empty add field is the way in)
+  if(d<0&&i===0){const q=$('#qa');if(q){cursorId=null;document.querySelectorAll('#list .task.cursor').forEach(x=>x.classList.remove('cursor'));q.focus();return}}
+  i=i<0?(d>0?0:ids.length-1):Math.max(0,Math.min(ids.length-1,i+d));cursorId=ids[i];document.querySelectorAll('#list .task').forEach(x=>x.classList.toggle('cursor',x.dataset.id===cursorId));document.querySelector(`.task[data-id="${cursorId}"]`)?.scrollIntoView({block:'nearest'})}
 
 // drag: reorder within list, drop on a day to move, drop on a timeline hour to schedule
 let dragOff=0,rzState=null,suppressClick=false;
 document.addEventListener('dragstart',e=>{const r=e.target.closest('[data-id]');if(!r||!get(r.dataset.id))return;dragId=r.dataset.id;r.classList.add('dragging');e.dataTransfer.effectAllowed='move';try{e.dataTransfer.setData('text/plain',dragId)}catch(_){}
   // a block keeps the point you grabbed it by, so it lands where it looks like it will
   dragOff=r.classList.contains('blk')?(e.clientY-r.getBoundingClientRect().top)/S().hh*60:0});
-document.addEventListener('dragend',()=>{dragId=null;document.querySelectorAll('.dragging,.over,.drop-before,.drop-after').forEach(x=>{x.classList.remove('dragging','over','drop-before','drop-after');delete x.dataset.drop})});
+document.addEventListener('dragend',()=>{dragId=null;autoScrollStop();document.querySelectorAll('.dragging,.over,.drop-before,.drop-after').forEach(x=>{x.classList.remove('dragging','over','drop-before','drop-after');delete x.dataset.drop})});
 // Where a dragged row would land. Timed tasks keep their time order (the timeline is where a time changes), so a
 // drop among them means "top of the anytime group"; the lower half of a row means "after it".
 function dropTarget(row,y){const d=get(dragId),t=row?get(row.dataset.id):null;if(!d)return {};
@@ -711,10 +727,13 @@ function dropTarget(row,y){const d=get(dragId),t=row?get(row.dataset.id):null;if
   const rc=row.getBoundingClientRect();const after=y>rc.top+rc.height/2;
   if(!after)return {row,after:false,beforeId:t.id};
   const next=rows[rows.indexOf(row)+1];return {row,after:true,beforeId:next?next.dataset.id:null}}
+// the dashed line and its time label where a drop at clientY would land on the hour grid (the drop itself recomputes from its own event, so a rect read then is right after any scrolling)
+function hoursPreview(hr,clientY){const y=clientY-hr.getBoundingClientRect().top;const mins=Math.max(0,Math.min(23*60+45,Math.round(((y/S().hh*60)-dragOff)/15)*15));hr.dataset.drop=fmtTime(mins);hr.style.setProperty('--drop',(mins/60*S().hh)+'px');hr.classList.add('over')}
 document.addEventListener('dragover',e=>{if(!dragId)return;const day=e.target.closest('[data-date],[data-dropdate]');const row=e.target.closest('.task');const hr=e.target.closest('.hours');const list=e.target.closest('#list');const bank=e.target.closest('.anytime');
   if(day||row||hr||list||bank){e.preventDefault();e.dataTransfer.dropEffect='move'}
   document.querySelectorAll('.over,.drop-before,.drop-after').forEach(x=>x.classList.remove('over','drop-before','drop-after'));
-  if(hr){const y=e.clientY-hr.getBoundingClientRect().top;const mins=Math.max(0,Math.min(23*60+45,Math.round(((y/S().hh*60)-dragOff)/15)*15));hr.dataset.drop=fmtTime(mins);hr.style.setProperty('--drop',(mins/60*S().hh)+'px');hr.classList.add('over')}else{document.querySelectorAll('.hours.over').forEach(x=>{x.classList.remove('over');delete x.dataset.drop})}
+  if(hr)hoursPreview(hr,e.clientY);else{document.querySelectorAll('.hours.over').forEach(x=>{x.classList.remove('over');delete x.dataset.drop})}
+  const zone=hr||list;if(zone)autoScrollArm(zone,e.clientY);else autoScrollStop();
   if(bank){bank.classList.add('over');return}
   if(hr)return;
   if(day&&!row){day.classList.add('over');return}
@@ -727,7 +746,51 @@ document.addEventListener('drop',e=>{if(!dragId)return;e.preventDefault();const 
   else if(e.target.closest('.anytime')){const t=get(dragId);if(t&&t.time!=null){upd(dragId,{time:null});toast('Back to anytime',()=>{undo();render()})}}
   else if((row&&row.dataset.id!==dragId)||(list&&!row)){const tgt=dropTarget(row,e.clientY);if(tgt.blocked)toast('Timed tasks keep their time order. Drop it on the timeline to change the time, or clear the time first.');else if(!(row&&row.dataset.id===dragId))reorder(dragId,tgt.beforeId)}
   else if(day&&!row)moveTo(dragId,day.dataset.date||day.dataset.dropdate);
-  dragId=null;dragOff=0;render()});
+  dragId=null;dragOff=0;autoScrollStop();render()});
+
+// ---- scrolling while a task is being dragged ----
+// HTML5 drags deliver no wheel events in most engines, and the engines' own edge auto-scroll is unreliable (WebView2 does nothing for an
+// inner scroller), so the timeline and the day list scroll themselves while the dragged task sits within 48px of the top or bottom of
+// whatever scrolls them: the pane in the side-by-side layout, the column when a stacked pane is unlocked, the page otherwise.
+const AUTO={el:null,zone:null,y:0,top:0,bottom:0,raf:0};
+const BELT=48,BELT_MAX=14;
+const isDocScroller=el=>el===document.scrollingElement||el===document.documentElement;
+// nearest scroll container of el, el included: overflow-y auto or scroll with something to scroll; else the page
+function scrollerFor(el){for(let p=el;p&&p!==document.body;p=p.parentElement){const o=getComputedStyle(p).overflowY;if((o==='auto'||o==='scroll')&&p.scrollHeight>p.clientHeight+1)return p}return document.scrollingElement||document.documentElement}
+// zone: the .hours grid or the #list under the pointer; y: the pointer's clientY from the dragover
+function autoScrollArm(zone,y){const sc=scrollerFor(zone);const r=isDocScroller(sc)?{top:0,bottom:innerHeight}:sc.getBoundingClientRect();
+  let top=Math.max(0,r.top);
+  // the sticky anytime bank covers the top of the hours, so the top belt starts under it
+  if(zone.classList.contains('hours')){const bank=zone.previousElementSibling;if(bank&&bank.classList.contains('anytime')&&!bank.classList.contains('empty')){const b=bank.getBoundingClientRect().bottom;if(b>top&&b<r.bottom)top=b}}
+  AUTO.el=sc;AUTO.zone=zone;AUTO.y=y;AUTO.top=top;AUTO.bottom=Math.min(innerHeight,r.bottom);
+  if(!AUTO.raf&&autoScrollSpeed())AUTO.raf=requestAnimationFrame(autoScrollTick)}
+// px per frame: 0 outside the belts, up to BELT_MAX at the very edge; negative scrolls up
+function autoScrollSpeed(){const y=AUTO.y;if(y>=AUTO.top-4&&y<AUTO.top+BELT)return -Math.ceil((1-Math.max(0,y-AUTO.top)/BELT)*BELT_MAX);if(y<=AUTO.bottom+4&&y>AUTO.bottom-BELT)return Math.ceil((1-Math.max(0,AUTO.bottom-y)/BELT)*BELT_MAX);return 0}
+function autoScrollTick(){AUTO.raf=0;if(!dragId||!AUTO.el)return;const v=autoScrollSpeed();if(!v)return;const was=AUTO.el.scrollTop;AUTO.el.scrollTop=was+v;if(AUTO.el.scrollTop===was)return;
+  // the hours slid under a still pointer: move the dashed drop line with them
+  if(AUTO.zone.classList.contains('hours'))hoursPreview(AUTO.zone,AUTO.y);
+  AUTO.raf=requestAnimationFrame(autoScrollTick)}
+function autoScrollStop(){if(AUTO.raf)cancelAnimationFrame(AUTO.raf);AUTO.raf=0;AUTO.el=null;AUTO.zone=null}
+
+// Wheel over the anytime bank scrolls it sideways: a mouse wheel only goes up and down, and the chips only go left and right.
+// Trackpads that send a real horizontal delta keep the browser's own scrolling. Only when there is something to scroll to;
+// with nothing hidden the event passes through and the timeline scrolls as before.
+document.addEventListener('wheel',e=>{
+  const chips=e.target.closest('.anytime .chips');
+  if(chips&&!dragId&&chips.scrollWidth>chips.clientWidth+1&&Math.abs(e.deltaY)>Math.abs(e.deltaX)){
+    const k=e.deltaMode===1?16:e.deltaMode===2?chips.clientWidth:1;
+    chips.scrollLeft+=e.deltaY*k;e.preventDefault();return}
+  // mid-drag: engines that deliver wheel events during a drag scroll whatever the task is over (harmless where they do not)
+  if(dragId&&AUTO.el){const k=e.deltaMode===1?16:e.deltaMode===2?AUTO.el.clientHeight:1;AUTO.el.scrollTop+=e.deltaY*k;if(AUTO.zone&&AUTO.zone.classList.contains('hours'))hoursPreview(AUTO.zone,AUTO.y);e.preventDefault()}
+},{passive:false});
+
+// Double-click an empty hour: the add field gets that time, you type the title and press Enter. The 15-minute slot under the pointer.
+document.addEventListener('dblclick',e=>{const hr=e.target.closest('.hours');if(!hr||e.target.closest('.blk')||rzState)return;
+  const y=e.clientY-hr.getBoundingClientRect().top;const mins=Math.max(0,Math.min(23*60+45,Math.floor(y/S().hh*60/15)*15));const tok=fmtTime(mins)+' ';
+  try{getSelection().removeAllRanges()}catch(_){}
+  if(!state.layout.board){openQuickAdd();const q=$('#qq');if(q){q.value=tok;q.dispatchEvent(new Event('input'))}return}
+  if(view!=='day'){view='day';render()}
+  const q=$('#qa');if(!q)return;q.value=(q.value.trim()?q.value.trim()+' ':'')+tok;q.focus();q.setSelectionRange(q.value.length,q.value.length);previewParse()});
 
 // Stretch a timeline block by its bottom edge: 15-minute steps, live preview, one undo step on release.
 document.addEventListener('pointerdown',e=>{const h=e.target.closest('.rz');if(!h||e.button!==0)return;const blk=h.closest('.blk');const t=get(h.dataset.rz);if(!blk||!t)return;
@@ -772,30 +835,43 @@ function hotkeyNote(){const steps=plat.desktop==='kde'?'KDE: System Settings →
   return `System-wide shortcuts are not possible on Wayland, so this key works while Sundial is focused. For anywhere: in your desktop's keyboard settings, add a shortcut that runs <code>xdg-open sundial://quick-add</code> (and <code>xdg-open sundial://voice</code> for the microphone). ${steps} `}
 // obKeysStep: whether the hotkey step is part of this run. The desktop always has it; in a browser the combo only works while
 // the tab has focus, so first-run setup skips it there and starts at the sync step. Settings → "Choose a style" passes force.
-let obStep=1,obStyle='quick',obSync='local',obKeysStep=true;
+// obWelcome: whether this run opens on the welcome page. Every first run does; Settings → "Choose a style" (force) goes straight to the hotkey step.
+let obStep=1,obStyle='quick',obSync='local',obKeysStep=true,obWelcome=true;
 function onboarding(force){
   if($('.scrim'))closeScrim();
-  obKeysStep=!noKeys()&&(!!window.SundialDesktop||!!force);obStep=obKeysStep?1:2;obStyle=HOTKEY_STYLES[hotkeyStyle()]?hotkeyStyle():'quick';obSync=Sync.st().mode==='off'?'local':Sync.st().mode;
+  obKeysStep=!noKeys()&&(!!window.SundialDesktop||!!force);obWelcome=!force;obStep=obWelcome?0:(obKeysStep?1:2);obStyle=HOTKEY_STYLES[hotkeyStyle()]?hotkeyStyle():'quick';obSync=Sync.st().mode==='off'?'local':Sync.st().mode;
   const s=scrim(`<div class="ob"></div>`,'sheet');s.classList.add('ob-host');renderOnboarding();
 }
+// Step labels: the pages this run shows, numbered in order (welcome, hotkeys, sync). A one-page run (forced, no keyboard) says only the suffix.
+function obLabel(step,sfx){const pages=[obWelcome?0:null,obKeysStep?1:null,2].filter(x=>x!=null);const n=pages.indexOf(step)+1,t=pages.length;return (t>1?'Step '+n+' of '+t:'')+(sfx?(t>1?' · ':'')+sfx:'')}
 function renderOnboarding(){const host=document.querySelector('.ob-host:not(.out) .ob');if(!host)return;
+  if(obStep===0){
+    host.innerHTML=`<div class="ob-welcome"><h2>Welcome to Sundial</h2><div class="ob-step">${obLabel(0)}</div>
+    <p class="lead">Sundial is a day planner that tries to stay out of your way. Fewer clicks, fewer decisions, nothing to learn before it is useful. Type a line like “call Sam 3pm” and it is on the day.</p>
+    <div class="ob-notes">
+      <div class="ob-note"><span class="eyebrow">Beta</span><p>Sundial is in beta. It works, it has rough edges, and things will move around between versions. When something breaks or gets in your way, say so.</p></div>
+      <div class="ob-note"><span class="eyebrow">Sync</span><p>Sync is optional, and free while the beta lasts. Sign up during the beta and you pay $9.99 a year once billing starts, for as long as you stay subscribed. New accounts after the beta pay $2.49 a month or $19.99 a year. The beta is not ending soon. When it does, you get 30 days' notice, and you choose: keep syncing, run your own copy of the server (it is open source), or go local.</p></div>
+      <div class="ob-note"><span class="eyebrow">Feedback</span><p>Tell me what you think, and what broke.</p><div class="ob-links">${DISCORD_URL?'<button class="btn" data-run="openDiscord">Join the Discord</button>':''}<button class="btn" data-run="openIssues">hello@sundial.services</button></div></div>
+    </div>
+    <div class="ob-foot"><span class="spacer"></span><button class="btn primary" data-run="obGo">Let's go</button></div></div>`;
+    return}
   if(obStep===1){
     const card=(k,title,sub,st)=>`<button class="ob-card" data-style="${k}" aria-pressed="${obStyle===k}"><b>${title}</b><span class="combo">${esc(st.quick)}</span><small>${sub}<br>Voice: <span style="font-family:var(--f-mono)">${esc(st.voice)}</span></small></button>`;
-    host.innerHTML=`<h2>Welcome to Sundial</h2><div class="ob-step">Step 1 of 2 · Quick add</div><p>Pick the shortcut that opens a small add-a-task box ${window.SundialDesktop?(wayland()?'while Sundial is focused':'from anywhere on your desktop'):'while Sundial is open'}. You can change it any time in Settings.${wayland()?' On Wayland a system-wide key comes from your desktop\'s keyboard settings: add a shortcut that runs <code>xdg-open sundial://quick-add</code>. Settings → General shows the steps.':''}</p>
+    host.innerHTML=`<h2>Pick a shortcut</h2><div class="ob-step">${obLabel(1,'Quick add')}</div><p>Pick the shortcut that opens a small add-a-task box ${window.SundialDesktop?(wayland()?'while Sundial is focused':'from anywhere on your desktop'):'while Sundial is open'}. You can change it any time in Settings.${wayland()?' On Wayland a system-wide key comes from your desktop\'s keyboard settings: add a shortcut that runs <code>xdg-open sundial://quick-add</code>. Settings → General shows the steps.':''}</p>
     <div class="ob-cards">${card('quick','Quick','Two keys. Best if you mostly type.',HOTKEY_STYLES.quick)}${card('gaming','Gaming','Three keys, out of the way of games.',HOTKEY_STYLES.gaming)}</div>
-    <div class="ob-foot"><button class="btn" data-run="obCustom">Record my own…</button><span class="spacer"></span><button class="btn primary" data-run="obNext">Next</button></div>`;
+    <div class="ob-foot">${obWelcome?'<button class="btn" data-run="obBack">Back</button>':''}<button class="btn" data-run="obCustom">Record my own…</button><span class="spacer"></span><button class="btn primary" data-run="obNext">Next</button></div>`;
     return}
   const sy=Sync.st(),connected=sy.mode!=='off',D=window.SundialDesktop;
   const pick=(k,title,sub)=>`<button class="ob-card" data-sync="${k}" aria-pressed="${obSync===k}"><b>${title}</b><small>${sub}</small></button>`;
   const done=connected?(sy.keyOk?'Done':'Finish setup later'):(obSync==='local'?'Start':'Skip for now');
-  host.innerHTML=`<h2>Where do your days live?</h2><div class="ob-step">${obKeysStep?'Step 2 of 2 · Optional':'Optional'}</div><p>Sundial is complete on this ${DEV()} alone. Sync is there when you want the same days on another device.</p>
+  host.innerHTML=`<h2>Where do your days live?</h2><div class="ob-step">${obLabel(2,'Optional')}</div><p>Sundial is complete on this ${DEV()} alone. Sync is there when you want the same days on another device.</p>
     <div class="ob-cards three">
       ${pick('local',D?'Just this PC':'Just this browser',D?'Everything stays on this machine. Switch on sync any time in Settings → Data & sync.':'Everything stays in this browser on this device. Clearing site data for '+esc(location.host)+' deletes your days unless sync is on. Switch on sync any time in Settings → Data & sync.')}
       ${pick('hosted','Sundial Sync <span class="plan">Free in beta</span>',D?'The same days on all your PCs, end-to-end encrypted, hosted in Switzerland. Free during the beta, no card needed; afterwards $2.49 a month or $19.99 a year, and beta accounts keep $9.99 a year for as long as they stay subscribed.':'The same days everywhere you open Sundial: this browser, the Windows app, another browser. End-to-end encrypted, hosted in Switzerland. Free during the beta, no card needed; afterwards $2.49 a month or $19.99 a year, and beta accounts keep $9.99 a year for as long as they stay subscribed.')}
       ${pick('self','My own server','Run the open-source sync server yourself and point Sundial at it.')}
     </div>
     ${obSync!=='local'||connected?`<div class="ob-sync">${syncRows(S(),optRow,true)}</div>`:''}
-    <div class="ob-foot">${obKeysStep?'<button class="btn" data-run="obBack">Back</button>':''}<span class="spacer"></span><button class="btn primary" data-run="obDone">${done}</button></div>`;
+    <div class="ob-foot">${obKeysStep||obWelcome?'<button class="btn" data-run="obBack">Back</button>':''}<span class="spacer"></span><button class="btn primary" data-run="obDone">${done}</button></div>`;
   bindFinBox();
 }
 function finishOnboarding(style){const st=S();if(HOTKEY_STYLES[style]){st.quick.hotkey=HOTKEY_STYLES[style].quick;st.voice.hotkey=HOTKEY_STYLES[style].voice}st.onboarded=true;save();syncHotkeys();closeScrim();
@@ -1005,7 +1081,7 @@ function desktopGeneralRows(){const linux=isLinux(),pkg=plat.install==='package'
   +(tray?`<div class="opt"><div>Closing the window<small>Hides Sundial to the tray so reminders keep firing. Quit is in the tray icon menu.</small></div><div class="ctl"><span class="soon">Tray</span></div></div>`
     :`<div class="opt"><div>Closing the window<small>Quits Sundial. This desktop shows no tray icon, so reminders fire only while the window is open.</small></div><div class="ctl"><span class="soon">Quit</span></div></div>`)
   +`<div class="opt"><div>Your data<small>One JSON file on this PC, plus a daily backup folder beside it.</small></div><div class="ctl"><button class="btn" data-run="revealData">Show folder</button></div></div>`
-  +`<div class="opt"><div>About<small>Sundial ${esc(appVersion||'')} · beta. Tell me what breaks or annoys you: hello@sundial.services</small></div><div class="ctl"><button class="btn" data-run="openNotes">What's new</button><button class="btn" data-run="openIssues">Send feedback</button><button class="btn" data-run="openPrivacy">Privacy</button></div></div>`}
+  +`<div class="opt"><div>About<small>Sundial ${esc(appVersion||'')} · beta. Tell me what breaks or annoys you: hello@sundial.services</small></div><div class="ctl"><button class="btn" data-run="openNotes">What's new</button>${DISCORD_URL?'<button class="btn" data-run="openDiscord">Discord</button>':''}<button class="btn" data-run="openIssues">Send feedback</button><button class="btn" data-run="openPrivacy">Privacy</button></div></div>`}
 // The web's own General rows: where the data lives, install, about. The desktop has desktopGeneralRows().
 function webGeneralRows(){const sy=Sync.st(),synced=sy.mode!=='off'&&sy.keyOk;
   const p=storagePersistent==null?'':storagePersistent?' The browser has marked it persistent.':' The browser may clear it when space runs low.';
@@ -1017,7 +1093,7 @@ function webGeneralRows(){const sy=Sync.st(),synced=sy.mode!=='off'&&sy.keyOk;
   return `<div class="opt"><div>Your data<small>${where}</small></div><div class="ctl">${synced?'':'<button class="btn" data-run="syncTab">Turn on sync</button>'}</div></div>`
     +`<div class="opt"><div>Backup<small>Tasks, notes, labels and the change log, as JSON. Routines and settings are not included. Paste it back under Data & sync, Import JSON.</small></div><div class="ctl"><button class="btn" data-run="expJson">Copy tasks and notes</button></div></div>`
     +install
-    +`<div class="opt"><div>About<small>Sundial ${esc(appVersion||'dev')} · web beta. Tell me what breaks or annoys you: hello@sundial.services</small></div><div class="ctl"><button class="btn" data-run="openNotes">What's new</button><button class="btn" data-run="openIssues">Send feedback</button><button class="btn" data-run="openPrivacy">Privacy</button></div></div>`}
+    +`<div class="opt"><div>About<small>Sundial ${esc(appVersion||'dev')} · web beta. Tell me what breaks or annoys you: hello@sundial.services</small></div><div class="ctl"><button class="btn" data-run="openNotes">What's new</button>${DISCORD_URL?'<button class="btn" data-run="openDiscord">Discord</button>':''}<button class="btn" data-run="openIssues">Send feedback</button><button class="btn" data-run="openPrivacy">Privacy</button></div></div>`}
 function aiTab(st,opt,tog){const a=st.ai,D=window.SundialDesktop;
   let h=opt('AI parsing','Optional. The instant parse always runs first; then your own model reads the line and fills in what the rules missed: times in words, notes, the right color. Your key, your bill.',tog('ai.enabled'));
   if(!a.enabled)return h;
