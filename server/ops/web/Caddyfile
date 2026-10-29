@@ -55,11 +55,13 @@
 	}
 }
 
-# Sync API: the Rust server on 127.0.0.1:8768. This block was written from the repo's docs, not copied
-# from the box: before installing, copy the live sync block (and any global options block) over it
-# verbatim, keep the sslip.io name only if the live file has it, and keep the import privlog line
-# (README step 6). The log file keeps the name the box already rolls, access.log.
-sync.sundial.services, 89-145-167-185.sslip.io {
+# Sync API: the Rust server (sundial-sync.service) on 127.0.0.1:8768. The log file keeps the name the
+# first box rolled, access.log.
+# Name only hosts whose DNS points at this box: Caddy keeps retrying a certificate it cannot get. The
+# first box also answered on 89-145-167-185.sslip.io, a name that always resolves to that box's IP, so
+# it was dropped for the move to a new box (../MIGRATE.md). A device still set to that URL must switch
+# to https://sync.sundial.services.
+sync.sundial.services {
 	encode zstd gzip
 	import common_headers
 	reverse_proxy 127.0.0.1:8768
