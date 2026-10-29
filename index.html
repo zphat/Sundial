@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="Sundial: a calendar, to-do and daily-notes app for Windows, Linux and the browser. Local-first, with optional end-to-end encrypted sync hosted in Switzerland.">
+<title>Sundial</title>
+<link rel="icon" href="img/mark-64.png" type="image/png"><link rel="apple-touch-icon" href="img/mark-128.png">
+<style>
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px 0;background:#0B0C0B;color:#E9ECE2;font-family:'Segoe UI',Helvetica,Arial,sans-serif}
+main{width:min(960px,calc(100% - 32px));background:#121412;border:1px solid #262B24;border-radius:20px;padding:32px 30px;box-shadow:0 30px 80px -30px #000}
+.brand{font-family:'Courier New',monospace;font-size:12px;letter-spacing:.22em;color:#D1FF4A;font-weight:bold}
+.beta{display:inline-block;margin-left:12px;padding:2px 8px;border:1px solid #2A3027;border-radius:999px;font-size:11px;letter-spacing:.08em;color:#9BA392}
+h1{font-size:30px;line-height:1.15;margin:16px 0 14px}
+p{margin:0 0 12px;color:#9BA392;font-size:15px;line-height:1.6}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}
+a.btn{font:inherit;font-weight:bold;font-size:14px;border-radius:999px;padding:12px 20px;text-decoration:none;border:1px solid #2A3027;background:#1B2117;color:#E9ECE2}
+a.primary{background:#D1FF4A;color:#0B0D06;border-color:transparent}
+a.btn:hover{filter:brightness(1.08)}
+a:focus-visible{outline:2px solid #D1FF4A;outline-offset:2px}
+small{display:block;margin-top:18px;color:#7E8679;font-size:12.5px;line-height:1.5}
+small a{color:#9BA392;text-decoration:underline;text-underline-offset:2px}small a:hover{color:#E9ECE2}
+nav{display:flex;gap:18px;flex-wrap:wrap;margin-top:22px;padding-top:16px;border-top:1px solid #262B24;font-size:13px}
+nav a{color:#9BA392;text-decoration:none}
+nav a:hover{color:#E9ECE2}
+.notice{margin-top:22px;padding:14px 16px;border:1px solid #3A4A1E;border-radius:12px;background:#171C10;color:#C9D1BF;font-size:14px;line-height:1.55}
+.notice b{color:#D1FF4A}
+.shots{display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-top:28px;padding-top:24px;border-top:1px solid #262B24}
+.shots figure{margin:0;min-width:0}
+.shots img{display:block;width:100%;height:auto;border-radius:12px;border:1px solid #262B24;background:#0B0C0B}
+.shots .hero{grid-column:1/-1}
+.shots figcaption{margin-top:8px;color:#7E8679;font-size:12.5px;line-height:1.5}
+.shots .phone{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:center}
+.shots .phone img{width:132px;border-radius:14px}
+.shots .phone figcaption{margin:0}
+@media (max-width:640px){.shots{grid-template-columns:1fr}.shots .phone{grid-template-columns:auto 1fr}.shots .phone img{width:108px}}
+@media (max-width:420px){main{padding:26px 20px}h1{font-size:26px}a.btn{width:100%;text-align:center}}
+</style>
+</head>
+<body>
+<main>
+<div class="brand"><img src="img/mark-128.png" width="22" height="22" alt="" style="vertical-align:-6px;margin-right:9px">SUNDIAL<span class="beta">BETA</span></div>
+<h1>Days, tasks and notes. Yours.</h1>
+<p>Sundial is a calendar, to-do and daily-notes app for Windows and Linux, and a version for the browser. Your data lives on your own device. Sync between devices is optional and end-to-end encrypted, on a server in Switzerland. Sundial is in beta.</p>
+<div class="row">
+<a class="btn primary" href="https://github.com/zphat/Sundial/releases/latest/download/Sundial-Setup.exe">Download for Windows</a>
+<a class="btn" href="https://github.com/zphat/Sundial/releases/latest">Download for Linux</a>
+</div>
+<small>Windows will warn once because the app is not signed yet: More info, then Run anyway.<br>Linux: <a href="https://github.com/zphat/Sundial/releases/latest/download/Sundial.rpm">rpm</a> for Fedora and openSUSE, <a href="https://github.com/zphat/Sundial/releases/latest/download/Sundial.deb">deb</a> for Ubuntu, Mint and Debian, <a href="https://github.com/zphat/Sundial/releases/latest/download/Sundial.AppImage">AppImage</a> for anything else. The AppImage updates itself.</small>
+<div class="notice"><b>Sync is paused for a couple of weeks.</b> Sundial is moving to a smaller server. The Windows and Linux apps work fully offline in the meantime, and sync picks up again on its own when the server is back. The browser version returns with it.</div>
+<section class="shots" aria-label="What Sundial looks like">
+<figure class="hero"><img src="img/day.webp" width="1280" height="800" alt="Sundial on a desktop: the month calendar and colour legend on the left, the day's task list in the middle with a quick-add line, and the timeline on the right with the current time marked"><figcaption>One window for the day: calendar, the task list with a one-line add box, and the hour timeline with untimed tasks parked above it. Drag a task onto an hour, or stretch a block to how long it takes.</figcaption></figure>
+<figure class="hero"><img src="img/notes.webp" width="1280" height="800" alt="The notes view: a page for the day with headings, highlights in the six colours and a short list"><figcaption>A page of notes for every day, with highlights in your six colours.</figcaption></figure>
+</section>
+<nav>
+<a href="https://github.com/zphat/Sundial/blob/main/PRIVACY.md">Privacy</a>
+<a href="https://github.com/zphat/Sundial">Source</a>
+<a href="https://github.com/zphat/Sundial/blob/main/docs/CODE-SIGNING.md">Code signing</a>
+<a href="mailto:hello@sundial.services">Contact</a>
+</nav>
+<small>This temporary page is served by GitHub Pages, so GitHub sees your IP address when you visit. The app itself sends nothing to GitHub except its update check.</small>
+</main>
+</body>
+</html>
