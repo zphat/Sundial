@@ -34,8 +34,8 @@ const secretStore=()=>plat.os==='linux'?(secretKind==='file'?'a file next to you
 // Resolves to the current kind, or the cached one when the shell cannot say; never rejects, so it can sit in a .then chain.
 const refreshSecretKind=()=>{const D=window.SundialDesktop;if(!D||!D.secretStore||plat.os!=='linux')return Promise.resolve(secretKind);return D.secretStore().then(k=>{secretKind=k;return k}).catch(()=>secretKind)};
 const RELEASES_URL='https://github.com/zphat/Sundial/releases/latest';
-// Discord invite for feedback. Empty until the server exists: the welcome page and the About row show a Discord button only when this is set.
-const DISCORD_URL='';
+// Discord invite for feedback (the mood.tech server; the invite never expires). The welcome page and the About row point here.
+const DISCORD_URL='https://discord.gg/EnPRdDutAn';
 // a touch device with no keyboard worth picking shortcuts for
 const noKeys=()=>!window.SundialDesktop&&matchMedia('(hover:none) and (pointer:coarse)').matches;
 
@@ -603,7 +603,6 @@ function runSetting(k,b){
   if(k==='syncResetGo'){const s=Sync.st();const code=$('#syncResetIn')?.value||'';if(s.mode==='hosted'&&code.replace(/\D/g,'').length<6){toast('Enter the six-digit code from the email');return}b.textContent='…';b.disabled=true;const em=s.email;
     Sync.deleteAccount(code).then(()=>{syncSetup.reset=null;syncFlowReset();syncSetup.codeSent=false;syncSetup.email=em||syncSetup.email;syncRefresh();toast('Synced copy erased. Sign in again on the PC that has your days: it uploads them again and shows a new recovery code.')}).catch(e=>{b.textContent='Erase and start over';b.disabled=false;toast(e.message||String(e))})}
   if(k==='openNotes')openExternal('https://github.com/zphat/Sundial/releases/latest');
-  if(k==='openIssues'){copy('hello@sundial.services','Address');openExternal('mailto:hello@sundial.services?subject='+encodeURIComponent('Sundial '+(appVersion?appVersion+' ':'')+'feedback'))}
   if(k==='openPrivacy')openExternal('https://github.com/zphat/Sundial/blob/main/PRIVACY.md');
   if(k==='syncTab'){sheetTab='data';sheetAnim=true;renderSheet()}
   if(k==='installApp'&&installEvt){const ev=installEvt;installEvt=null;try{ev.prompt();ev.userChoice.finally(()=>renderSheet())}catch(_){renderSheet()}}
@@ -611,7 +610,7 @@ function runSetting(k,b){
   if(k==='obNext'){obStep=2;renderOnboarding()}
   if(k==='obBack'){obStep=(obStep===2&&obKeysStep)?1:0;renderOnboarding()}
   if(k==='obDone'){finishOnboarding(obStyle)}
-  if(k==='openDiscord'&&DISCORD_URL)openExternal(DISCORD_URL);
+  if(k==='openDiscord')openExternal(DISCORD_URL);
   if(k==='obCustom'){S().onboarded=true;save();closeScrim();setTimeout(()=>{sheetTab='general';settings();setTimeout(()=>{const kb=document.querySelector('[data-run="recQuick"]');if(kb)kb.click()},250)},260)}
   if(k==='onboard'){closeScrim();setTimeout(()=>onboarding(true),260)}
   if(k==='fitWindow'){closeScrim();setTimeout(fitToWindow,260)}
@@ -851,7 +850,7 @@ function renderOnboarding(){const host=document.querySelector('.ob-host:not(.out
     <div class="ob-notes">
       <div class="ob-note"><span class="eyebrow">Beta</span><p>Sundial is in beta. It works, it has rough edges, and things will move around between versions. When something breaks or gets in your way, say so.</p></div>
       <div class="ob-note"><span class="eyebrow">Sync</span><p>Sync is optional, and free while the beta lasts. Sign up during the beta and you pay $9.99 a year once billing starts, for as long as you stay subscribed. New accounts after the beta pay $2.49 a month or $19.99 a year. The beta is not ending soon. When it does, you get 30 days' notice, and you choose: keep syncing, run your own copy of the server (it is open source), or go local.</p></div>
-      <div class="ob-note"><span class="eyebrow">Feedback</span><p>Tell me what you think, and what broke.</p><div class="ob-links">${DISCORD_URL?'<button class="btn" data-run="openDiscord">Join the Discord</button>':''}<button class="btn" data-run="openIssues">hello@sundial.services</button></div></div>
+      <div class="ob-note"><span class="eyebrow">Feedback</span><p>Tell me what you think, and what broke.</p><div class="ob-links"><button class="btn" data-run="openDiscord">Join the Discord</button></div></div>
     </div>
     <div class="ob-foot"><span class="spacer"></span><button class="btn primary" data-run="obGo">Let's go</button></div></div>`;
     return}
@@ -1081,7 +1080,7 @@ function desktopGeneralRows(){const linux=isLinux(),pkg=plat.install==='package'
   +(tray?`<div class="opt"><div>Closing the window<small>Hides Sundial to the tray so reminders keep firing. Quit is in the tray icon menu.</small></div><div class="ctl"><span class="soon">Tray</span></div></div>`
     :`<div class="opt"><div>Closing the window<small>Quits Sundial. This desktop shows no tray icon, so reminders fire only while the window is open.</small></div><div class="ctl"><span class="soon">Quit</span></div></div>`)
   +`<div class="opt"><div>Your data<small>One JSON file on this PC, plus a daily backup folder beside it.</small></div><div class="ctl"><button class="btn" data-run="revealData">Show folder</button></div></div>`
-  +`<div class="opt"><div>About<small>Sundial ${esc(appVersion||'')} · beta. Tell me what breaks or annoys you: hello@sundial.services</small></div><div class="ctl"><button class="btn" data-run="openNotes">What's new</button>${DISCORD_URL?'<button class="btn" data-run="openDiscord">Discord</button>':''}<button class="btn" data-run="openIssues">Send feedback</button><button class="btn" data-run="openPrivacy">Privacy</button></div></div>`}
+  +`<div class="opt"><div>About<small>Sundial ${esc(appVersion||'')} · beta. Tell me what breaks or annoys you in the Discord.</small></div><div class="ctl"><button class="btn" data-run="openNotes">What's new</button><button class="btn" data-run="openDiscord">Discord</button><button class="btn" data-run="openPrivacy">Privacy</button></div></div>`}
 // The web's own General rows: where the data lives, install, about. The desktop has desktopGeneralRows().
 function webGeneralRows(){const sy=Sync.st(),synced=sy.mode!=='off'&&sy.keyOk;
   const p=storagePersistent==null?'':storagePersistent?' The browser has marked it persistent.':' The browser may clear it when space runs low.';
@@ -1093,7 +1092,7 @@ function webGeneralRows(){const sy=Sync.st(),synced=sy.mode!=='off'&&sy.keyOk;
   return `<div class="opt"><div>Your data<small>${where}</small></div><div class="ctl">${synced?'':'<button class="btn" data-run="syncTab">Turn on sync</button>'}</div></div>`
     +`<div class="opt"><div>Backup<small>Tasks, notes, labels and the change log, as JSON. Routines and settings are not included. Paste it back under Data & sync, Import JSON.</small></div><div class="ctl"><button class="btn" data-run="expJson">Copy tasks and notes</button></div></div>`
     +install
-    +`<div class="opt"><div>About<small>Sundial ${esc(appVersion||'dev')} · web beta. Tell me what breaks or annoys you: hello@sundial.services</small></div><div class="ctl"><button class="btn" data-run="openNotes">What's new</button>${DISCORD_URL?'<button class="btn" data-run="openDiscord">Discord</button>':''}<button class="btn" data-run="openIssues">Send feedback</button><button class="btn" data-run="openPrivacy">Privacy</button></div></div>`}
+    +`<div class="opt"><div>About<small>Sundial ${esc(appVersion||'dev')} · web beta. Tell me what breaks or annoys you in the Discord.</small></div><div class="ctl"><button class="btn" data-run="openNotes">What's new</button><button class="btn" data-run="openDiscord">Discord</button><button class="btn" data-run="openPrivacy">Privacy</button></div></div>`}
 function aiTab(st,opt,tog){const a=st.ai,D=window.SundialDesktop;
   let h=opt('AI parsing','Optional. The instant parse always runs first; then your own model reads the line and fills in what the rules missed: times in words, notes, the right color. Your key, your bill.',tog('ai.enabled'));
   if(!a.enabled)return h;

@@ -43,4 +43,4 @@ Needs an Apple Developer account and a macOS runner; Tauri 2 Mobile builds the a
 
 ## Refinement, alongside everything
 
-Use it daily, collect what friends report at hello@sundial.services, and fix what hurts. Known items: drag and drop on touch, routines and settings in the JSON export, reminders only while a web tab is open, a scroll-to-now on the phone timeline.
+Use it daily, collect what friends report in the Discord (https://discord.gg/EnPRdDutAn), and fix what hurts. Known items: drag and drop on touch, routines and settings in the JSON export, reminders only while a web tab is open, a scroll-to-now on the phone timeline.

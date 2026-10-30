@@ -51,7 +51,7 @@ What the server stores is written up in [PRIVACY.md](PRIVACY.md). You can also r
 
 ## Feedback
 
-Email hello@sundial.services. The Send feedback button in Settings starts the email with the version number in the subject. Say what you did, what you expected and what happened. Bugs that aren't private can also go to https://github.com/zphat/Sundial/issues; issues are public, so keep private details out of them.
+Join the Discord: https://discord.gg/EnPRdDutAn (Settings, About, Discord opens it too). Say what you did, what you expected and what happened, and which version Settings shows. For anything private, email hello@sundial.services. Bugs that aren't private can also go to https://github.com/zphat/Sundial/issues; issues are public, so keep private details out of them.
 
 ## For developers
 
