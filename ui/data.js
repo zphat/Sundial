@@ -58,8 +58,13 @@ function slimPatch(p){if(!p||typeof p!=='object'||Array.isArray(p))return p??nul
 function slimOp(o){if(o&&typeof o==='object')o.patch=slimPatch(o.patch)}
 // In a browser localStorage is the only store, so a failed write (quota, blocked site data) is reported once through
 // onSaveFailed, which ui.js defines. The desktop still writes through its own bridge regardless.
-let saveFailed=false;
-const save=()=>{const j=JSON.stringify(state);try{localStorage.setItem(KEY,j);saveFailed=false}catch(e){if(!window.SundialDesktop&&!saveFailed){saveFailed=true;if(typeof onSaveFailed==='function')onSaveFailed(e)}}if(window.SundialDesktop)window.SundialDesktop.save(j)};
+let saveFailed=false,saveT=null;
+// While a field is being typed in, the whole state is not written out on every key: saveSoon() makes it one write per
+// 600 ms at most. Everything else calls save(), which also carries any write that was waiting. ui.js calls flushSave()
+// when a field is left and when the window is hidden or closed, so nothing typed waits longer than that.
+const saveSoon=()=>{if(saveT==null)saveT=setTimeout(save,600)};
+const flushSave=()=>{if(saveT!=null)save()};
+const save=()=>{clearTimeout(saveT);saveT=null;const j=JSON.stringify(state);try{localStorage.setItem(KEY,j);saveFailed=false}catch(e){if(!window.SundialDesktop&&!saveFailed){saveFailed=true;if(typeof onSaveFailed==='function')onSaveFailed(e)}}if(window.SundialDesktop)window.SundialDesktop.save(j)};
 const deepMerge=(a,b)=>{for(const k in b){if(b[k]&&typeof b[k]==='object'&&!Array.isArray(b[k])){a[k]=deepMerge(a[k]&&typeof a[k]==='object'?a[k]:{},b[k])}else a[k]=b[k]}return a};
 // The seeded demo note, matched exactly by clearExamples so an edited note is never mistaken for it.
 const EXAMPLE_NOTE='<h2>Example day note</h2><p>This page is per day. Select text and hit a highlighter, or <b>B</b> / <i>I</i> / list.</p><ul><li>Call back about the <mark style="background:'+HL.acid+'">invoice</mark></li><li>Idea for ep. 13: <mark style="background:'+HL.violet+'">the subscription trap</mark></li></ul>';
@@ -153,7 +158,17 @@ function parse(raw,baseDate){
   // whole month names only: "marketing 3" and "decide 2" are not dates
   const MONRE='(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
   let explicit=false;
-  take(/\s(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)\s/i,m=>{if(+m[1]<1||+m[1]>12||+(m[2]||0)>59)return false;let h=+m[1]%12;if(/^p/i.test(m[3]))h+=12;out.time=h*60+(+(m[2]||0));out.hits.push('⏰ '+fmtTime(out.time))});
+  // "3-4pm", "9:30-11am", "2pm to 3:30pm", "14:00-15:30": a start time and a length. A start without am or pm takes
+  // the end's, unless that would put it after the end ("11-1pm" starts at 11am). "10pm-1am" runs past midnight.
+  const span=(start,end)=>{let dur=end-start;if(dur<=0)dur+=1440;out.time=start;out.dur=dur;out.hits.push('⏰ '+fmtTime(start));out.hits.push('⧗ '+fmtDur(dur))};
+  take(/\s(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)?\s*(?:-|–|—|to)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)\s/i,m=>{
+    const h1=+m[1],n1=+(m[2]||0),h2=+m[4],n2=+(m[5]||0);if(h1<1||h1>12||h2<1||h2>12||n1>59||n2>59)return false;
+    const pm=x=>/^p/i.test(x),at=(h,n,p)=>(h%12+(p?12:0))*60+n,end=at(h2,n2,pm(m[6]));
+    let start=at(h1,n1,pm(m[3]||m[6]));if(!m[3]&&start>=end)start=at(h1,n1,!pm(m[6]));
+    span(start,end)});
+  if(out.time==null)take(/\s(\d{1,2}):(\d{2})\s*(?:-|–|—|to)\s*(\d{1,2}):(\d{2})\s/,m=>{if(+m[1]>23||+m[3]>23||+m[2]>59||+m[4]>59)return false;span(+m[1]*60+(+m[2]),+m[3]*60+(+m[4]))});
+  if(out.time==null)take(/\s(?:at\s+)?(noon|midday|midnight)\s/i,m=>{out.time=/midnight/i.test(m[1])?0:720;out.hits.push('⏰ '+fmtTime(out.time))});
+  if(out.time==null)take(/\s(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)\s/i,m=>{if(+m[1]<1||+m[1]>12||+(m[2]||0)>59)return false;let h=+m[1]%12;if(/^p/i.test(m[3]))h+=12;out.time=h*60+(+(m[2]||0));out.hits.push('⏰ '+fmtTime(out.time))});
   if(out.time==null)take(/\s(\d{1,2}):(\d{2})\s/,m=>{if(+m[1]>23||+m[2]>59)return false;out.time=(+m[1])*60+(+m[2]);out.hits.push('⏰ '+fmtTime(out.time))});
   if(out.time==null)take(/\sat\s(\d{1,2})\s/i,m=>{let h=+m[1];if(h>23)return false;if(h<7)h+=12;out.time=h*60;out.hits.push('⏰ '+fmtTime(out.time))});
   // the reminder goes first, or "remind 1h" would be read as a one-hour task
@@ -231,7 +246,7 @@ function addTask(raw,date,extra,skipUndo){
 }
 function upd(id,patch,silent){const t=get(id);if(!t)return;if(!silent)pushUndo();Object.assign(t,patch,{updatedAt:stamp(t.updatedAt)});if(t.example&&Object.keys(patch||{}).some(k=>k!=='order'&&k!=='snoozeUntil'))t.example=false;
   if(patch&&'date' in patch)delete t.anchorDay;   // moved by hand: a monthly repeat counts from the new day
-  op('upd',id,patch,silent);save()}
+  op('upd',id,patch,silent);if(silent)saveSoon();else save()}
 function deleteTask(id){const t=get(id);if(!t)return null;pushUndo();state.tasks=state.tasks.filter(x=>x.id!==id);state.tombstones[id]=stamp(t.updatedAt);op('del',id);save();return {...t}}
 // Putting a deleted task back: stamped later than its tombstone, which other devices may already hold, or the deletion would win there.
 function restoreTask(copy){if(!copy||get(copy.id))return;pushUndo();const dead=state.tombstones[copy.id]||0;delete state.tombstones[copy.id];copy.updatedAt=stamp(Math.max(dead,copy.updatedAt||0));state.tasks.push(copy);op('add',copy.id,{...copy});save()}
@@ -274,7 +289,26 @@ function deleteTasks(ids){const set=new Set(ids);if(!set.size)return 0;pushUndo(
 function clearExamples(){const n=deleteTasks(state.tasks.filter(t=>t.example).map(t=>t.id));const removedNotes={};for(const k of Object.keys(state.notes)){if(!state.notesTs[k]&&state.notes[k]===EXAMPLE_NOTE){removedNotes[k]=state.notes[k];delete state.notes[k]}}const notes=Object.keys(removedNotes).length;if(notes)save();return {tasks:n,notes,removedNotes}}
 // Undo of clearExamples: the tasks come back through the task history; the untouched seed note is put back by hand.
 function restoreExampleNotes(removed){let n=0;for(const k in removed){if(!state.notes[k]){state.notes[k]=removed[k];n++}}if(n)save();return n}
+// Put a backup's days back: its tasks, notes, labels and routines replace the current ones and are stamped now, so
+// with sync on the restored state is what every device ends up with (and tasks made since are deleted everywhere).
+// Settings, the layout and the sync sign-in stay as they are. The task list is one undo step; the caller keeps a
+// copy of the data file as it was.
+function restoreFrom(text){const j=JSON.parse(text);if(!j||typeof j!=='object'||!Array.isArray(j.tasks))throw new Error('That is not a Sundial backup');
+  pushUndo();const tasks=j.tasks.map(t=>cleanTask(t&&typeof t==='object'?{...t}:null)).filter(Boolean);const keep=new Set(tasks.map(t=>t.id));
+  for(const t of state.tasks){if(!keep.has(t.id)){state.tombstones[t.id]=stamp(t.updatedAt);touch('task:'+t.id)}}
+  for(const t of tasks){const cur=get(t.id);if(cur&&JSON.stringify(cur)===JSON.stringify(t))continue;t.updatedAt=stamp(Math.max(cur?cur.updatedAt||0:0,state.tombstones[t.id]||0,t.updatedAt||0));delete state.tombstones[t.id];touch('task:'+t.id)}
+  state.tasks=tasks;
+  const notes=j.notes&&typeof j.notes==='object'?j.notes:{};
+  for(const d of new Set([...Object.keys(state.notes),...Object.keys(notes)])){if(!DATE_RE.test(d))continue;const html=typeof notes[d]==='string'?(typeof cleanNote==='function'?cleanNote(notes[d]):notes[d]):'';
+    if((state.notes[d]||'')===html)continue;if(html)state.notes[d]=html;else delete state.notes[d];state.notesTs[d]=stamp(state.notesTs[d]);touch('note:'+d)}
+  if(j.labels&&typeof j.labels==='object'){let ch=false;for(const [k] of COLORS){const v=j.labels[k];if(typeof v==='string'&&v.trim()&&v!==state.labels[k]){state.labels[k]=v.slice(0,40);ch=true}}if(ch){state.labelsTs=stamp(state.labelsTs);touch('labels')}}
+  if(Array.isArray(j.routines)){const list=j.routines.filter(r=>r&&typeof r==='object'&&typeof r.id==='string'&&ID_RE.test(r.id)).map(r=>({id:r.id,name:typeof r.name==='string'?r.name:'Routine',lines:(Array.isArray(r.lines)?r.lines:[]).filter(l=>typeof l==='string')}));
+    if(JSON.stringify(list)!==JSON.stringify(state.routines)){state.routines=list;touchRoutines()}}
+  op('restore',null,{tasks:tasks.length});save();return tasks.length}
 function deleteRoutine(id){state.routines=state.routines.filter(r=>r.id!==id);touchRoutines();save()}
+// Undo for the routine list: a copy taken before a delete or a reset, and the way to put it back (stamped, so it syncs).
+const routinesCopy=()=>JSON.parse(JSON.stringify(state.routines));
+function putRoutines(list){state.routines=list;touchRoutines();save()}
 // one undo step for the whole routine; lines that name a day go to that day, the rest to `date`
 function applyRoutine(id,date){const r=state.routines.find(x=>x.id===id);if(!r)return 0;pushUndo();let n=0;for(const line of r.lines){if(line.trim()&&addTask(line,date,null,true))n++}return n}
 

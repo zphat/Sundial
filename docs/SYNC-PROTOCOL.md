@@ -75,6 +75,9 @@ nobody in.
 The operator configures one or more tokens. There is no email step. `GET /v1/account` with the token
 → `{ "account_id": "…", "salt": "…" }` (the salt is created on first use and kept).
 
+`GET /v1/account` works in both modes and, from server 0.1.13, also says how full the account is:
+`"bytes"` (ciphertext stored), `"quota"` (the limit, 50 MB) and `"docs"` (documents that are not tombstones).
+
 ### `POST /v1/sync`
 ```json
 { "protocol": 1, "device_id": "…", "cursor": 1234, "docs": [ …documents to push… ] }
@@ -107,6 +110,23 @@ which is lower than the sent cursor after the operator restored the database fro
 `epoch` is one integer for the whole server, `1` unless the operator bumped it after a restore from backup. A
 client that sees it differ from the value it stored resets its cursor to 0 and marks everything dirty, so both
 sides converge again on what each still has.
+
+Listening (server 0.1.13 and later). A request with no documents may add `"wait": 25`: when nothing is newer than
+the cursor, the server holds the request until another device writes to the account, or for that many seconds (25
+at most), and then answers as usual. A client that sees `"wait": true` in a response knows the server does this and
+keeps one such request open while its window is visible, so a change made elsewhere arrives within a second; with
+an older server it checks every 10 seconds instead. Before it pushes, a client lets its waiting request go.
+Every response also carries `"now"`, the server's clock in milliseconds, so a device can notice that its own clock
+is off.
+
+### Devices (server 0.1.13 and later)
+`GET /v1/devices` → `{ "devices": [ { "id": "…", "name": "…", "platform": "…", "device_id": "…", "created_at": …,
+"last_seen": …, "current": true } ], "can_revoke": true }`: the sign-ins of the caller's account. `last_seen` is
+written at most every ten minutes. `id` is a short handle, not the token.
+
+`POST /v1/devices/revoke` with `{ "id": "…" }` signs that device out: its token stops working (`204`), and the device
+drops its sync state at its next request, as after any `401`. What it holds locally stays. Accounts with an email
+only (`can_revoke`); a static token is the operator's to manage.
 
 ### `DELETE /v1/account`
 Deletes the account, every document and every token. Bearer token required. For a hosted account (one with an

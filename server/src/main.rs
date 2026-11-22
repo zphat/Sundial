@@ -29,6 +29,10 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 const PROTOCOL: i64 = 1;
 const PAGE: i64 = 500;
+// The longest a /v1/sync request may ask to be held while nothing is new. Kept under the 30 seconds clients allow a request.
+const MAX_WAIT_SECS: u64 = 25;
+// last_seen is for the device list, where ten minutes is exact enough: an idle check then writes nothing at all.
+const SEEN_EVERY_MS: i64 = 10 * 60 * 1000;
 // About 2 MB of ciphertext per page: 500 rows at the 64 KB document limit would be 44 MB in one response.
 const PAGE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CT_B64: usize = 64 * 1024 * 4 / 3 + 8;
@@ -57,6 +61,8 @@ struct App {
     /// Base of the web app, for the code page's "Open in the browser" button. Empty hides the button.
     app_url: String,
     http: reqwest::Client,
+    /// Requests that are waiting for an account to change (`wait` on /v1/sync): account -> the bell a write rings.
+    waiters: Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>,
 }
 
 fn now_ms() -> i64 {
@@ -197,9 +203,11 @@ fn client_ip(headers: &HeaderMap, addr: &SocketAddr) -> String {
 
 fn account_for(db: &Connection, token: &str) -> rusqlite::Result<Option<String>> {
     let h = token_hash(token);
-    let mut acct: Option<String> = db
-        .query_row("SELECT account FROM tokens WHERE token=?1 AND hashed=1", params![h], |r| r.get(0))
+    let row: Option<(String, Option<i64>)> = db
+        .query_row("SELECT account,last_seen FROM tokens WHERE token=?1 AND hashed=1", params![h], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?;
+    let seen = row.as_ref().and_then(|r| r.1);
+    let mut acct: Option<String> = row.map(|r| r.0);
     if acct.is_none() {
         // a row from before 0.1.3 still holds the token itself: accept it once and rewrite it to the hash
         acct = db
@@ -211,8 +219,9 @@ fn account_for(db: &Connection, token: &str) -> rusqlite::Result<Option<String>>
             }
         }
     }
-    if acct.is_some() {
-        db.execute("UPDATE tokens SET last_seen=?1 WHERE token=?2", params![now_ms(), h])?;
+    let now = now_ms();
+    if acct.is_some() && seen.map_or(true, |t| now - t > SEEN_EVERY_MS) {
+        db.execute("UPDATE tokens SET last_seen=?1 WHERE token=?2", params![now, h])?;
     }
     Ok(acct)
 }
@@ -486,7 +495,100 @@ async fn account(State(app): State<App>, headers: HeaderMap) -> Result<Json<Valu
     let db = app.db.lock().unwrap();
     let acct = account_for(&db, &token).map_err(internal)?.ok_or_else(unauthorized)?;
     let salt = salt_for(&db, &acct).map_err(internal)?;
-    Ok(Json(json!({ "account_id": acct, "salt": salt, "plan": "beta" })))
+    // what the account holds: ciphertext bytes against the quota, and how many documents are live
+    let (bytes, docs): (i64, i64) = db
+        .query_row("SELECT COALESCE(SUM(LENGTH(ct)),0), COALESCE(SUM(deleted=0),0) FROM docs WHERE account=?1", params![acct], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(internal)?;
+    Ok(Json(json!({ "account_id": acct, "salt": salt, "plan": "beta", "bytes": bytes, "quota": QUOTA_BYTES, "docs": docs })))
+}
+
+fn has_email(db: &Connection, acct: &str) -> rusqlite::Result<bool> {
+    db.query_row("SELECT email IS NOT NULL FROM accounts WHERE id=?1", params![acct], |r| r.get(0))
+}
+
+/// The devices signed in to the caller's account: what each sign-in recorded (name, platform), when it last synced
+/// (to about ten minutes) and which one is asking. `id` is a short handle for /v1/devices/revoke, not the token.
+async fn devices(State(app): State<App>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
+    let token = bearer(&headers).ok_or_else(unauthorized)?;
+    let db = app.db.lock().unwrap();
+    let acct = account_for(&db, &token).map_err(internal)?.ok_or_else(unauthorized)?;
+    let me = token_hash(&token);
+    let can_revoke = has_email(&db, &acct).map_err(internal)?;
+    let mut out = Vec::new();
+    {
+        let mut st = db
+            .prepare("SELECT token,device_id,device_name,platform,created_at,last_seen FROM tokens WHERE account=?1 AND hashed=1 ORDER BY created_at")
+            .map_err(internal)?;
+        let rows = st
+            .query_map(params![acct], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                ))
+            })
+            .map_err(internal)?;
+        for row in rows {
+            let (t, device_id, name, platform, created_at, last_seen) = row.map_err(internal)?;
+            let id: String = t.chars().take(16).collect();
+            out.push(json!({ "id": id, "device_id": device_id, "name": name, "platform": platform, "created_at": created_at, "last_seen": last_seen, "current": t == me }));
+        }
+    }
+    Ok(Json(json!({ "devices": out, "can_revoke": can_revoke })))
+}
+
+#[derive(Deserialize)]
+struct RevokeReq {
+    #[serde(default)]
+    id: String,
+}
+
+/// Signs one device out of the account: its token stops working, and it shows "signed out" at its next sync. What
+/// that device holds stays on it. Only for accounts with an email: a static token is the operator's to manage.
+async fn device_revoke(State(app): State<App>, headers: HeaderMap, Json(body): Json<RevokeReq>) -> Result<StatusCode, ApiError> {
+    let token = bearer(&headers).ok_or_else(unauthorized)?;
+    if body.id.len() != 16 || !body.id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(bad("unknown device"));
+    }
+    let acct = {
+        let db = app.db.lock().unwrap();
+        let acct = account_for(&db, &token).map_err(internal)?.ok_or_else(unauthorized)?;
+        if !allow(&app, &format!("revoke:{acct}"), 30, HOUR) {
+            return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "slow down".into()));
+        }
+        if !has_email(&db, &acct).map_err(internal)? {
+            return Err(bad("not available with a static token"));
+        }
+        let n = db
+            .execute("DELETE FROM tokens WHERE account=?1 AND hashed=1 AND substr(token,1,16)=?2", params![acct, body.id])
+            .map_err(internal)?;
+        if n == 0 {
+            return Err(ApiError(StatusCode::NOT_FOUND, "unknown device".into()));
+        }
+        acct
+    };
+    // a request that device has waiting ends now and finds its token gone
+    wake(&app, &acct);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The bell for an account's waiting requests. The map is swept of bells nobody holds once it grows.
+fn waiter(app: &App, acct: &str) -> Arc<tokio::sync::Notify> {
+    let mut m = app.waiters.lock().unwrap();
+    if m.len() > 5_000 {
+        m.retain(|_, n| Arc::strong_count(n) > 1);
+    }
+    m.entry(acct.to_string()).or_insert_with(|| Arc::new(tokio::sync::Notify::new())).clone()
+}
+
+/// Something changed in this account: every request waiting on it answers now.
+fn wake(app: &App, acct: &str) {
+    if let Some(n) = app.waiters.lock().unwrap().get(acct) {
+        n.notify_waiters();
+    }
 }
 
 /// Deletes the account, every document and every token. A hosted account (one with an email) also needs a fresh
@@ -554,6 +656,10 @@ struct SyncReq {
     cursor: i64,
     #[serde(default)]
     docs: Vec<DocIn>,
+    /// Seconds to hold the request while nothing is newer than the cursor (0 = answer at once). Only read when no
+    /// documents are pushed; capped at MAX_WAIT_SECS. The response's `wait: true` tells a client the server knows it.
+    #[serde(default)]
+    wait: u64,
 }
 
 // "pair" documents are plaintext ECDH handshake messages between two of the user's PCs (see the protocol doc);
@@ -574,10 +680,46 @@ async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncR
     if !allow(&app, &format!("sync:{}:{}", token_hash(&token), body.device_id), 60, Duration::from_secs(60)) {
         return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "slow down".into()));
     }
+    let wait = body.wait.min(MAX_WAIT_SECS);
+    let first = sync_once(&app, &token, &body, true)?;
+    if first.pushed {
+        wake(&app, &first.acct);
+    }
+    if wait == 0 || !first.idle {
+        return Ok(Json(first.resp));
+    }
+    // Nothing is new and the device asked to be told when something is. The bell is taken and armed first, then the
+    // account is read once more, so a write that landed in between is not slept through. Then the request is held
+    // until another device writes or the time is up, and answers with whatever is there by then.
+    let bell = waiter(&app, &first.acct);
+    let rung = bell.notified();
+    tokio::pin!(rung);
+    rung.as_mut().enable();
+    let again = sync_once(&app, &token, &body, false)?;
+    if !again.idle {
+        return Ok(Json(again.resp));
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(wait), rung).await;
+    Ok(Json(sync_once(&app, &token, &body, false)?.resp))
+}
+
+/// What one pass of the sync produced.
+struct Synced {
+    resp: Value,
+    acct: String,
+    /// at least one pushed document was stored
+    pushed: bool,
+    /// nothing was pushed, nothing came back and the cursor did not move: a request that asked to wait may wait
+    idle: bool,
+}
+
+/// One pass: store what was pushed, hand back what is newer than the cursor. No awaits in here; the database lock is
+/// held from start to end. `count` is false for the extra passes of a waiting request, which the limits count once.
+fn sync_once(app: &App, token: &str, body: &SyncReq, count: bool) -> Result<Synced, ApiError> {
     let mut db = app.db.lock().unwrap();
-    let acct = account_for(&db, &token).map_err(internal)?.ok_or_else(unauthorized)?;
-    // and a ceiling per account, so inventing device ids buys nothing (ten devices at their fastest stay far below it)
-    if !allow(&app, &format!("acct:{acct}"), 600, Duration::from_secs(60)) {
+    let acct = account_for(&db, token).map_err(internal)?.ok_or_else(unauthorized)?;
+    // a ceiling per account, so inventing device ids buys nothing (ten devices at their fastest stay far below it)
+    if count && !allow(app, &format!("acct:{acct}"), 600, Duration::from_secs(60)) {
         return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "slow down".into()));
     }
     let now = now_ms();
@@ -724,7 +866,10 @@ async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncR
         .map_err(internal)?
         .unwrap_or(1);
     tx.commit().map_err(internal)?;
-    Ok(Json(json!({ "protocol": PROTOCOL, "cursor": last_seq, "docs": out, "more": more, "epoch": epoch, "rejected": rejected })))
+    let idle = body.docs.is_empty() && out.is_empty() && !more && last_seq == body.cursor;
+    // `now` is the server's clock, so a device can notice its own is off; `wait: true` says this server holds requests
+    let resp = json!({ "protocol": PROTOCOL, "cursor": last_seq, "docs": out, "more": more, "epoch": epoch, "rejected": rejected, "now": now, "wait": true });
+    Ok(Synced { resp, acct, pushed: !pushed.is_empty(), idle })
 }
 
 /// Landing page for the email button: shows the code large with a copy button, offers the app's deep link and,
@@ -804,6 +949,7 @@ async fn main() {
         public_url: std::env::var("SUNDIAL_PUBLIC_URL").unwrap_or_else(|_| "https://sync.sundial.services".into()).trim_end_matches('/').to_string(),
         app_url: std::env::var("SUNDIAL_APP_URL").unwrap_or_else(|_| "https://app.sundial.services".into()).trim_end_matches('/').to_string(),
         http: reqwest::Client::builder().timeout(Duration::from_secs(10)).build().expect("http client"),
+        waiters: Arc::new(Mutex::new(HashMap::new())),
     };
     let mut origins: Vec<HeaderValue> = ORIGINS.into_iter().map(HeaderValue::from_static).collect();
     for o in std::env::var("SUNDIAL_ORIGINS").unwrap_or_default().split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -815,7 +961,9 @@ async fn main() {
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        // a browser asks permission before each kind of cross-site request; it may remember the answer for two hours
+        .max_age(Duration::from_secs(7200));
     let router = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/auth/request", post(auth_request))
@@ -823,6 +971,8 @@ async fn main() {
         .route("/v1/auth/logout", post(logout))
         .route("/v1/account", get(account).delete(delete_account))
         .route("/v1/sync", post(sync))
+        .route("/v1/devices", get(devices))
+        .route("/v1/devices/revoke", post(device_revoke))
         .route("/signin", get(signin_page))
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(cors)

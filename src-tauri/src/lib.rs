@@ -180,6 +180,63 @@ fn newest_backup(app: AppHandle) -> Result<Option<String>, String> {
     Ok(None)
 }
 
+/// The daily backups, newest first: file name, the day in it, size, and how many tasks it holds (None when the file
+/// is not a readable state). For "Restore a backup" in Settings.
+#[tauri::command]
+fn list_backups(app: AppHandle) -> Result<Vec<Value>, String> {
+    let backups = data_dir(&app)?.join("backups");
+    let mut out = Vec::new();
+    for p in daily_backups(&backups).into_iter().rev() {
+        let name = match p.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let text = fs::read_to_string(&p).unwrap_or_default();
+        let tasks = serde_json::from_str::<Value>(no_bom(&text))
+            .ok()
+            .and_then(|v| v.get("tasks").and_then(|t| t.as_array()).map(|a| a.len()));
+        out.push(json!({ "name": name, "date": &name[8..18], "bytes": text.len(), "tasks": tasks }));
+    }
+    Ok(out)
+}
+
+/// The text of one daily backup. The name must be one of ours (sundial-YYYY-MM-DD.json, nothing else): it comes from
+/// the page, and must never be a path to somewhere else.
+#[tauri::command]
+fn read_backup(app: AppHandle, name: String) -> Result<String, String> {
+    let ok = name.len() == 23
+        && name.starts_with("sundial-")
+        && name.ends_with(".json")
+        && name[8..18].chars().all(|c| c.is_ascii_digit() || c == '-');
+    if !ok {
+        return Err("not a backup name".into());
+    }
+    let p = data_dir(&app)?.join("backups").join(&name);
+    let text = fs::read_to_string(&p).map_err(|e| e.to_string())?;
+    if !is_state(&text) {
+        return Err("that backup cannot be read".into());
+    }
+    Ok(no_bom(&text).to_string())
+}
+
+/// Before a restore: the data file as it is now is copied beside itself, so the restore can be taken back by hand.
+/// Returns the copy's file name.
+#[tauri::command]
+fn keep_copy_db(app: AppHandle) -> Result<String, String> {
+    let dir = data_dir(&app)?;
+    let target = dir.join(DB_FILE);
+    if !target.exists() {
+        return Err("there is no data file".into());
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let name = format!("sundial.before-restore-{secs}.json");
+    fs::copy(&target, dir.join(&name)).map_err(|e| e.to_string())?;
+    Ok(name)
+}
+
 #[tauri::command]
 fn data_path(app: AppHandle) -> Result<String, String> {
     Ok(data_dir(&app)?.join(DB_FILE).to_string_lossy().to_string())
@@ -1207,7 +1264,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            load_db, save_db, set_aside_db, newest_backup, data_path, reveal_data, open_url, notify,
+            load_db, save_db, set_aside_db, newest_backup, list_backups, read_backup, keep_copy_db, data_path, reveal_data, open_url, notify,
             autostart_get, autostart_set, secret_set, secret_get, secret_delete, secret_store,
             set_hotkeys, ai_parse, app_version, update_check, update_install,
             toast_show, toast_payload, toast_action, deep_link_pending, machine_name,

@@ -28,7 +28,7 @@ Sync is off until you turn it on. When you do, the server keeps:
 
 - your email address;
 - an account salt, a random public number your PC uses to turn your recovery code into a key;
-- for each PC or browser you sign in: a hashed sign-in token, a device id, the device name and the platform (for a browser, something like "Chrome on Windows"), when it signed in and when it last synced;
+- for each PC or browser you sign in: a hashed sign-in token, a device id, the device name and the platform (for a browser, something like "Chrome on Windows"), when it signed in and when it last synced (to about ten minutes). Settings, Data & sync lists these devices and lets you sign one out;
 - your data as ciphertext: each task, each day's note, your label names and your routines, encrypted on your PC before upload. Each encrypted item also carries an id, a type (task, note, labels or routines), a last-changed time, a sequence number, which of your PCs sent it and when the server received it, so your PCs can tell what's new. A note's id is its date.
 
 There's no payment during the beta, so there are no card details to store.

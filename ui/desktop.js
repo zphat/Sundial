@@ -29,6 +29,10 @@
     setAside:()=>invoke('set_aside_db'),
     // the text of the newest daily backup that is a readable Sundial file, or null
     newestBackup:()=>invoke('newest_backup'),
+    // Restore a backup (Settings): the list [{name,date,bytes,tasks}] newest first, one backup's text, and a copy of the data file as it is now
+    listBackups:()=>invoke('list_backups'),
+    readBackup:name=>invoke('read_backup',{name}),
+    keepCopy:()=>invoke('keep_copy_db'),
     onSaveError:null,onSaveOk:null,
     dataPath:()=>invoke('data_path'),
     reveal:()=>invoke('reveal_data'),

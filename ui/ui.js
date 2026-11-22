@@ -471,7 +471,7 @@ function renderSheet(){
     +opt('Export JSON','Tasks, notes, labels and the change log. Routines and settings are not included.','<button class="btn" data-run="expJson">Copy</button>')
     +opt('Import JSON','Paste a backup and press Import. Merges by id, newest wins.','<button class="btn" data-run="impJson">Import</button>')
     +`<textarea id="impBox" placeholder="{ &quot;tasks&quot;: [ … ] }"></textarea>`;
-  const putBack=keepFields(body);body.innerHTML=h;putBack();bindFinBox();if(sheetAnim){sheetAnim=false;body.classList.add('tab-in');s.querySelector('.card').scrollTop=0}else{body.classList.remove('tab-in');s.querySelector('.card').scrollTop=sc}
+  const putBack=keepFields(body);body.innerHTML=h;putBack();bindFinBox();if(sheetTab==='data')loadSyncExtras(false);if(sheetAnim){sheetAnim=false;body.classList.add('tab-in');s.querySelector('.card').scrollTop=0}else{body.classList.remove('tab-in');s.querySelector('.card').scrollTop=sc}
 }
 const getPath=(o,p)=>p.split('.').reduce((a,k)=>a&&a[k],o);
 const setPath=(o,p,v)=>{const ks=p.split('.');const last=ks.pop();const t=ks.reduce((a,k)=>a[k],o);t[last]=v};
@@ -572,7 +572,7 @@ document.addEventListener('click',e=>{
   if(b.id==='quickBtn'){openQuickAdd();return}
   if(b.dataset.act==='routines'){const r=b.getBoundingClientRect();routinesMenu(r.left,r.bottom+4);return}
   if(b.dataset.rtApply){const n=applyRoutine(b.dataset.rtApply,b.dataset.to);closeMenu();SFX.play('ui.add');render();renderSheet();toast(n+' added to '+dayLabel(b.dataset.to),()=>{undo();render()});return}
-  if(b.dataset.rtDel){deleteRoutine(b.dataset.rtDel);renderSheet();render();return}
+  if(b.dataset.rtDel){const keep=routinesCopy();deleteRoutine(b.dataset.rtDel);renderSheet();render();toast('Routine deleted',()=>{putRoutines(keep);renderSheet();render()});return}
   if(b.dataset.rtManage){closeMenu();openSettings('routines');return}
   if(b.id==='mic'){toggleVoice();return}
   if(b.id==='mPrev'||b.id==='mNext'){let[y,m]=miniMonth.split('-').map(Number);m+=b.id==='mNext'?1:-1;if(m<1){m=12;y--}if(m>12){m=1;y++}miniMonth=y+'-'+pad(m);renderMini();return}
@@ -595,7 +595,7 @@ document.addEventListener('click',e=>{
   if(b.dataset.syncmode){syncSetup.mode=b.dataset.syncmode;syncRefresh();return}
   if(b.dataset.run){runSetting(b.dataset.run,b);return}
   const idSrc=e.target.closest('[data-id],[data-drawer]');const id=b.dataset.id||(idSrc&&(idSrc.dataset.id||idSrc.dataset.drawer))||(inMenu&&inMenu.dataset.id)||openId;
-  if(b.dataset.setcolor){const tid=b.dataset.id||id;if(tid){upd(tid,{color:b.dataset.setcolor});closeMenu();render()}return}
+  if(b.dataset.setcolor){const tid=b.dataset.id||id;if(tid){upd(tid,{color:b.dataset.setcolor});closeMenu();render();toast('Now '+state.labels[b.dataset.setcolor],()=>{undo();render()})}return}
   if(b.id==='edNotify'&&openId){const on=!get(openId).notify;upd(openId,{notify:on});if(on)askNotify();render();return}
   const act=b.dataset.act;
   if(act==='clearDone'){const gone=clearDone(sel);render();toast(gone.length+' done tasks cleared',()=>{gone.forEach(restoreTask);render()});return}
@@ -605,14 +605,14 @@ document.addEventListener('click',e=>{
   if(!act){if(b.dataset.date&&!b.classList.contains('tl')){goDay(b.dataset.date);if(b.dataset.goto)view=b.dataset.goto;openId=null;render()}return}
   if(!id)return;closeMenu();
   if(act==='done'){toggleDone(id);return}
-  if(act==='color'){const x=get(id);const i=COLORS.findIndex(c=>c[0]===x.color);upd(id,{color:COLORS[(i+1)%COLORS.length][0]});render();return}
+  if(act==='color'){const x=get(id);const i=COLORS.findIndex(c=>c[0]===x.color);const nc=COLORS[(i+1)%COLORS.length][0];upd(id,{color:nc});render();toast('Now '+state.labels[nc],()=>{undo();render()});return}
   if(act==='open'){const x=get(id);if(!x)return;if(openId===id){closeDrawer();return}openId=id;cursorId=id;if(view!=='day')view='day';if(x.date!==sel)goDay(x.date);
     if(!state.layout.board){state.layout.board=true;save();applyLayout()}
     render();revealTask(id);return}
   // tomorrow means tomorrow for a task from today or before; a task already ahead moves one day on
-  if(act==='tomorrow'){const x=get(id);if(!x)return;const td=todayStr();moveTo(id,addDays(x.date<td?td:x.date,1));render();toast('Moved to '+relDay(x.date).toLowerCase()+(x.date>addDays(td,1)?' '+fromYmd(x.date).getDate():''));return}
-  if(act==='nextweek'){moveTo(id,addDays(get(id).date,7));render();toast('Moved a week out');return}
-  if(act==='dup'){duplicate(id);render();return}
+  if(act==='tomorrow'){const x=get(id);if(!x)return;const td=todayStr();moveTo(id,addDays(x.date<td?td:x.date,1));render();toast('Moved to '+relDay(x.date).toLowerCase()+(x.date>addDays(td,1)?' '+fromYmd(x.date).getDate():''),()=>{undo();render()});return}
+  if(act==='nextweek'){moveTo(id,addDays(get(id).date,7));render();toast('Moved a week out, to '+dayLabel(get(id).date),()=>{undo();render()});return}
+  if(act==='dup'){const c=duplicate(id);if(c)anim.enter=c.id;render();toast('Duplicated',()=>{undo();render()});return}
   if(act==='notify'){upd(id,{notify:!get(id).notify});render();return}
   if(act==='delete'){removeTask(id,true);return}
   if(act==='close'){closeDrawer();return}
@@ -628,7 +628,7 @@ function runSetting(k,b){
   if(k==='impJson'){try{const n=importJSON(s.querySelector('#impBox').value);render();toast(n+' tasks merged');closeScrim()}catch(e){toast('That is not valid JSON')}}
   if(k==='recHotkey'||k==='recQuick'){recordingHotkey=k==='recHotkey'?'voice.hotkey':'quick.hotkey';b.classList.add('rec');b.textContent='press keys…'}
   if(k==='rtNew'){newRoutine();renderSheet();const ta=[...document.querySelectorAll('.rt-name')].pop();if(ta){ta.focus();ta.select()}}
-  if(k==='rtReset'){resetRoutines();renderSheet();render();toast('Starter routines restored')}
+  if(k==='rtReset'){const keep=routinesCopy();resetRoutines();renderSheet();render();toast('Starter routines restored',()=>{putRoutines(keep);renderSheet();render()})}
   if(k==='revealData'){window.SundialDesktop?.reveal().catch(e=>toast(String(e)))}
   if(k==='syncConnect'){const url=($('#syncUrl')?.value||'').trim(),tok=$('#syncToken')?.value||'';if(!url||!tok){toast('Server URL and token, please');return}b.textContent='…';Sync.connectSelf(url,tok).then(()=>{syncFlowReset();syncRefresh();toast('Connected. Setting up sync on this PC…')}).catch(e=>{b.textContent='Connect';toast('Could not connect: '+(e.message||e))})}
   if(k==='syncAdvanced'){syncSetup.advanced=!syncSetup.advanced;syncRefresh()}
@@ -653,7 +653,18 @@ function runSetting(k,b){
   if(k==='syncRecoveryDone'){syncSetup.showRecovery=false;syncSetup.recovery=null;syncRefresh()}
   if(k==='syncCopyRecovery'){const code=syncSetup.showRecovery?syncSetup.recovery:syncSetup.recoveryShown;if(code)copy(code,'Recovery code')}
   if(k==='syncShowRecovery'){if(syncSetup.revealRecovery){syncSetup.revealRecovery=false;syncSetup.recoveryShown=null;syncRefresh()}else{b.textContent='…';Sync.recoveryCode().then(c=>{syncSetup.recoveryShown=c||null;syncSetup.revealRecovery=true;syncRefresh()})}}
-  if(k==='syncNow'){b.textContent='…';Sync.syncNow().finally(()=>syncRefresh())}
+  if(k==='syncNow'){b.textContent='…';Sync.syncNow().finally(()=>{syncRefresh();loadSyncExtras(true)})}
+  // signing another device out takes two clicks; the list is fetched again afterwards
+  if(k==='devOut'){const id=b.dataset.dev;if(syncExtras.armed!==id){syncExtras.armed=id;fillSyncExtras();setTimeout(()=>{if(syncExtras.armed===id){syncExtras.armed=null;fillSyncExtras()}},5000);return}
+    syncExtras.armed=null;b.textContent='…';b.disabled=true;Sync.revokeDevice(id).then(()=>{toast('Signed out. That device keeps its own copy of your days, and stops syncing.');loadSyncExtras(true)}).catch(e=>{toast(e.message||String(e));fillSyncExtras()})}
+  // ----- restore a backup (desktop) -----
+  if(k==='bakOpen'){const D=window.SundialDesktop;if(backupUi.list){backupUi.list=null;backupUi.armed=null;renderSheet();return}b.textContent='…';D.listBackups().then(l=>{backupUi.list=Array.isArray(l)?l:[];renderSheet()}).catch(e=>{toast(String(e));renderSheet()})}
+  if(k==='bakRestore'){const D=window.SundialDesktop,name=b.dataset.bak;if(backupUi.armed!==name){backupUi.armed=name;renderSheet();setTimeout(()=>{if(backupUi.armed===name){backupUi.armed=null;renderSheet()}},6000);return}
+    backupUi.armed=null;b.textContent='…';b.disabled=true;
+    // the file as it is now is copied beside itself first, then the backup's days replace the current ones
+    D.flush().then(()=>D.keepCopy()).then(kept=>D.readBackup(name).then(text=>{const n=restoreFrom(text);backupUi.list=null;closeScrim();openId=null;render();
+      stickyNote('restored','Backup restored',`${n} task${n===1?'':'s'}, and the notes, labels and routines of ${name.slice(8,18)}. What you had a moment ago is kept as ${kept} in the data folder.${Sync.st().mode!=='off'?' Sync carries the restored days to your other devices.':''}`)}))
+      .catch(e=>{toast('Could not restore: '+(e&&e.message||e));renderSheet()})}
   if(k==='syncOut'){if(!syncSetup.outArmed){syncSetup.outArmed=true;syncRefresh();setTimeout(()=>{if(syncSetup.outArmed){syncSetup.outArmed=false;syncRefresh()}},5000);return}Sync.signOut().then(()=>{syncFlowReset();syncRefresh();toast('Signed out of sync. Your days stay on this PC, and so does the recovery code.')})}
   if(k==='syncResetStart'){syncSetup.reset='ask';syncRefresh()}
   if(k==='syncResetCancel'){syncSetup.reset=null;syncRefresh()}
@@ -716,14 +727,14 @@ document.addEventListener('keyup',e=>{if(e.target.id==='qa')previewParse()});
 document.addEventListener('input',e=>{
   const t=e.target;
   if(t.id==='qa'){previewParse();return}
-  if(t.id==='page'){const html=cleanNote(t.innerHTML);if(html==='<br>'||(!t.textContent.trim()&&!html.includes('<mark')))delete state.notes[sel];else state.notes[sel]=html;state.notesTs[sel]=stamp(state.notesTs[sel]);touch('note:'+sel);save();
+  if(t.id==='page'){const html=cleanNote(t.innerHTML);if(html==='<br>'||(!t.textContent.trim()&&!html.includes('<mark')))delete state.notes[sel];else state.notes[sel]=html;state.notesTs[sel]=stamp(state.notesTs[sel]);touch('note:'+sel);saveSoon();
     const cnt=$('.nb .daynav .cnt');if(cnt){const w=noteWords(state.notes[sel]);cnt.textContent=w?w+' words':'empty page'}return}
-  if(t.dataset.color){state.labels[t.dataset.color]=t.value;state.labelsTs=stamp(state.labelsTs);touch('labels');save();const tag=t.closest('.colorrow')?.querySelector('.mono');if(tag)tag.textContent='#'+tagOf(t.value);if(t.closest('.sheet')&&state.layout.cal)renderLegend();return}
+  if(t.dataset.color){state.labels[t.dataset.color]=t.value;state.labelsTs=stamp(state.labelsTs);touch('labels');saveSoon();const tag=t.closest('.colorrow')?.querySelector('.mono');if(tag)tag.textContent='#'+tagOf(t.value);if(t.closest('.sheet')&&state.layout.cal)renderLegend();return}
   if(t.dataset.range){const v=+t.value;setPath(S(),t.dataset.range,v);save();if(t.dataset.range==='sounds.volume')SFX.setVolume(v);const l=$('#secsLbl');if(l&&t.dataset.range==='bannerSecs')l.textContent=v+'s';return}
   if(t.dataset.sel){applySetting(t.dataset.sel,t.value);return}
-  if(t.dataset.ai){setPath(S(),'ai.'+t.dataset.ai,t.value.trim());save();return}
-  if(t.dataset.rtName){const r=state.routines.find(x=>x.id===t.dataset.rtName);if(r){r.name=t.value;touchRoutines();save()}return}
-  if(t.dataset.rtLines){const r=state.routines.find(x=>x.id===t.dataset.rtLines);if(r){r.lines=t.value.split('\n');touchRoutines();save()}return}
+  if(t.dataset.ai){setPath(S(),'ai.'+t.dataset.ai,t.value.trim());saveSoon();return}
+  if(t.dataset.rtName){const r=state.routines.find(x=>x.id===t.dataset.rtName);if(r){r.name=t.value;touchRoutines();saveSoon()}return}
+  if(t.dataset.rtLines){const r=state.routines.find(x=>x.id===t.dataset.rtLines);if(r){r.lines=t.value.split('\n');touchRoutines();saveSoon()}return}
   if(t.id==='syncUrl')syncSetup.url=t.value;if(t.id==='syncEmail')syncSetup.email=t.value;if(t.id==='migEmail')syncSetup.migEmail=t.value;
   if(!openId)return;const x=get(openId);if(!x)return;
   if(t.id==='edTitle'){upd(openId,{title:t.value},true);const row=document.querySelector(`.task[data-id="${openId}"] .t`);if(row)row.textContent=t.value}
@@ -827,7 +838,7 @@ document.addEventListener('drop',e=>{if(!dragId)return;e.preventDefault();const 
   if(hr){const y=e.clientY-hr.getBoundingClientRect().top;const mins=Math.round(((y/S().hh*60)-dragOff)/15)*15;upd(dragId,{time:Math.max(0,Math.min(23*60+45,mins)),...(other||{})});toast('Scheduled '+fmtTime(get(dragId).time)+(other?' on '+dayLabel(tlDay):''),()=>{undo();render()})}
   else if(e.target.closest('.anytime')){const p={...(dragged&&dragged.time!=null?{time:null}:{}),...(other||{})};if(dragged&&Object.keys(p).length){upd(dragId,p);toast(other?'Moved to '+dayLabel(tlDay)+', anytime':'Back to anytime',()=>{undo();render()})}}
   else if((row&&row.dataset.id!==dragId)||(list&&!row)){const tgt=dropTarget(row,e.clientY);if(tgt.blocked)toast('Timed tasks keep their time order. Drop it on the timeline to change the time, or clear the time first.');else if(!(row&&row.dataset.id===dragId))reorder(dragId,tgt.beforeId)}
-  else if(day&&!row)moveTo(dragId,day.dataset.date||day.dataset.dropdate);
+  else if(day&&!row){const to=day.dataset.date||day.dataset.dropdate,was=dragged&&dragged.date;moveTo(dragId,to);if(was&&was!==to)toast('Moved to '+dayLabel(to),()=>{undo();render()})}
   dragId=null;dragOff=0;autoScrollStop();render()});
 
 // ---- scrolling while a task is being dragged ----
@@ -1043,16 +1054,35 @@ function syncRows(st,opt,bare){const s=Sync.st();const D=window.SundialDesktop;l
   }
   if(s.keyOk){if(syncSetup.showRecovery)h+=recoveryCard(syncSetup.recovery,true);
     h+=opt('Status',syncStatusText(s),`<button class="btn" data-run="syncNow">Sync now</button>`);
+    h+=clockRow();
+    if(!bare)h+=`<div class="opt"><div>Sync storage<small id="syncUsage">${usageText()}</small></div></div>`
+      +`<div class="opt devs"><div>Devices<small>Signed in to this account. Signing one out stops it syncing; what it holds stays on it.</small><div class="devlist" id="syncDevices">${devicesHtml()}</div></div></div>`;
     if(!bare){h+=opt('Add another '+DEV(),'Sign in there with the same email. A message appears here asking to approve it: type the code that PC shows. Then type the finish code shown here on that PC.','');
       if(!syncSetup.showRecovery)h+=opt('Recovery code','Needed to add a PC when this one is not around, or to get back in if this PC is lost or signed out. Keep it somewhere safe.',`<button class="btn" data-run="syncShowRecovery">${syncSetup.revealRecovery?'Hide':'Show'}</button>`)+(syncSetup.revealRecovery?recoveryCard(syncSetup.recoveryShown,false):'');
       h+=opt('Start over or leave','Erases the synced copy for every PC and signs them all out. Nothing on any PC is deleted.','<button class="btn" data-run="syncResetStart">Erase synced copy…</button>')}}
   return h}
+// ----- what the server knows about the account: how full it is, which devices are signed in -----
+// Kept in syncExtras and fetched when the Data & sync tab is drawn, at most once a minute; the rows are filled in place.
+const syncExtras={usage:undefined,devices:undefined,at:0,armed:null,busy:false};
+const fmtBytes=n=>n<1024*1024?Math.max(1,Math.round(n/1024))+' KB':(n/1048576).toFixed(n<10*1048576?1:0)+' MB';
+function usageText(){const u=syncExtras.usage;if(u===undefined)return 'Checking…';if(!u||!u.quota)return 'This server does not report how much it holds.';
+  const pct=u.bytes/u.quota;return `${fmtBytes(u.bytes)} of ${fmtBytes(u.quota)} used${pct>=.8?' · <b>almost full</b>: old notes are the bulk of it':''} · ${u.docs} tasks, notes and settings`}
+const seenText=ms=>{if(!ms)return 'not yet';const d=Date.now()-ms;if(d<15*60000)return 'just now';if(d<36*3600000&&ymd(new Date(ms))===todayStr())return 'today '+new Date(ms).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});return new Date(ms).toLocaleDateString([],{month:'short',day:'numeric'})};
+function devicesHtml(){const d=syncExtras.devices;if(d===undefined)return '<small>Checking…</small>';if(!d)return '<small>This server does not list devices.</small>';if(!d.list.length)return '<small>None.</small>';
+  return d.list.map(x=>`<div class="dev"><span class="dn">${esc(x.name||x.platform||'Unnamed device')}</span><span class="dm">${x.current?'this '+DEV():'last synced '+esc(seenText(x.last_seen))}</span>`
+    +(x.current||!d.canRevoke?'':`<button class="btn" data-run="devOut" data-dev="${esc(x.id)}">${syncExtras.armed===x.id?'Sign it out? Click again':'Sign out'}</button>`)+`</div>`).join('')}
+// A clock that is minutes off makes this device's edits sort wrongly against the others'. Shown only then.
+function clockRow(){const k=Sync.skew();if(k==null||Math.abs(k)<120000)return '';const m=Math.round(Math.abs(k)/60000);
+  return `<div class="opt attention"><div>This ${DEV()}'s clock is about ${m<90?m+' minutes':Math.round(m/60)+' hours'} ${k<0?'fast':'slow'}<small>Changes are ordered by time, so ones made here can land in the wrong order. Set the date and time to automatic in the system settings.</small></div></div>`}
+function fillSyncExtras(){const u=$('#syncUsage');if(u)u.innerHTML=usageText();const d=$('#syncDevices');if(d)d.innerHTML=devicesHtml()}
+function loadSyncExtras(force){const s=Sync.st();if(s.mode==='off'||!s.keyOk||syncExtras.busy||(!force&&Date.now()-syncExtras.at<60000))return;syncExtras.busy=true;syncExtras.at=Date.now();
+  Promise.all([Sync.usage().catch(()=>null),Sync.devices().catch(()=>null)]).then(([u,d])=>{syncExtras.usage=u;syncExtras.devices=d}).finally(()=>{syncExtras.busy=false;fillSyncExtras()})}
 // One line of status that the sync listener can refresh without redrawing the whole tab.
 function rejectedText(s){const rj=Object.values(s.rejected||{});if(!rj.length)return '';const n=r=>rj.filter(x=>x===r).length,size=n('size'),fut=n('future'),quota=n('quota'),rest=rj.length-size-fut-quota;
   return [size?size+' too large to sync':'',fut?fut+' not synced: this device\'s clock is ahead':'',quota?quota+' not synced: sync storage is full':'',rest?rest+' not accepted by the server':''].filter(Boolean).map(x=>' · '+x).join('')}
 function syncStatusText(s){const D=window.SundialDesktop;return `${s.lastError?esc(s.lastError):(s.lastSync?'Last synced '+new Date(s.lastSync).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'Not synced yet')} · ${Sync.pending()} waiting${Sync.isRunning()?' · syncing…':''}${rejectedText(s)}${D?'':' · key kept in this browser'}`}
 // Everything the sync setup remembers between screens; cleared whenever an account is entered or left.
-function syncFlowReset(){Object.assign(syncSetup,{existing:null,checking:false,pairError:null,pairStarting:false,setupError:null,settingUp:false,useCode:false,showRecovery:false,revealRecovery:false,recoveryShown:null,recovery:null,triedStored:false,outArmed:false,migEmail:'',migSent:false,migError:null,firstHere:false})}
+function syncFlowReset(){Object.assign(syncExtras,{usage:undefined,devices:undefined,at:0,armed:null});Object.assign(syncSetup,{existing:null,checking:false,pairError:null,pairStarting:false,setupError:null,settingUp:false,useCode:false,showRecovery:false,revealRecovery:false,recoveryShown:null,recovery:null,triedStored:false,outArmed:false,migEmail:'',migSent:false,migError:null,firstHere:false})}
 // The secret that unlocks the synced copy on another PC. Shown once right after setup, and on request later.
 function recoveryCard(code,first){if(code==null)return `<div class="opt" style="border:0;padding-top:0"><div><small>This PC does not hold the recovery code. A PC that set sync up, or was approved by one, shows it under Settings → Data & sync. If this account was made in an older version with a passphrase you chose, that passphrase is the code.</small></div></div>`;
   return `<div class="opt attention recovery"><div>${first?'Syncing. Save your recovery code':'Your recovery code'}<small>${first?'You only need it to add another PC when this one is not nearby, or if this PC is lost. Nobody can recover it for you, not even Sundial. Settings → Data & sync shows it again.':'Anyone with this code and your email can read your synced days. Keep it private.'}</small><div class="rc">${esc(code)}</div></div><div class="ctl"><button class="btn" data-run="syncCopyRecovery">Copy</button>${first?'<button class="btn primary" data-run="syncRecoveryDone">I saved it</button>':''}</div></div>`}
@@ -1157,6 +1187,12 @@ function syncHotkeys(){const D=window.SundialDesktop;if(!D)return;
   if(wayland()){globalHotkeys=false;D.setHotkeys({quick:null,voice:null}).catch(()=>{});return}
   D.setHotkeys({quick:S().quick.hotkey,voice:S().voice.enabled?S().voice.hotkey:null}).then(failed=>{globalHotkeys=!(failed&&failed.length);if(failed&&failed.length)toast('Hotkey taken by another app: '+failed.join(', '))}).catch(()=>{globalHotkeys=false})}
 function refreshAiKey(){const D=window.SundialDesktop;if(D)D.secret.get('ai:'+S().ai.provider).then(v=>{aiKeySaved=!!v;return refreshSecretKind()}).then(()=>{if(sheetTab==='ai')renderSheet()}).catch(()=>{});else aiKeySaved=!!(S().ai.keysInBrowser||{})[S().ai.provider]}
+// Restore a backup: the list of daily copies under "Your data", each with a two-click Restore.
+const backupUi={list:null,armed:null};
+function backupsHtml(){const l=backupUi.list;if(!l)return '';if(!l.length)return `<div class="opt" style="border:0;padding-top:0"><div><small>No backups yet. The first one is made the day after Sundial is first used.</small></div></div>`;
+  return `<div class="opt devs" style="border:0;padding-top:0"><div><small>A backup holds your days as they were before that day's first change. Restoring one replaces today's tasks, notes, labels and routines${Sync.st().mode!=='off'?' on every synced device':''}; settings stay. What you have now is kept as a file first.</small><div class="devlist">`
+    +l.map(x=>`<div class="dev"><span class="dn">${esc(new Date(x.date+'T12:00').toLocaleDateString([],{weekday:'short',month:'short',day:'numeric',year:'numeric'}))}</span><span class="dm">${x.tasks==null?'cannot be read':x.tasks+' tasks · '+fmtBytes(x.bytes||0)}</span>`
+      +(x.tasks==null?'':`<button class="btn" data-run="bakRestore" data-bak="${esc(x.name)}">${backupUi.armed===x.name?'Replace today with this? Click again':'Restore'}</button>`)+`</div>`).join('')+`</div></div></div>`}
 // The desktop's General rows. Linux changes the wording: no "Windows", a Download button instead of Restart on an rpm/deb (they cannot
 // replace themselves), and a Quit note when the desktop shows no tray. With the Windows defaults in plat the output is today's, unchanged.
 function desktopGeneralRows(){const linux=isLinux(),pkg=updatePkg(updateInfo),tray=plat.tray!==false;
@@ -1167,7 +1203,8 @@ function desktopGeneralRows(){const linux=isLinux(),pkg=updatePkg(updateInfo),tr
   +`<div class="opt"><div>${linux?'Start with the system':'Start with Windows'}<small>${tray?(linux?'Launches hidden in the tray at login.':'Launches hidden in the tray at sign-in.'):'Launches at login.'}</small></div><div class="ctl"><button class="tog" role="switch" data-autostart="1" aria-checked="${autostartOn}"></button></div></div>`
   +(tray?`<div class="opt"><div>Closing the window<small>Hides Sundial to the tray so reminders keep firing. Quit is in the tray icon menu.</small></div><div class="ctl"><span class="soon">Tray</span></div></div>`
     :`<div class="opt"><div>Closing the window<small>Quits Sundial. This desktop shows no tray icon, so reminders fire only while the window is open.</small></div><div class="ctl"><span class="soon">Quit</span></div></div>`)
-  +`<div class="opt"><div>Your data<small>One JSON file on this PC, plus a daily backup folder beside it.</small></div><div class="ctl"><button class="btn" data-run="revealData">Show folder</button></div></div>`
+  +`<div class="opt"><div>Your data<small>One JSON file on this PC, plus a daily backup folder beside it: one copy for each day you used Sundial, the newest 30.</small></div><div class="ctl"><button class="btn" data-run="bakOpen">${backupUi.list?'Close':'Restore a backup…'}</button><button class="btn" data-run="revealData">Show folder</button></div></div>`
+  +backupsHtml()
   +`<div class="opt"><div>About<small>Sundial ${esc(appVersion||'')} · beta. Tell me what breaks or annoys you in the Discord.</small></div><div class="ctl"><button class="btn" data-run="openNotes">What's new</button><button class="btn" data-run="openDiscord">Discord</button><button class="btn" data-run="openPrivacy">Privacy</button></div></div>`}
 // The web's own General rows: where the data lives, install, about. The desktop has desktopGeneralRows().
 function webGeneralRows(){const sy=Sync.st(),synced=sy.mode!=='off'&&sy.keyOk;
@@ -1268,6 +1305,9 @@ async function init(){
     if($('.sheet-host')&&sheetTab==='data')renderSheet();else if($('.ob-host:not(.out)')&&obStep===2)renderOnboarding()});Sync.start();
   if(D&&D.deepLinkPending)D.deepLinkPending().then(u=>{if(u)deepLink(u)}).catch(()=>{});
   addEventListener('beforeunload',()=>{if(Sync.isPairing())Sync.cancelPairing()});
+  // what was typed last is written out when its field is left and when the window is hidden or closed (saveSoon in data.js holds it for up to 600 ms)
+  const flushAll=()=>{flushSave();if(D&&D.flush)D.flush()};
+  document.addEventListener('focusout',flushSave);addEventListener('pagehide',flushAll);addEventListener('beforeunload',flushAll);document.addEventListener('visibilitychange',()=>{if(document.hidden)flushAll()});
   // back in view (or awake again): catch up at once on the date, on what came due meanwhile, and on the clock
   document.addEventListener('visibilitychange',()=>{if(!document.hidden){updateLogo();tick()}});
   setTimeout(()=>{const s=Sync.st();if(s.mode!=='off'&&!s.keyOk&&!Sync.hasKey())toast('Sync is signed in, but this '+DEV()+' is not approved yet',()=>openSettings('data'),'Open')},2500);

@@ -1,13 +1,13 @@
 [package]
 name = "sundial-sync"
-version = "0.1.12"
+version = "0.1.13"
 description = "Sundial Sync server: an end-to-end-encrypted document mailbox (protocol v1)"
 edition = "2021"
 license = "AGPL-3.0-only"
 
 [dependencies]
 axum = "0.7"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
 tower-http = { version = "0.5", features = ["cors", "limit", "trace"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

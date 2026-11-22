@@ -533,6 +533,14 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .rt textarea{width:100%;min-height:72px;background:var(--panel-2);border:1px solid var(--line-2);border-radius:9px;padding:8px 10px;font-family:var(--f-body);font-size:12.5px;line-height:1.5;outline:none;resize:vertical}
 .rt textarea:focus{border-color:var(--accent-ink)}
 /* sync: the passphrase step must not be missed */
+/* a short list inside a settings row: devices signed in, backups to restore */
+.sheet .opt.devs{display:block}
+.sheet .devlist{display:grid;gap:4px;margin-top:8px}
+.sheet .dev{display:flex;align-items:center;gap:10px;padding:7px 10px;border:1px solid var(--line);border-radius:10px;background:var(--well);min-width:0}
+.sheet .dev .dn{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sheet .dev .dm{color:var(--fg-2);font-size:12px;margin-right:auto;white-space:nowrap}
+.sheet .dev .btn{flex:none}
+@media (max-width:640px){.sheet .dev{flex-wrap:wrap}.sheet .dev .dm{flex-basis:100%;order:3;margin:0}}
 .sheet .opt.attention{border:1px solid var(--accent-ink);border-radius:12px;padding:12px;margin:8px 0;box-shadow:0 0 0 4px var(--accent-soft);animation:attn 1.6s ease-in-out 3}
 @keyframes attn{50%{box-shadow:0 0 0 8px var(--accent-soft)}}
 .sheet .opt.attention>div:first-child{font-weight:700}

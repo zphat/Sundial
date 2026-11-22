@@ -11,6 +11,11 @@ const Sync=(()=>{
   const HOSTED_URL='https://sync.sundial.services';
   const PAIR_TTL=15*60*1000,PAIR_UNOPENED=2*60*1000,PAIR_INFO='sundial-pair-1';
   let key=null,timer=null,running=false,queued=false,gen=0,machine='';const listeners=[];
+  // Listening: a server that says `wait: true` holds an empty request until another device writes (25 s at most), so
+  // a change made elsewhere arrives within a second instead of at the next 10-second check. canWait: the server said
+  // so. listening: the request in flight is such a held one. listenOff: no listening before this time (a server that
+  // answered a held request at once is not really holding). skew: the server's clock minus this device's, in ms.
+  const WAIT_SECS=25;let canWait=false,listening=false,listenAbort=null,listenCancelled=false,listenT=null,listenOff=0,skew=null,lastSaved=0;
   // switching: an account change is under way, no sync may start. pendingServer: where a signed-in device asked for a code.
   let switching=false,pendingServer='';
   // slowUntil: after a 429 every pairing loop here runs at the slow cadence and the regular tick sits out until then.
@@ -69,18 +74,23 @@ const Sync=(()=>{
   // server: another base URL than the one signed in to (asking a code of, or signing out from, a server we are not on yet / any more).
   // A request gets 30 seconds, then counts as unreachable, so one that never answers cannot hold a sync open for good.
   // An answer that says 200 but is not JSON (a hotel Wi-Fi sign-in page) is unreachable too, never an empty success.
-  async function api(path,body,method,token,ctx,server){const s=st();const tk=token===undefined?s.token:token;let r,j;
+  async function api(path,body,method,token,ctx,server,opt){const s=st();const tk=token===undefined?s.token:token;let r,j;
     const unreachable=()=>{const err=new Error(friendly(0,'',ctx));err.status=0;return err};
-    const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),30000);
+    const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),(opt&&opt.timeout)||30000);if(opt&&opt.abortable)opt.abortable(ac);
+    const text=body?JSON.stringify(body):undefined;
     try{
-      try{r=await fetch(String(server||s.server).replace(/\/+$/,'')+path,{method:method||(body?'POST':'GET'),headers:{'content-type':'application/json',...(tk?{authorization:'Bearer '+tk}:{})},body:body?JSON.stringify(body):undefined,signal:ac.signal})}
+      try{r=await fetch(String(server||s.server).replace(/\/+$/,'')+path,{method:method||(body?'POST':'GET'),headers:{'content-type':'application/json',...(tk?{authorization:'Bearer '+tk}:{})},body:text,signal:ac.signal,
+        // a phone freezes a page moments after it is hidden: a small request marked keepalive is allowed to finish
+        keepalive:document.hidden&&!!text&&text.length<60000})}
       catch(e){throw unreachable()}
       if(r.status===204)return null;
       try{j=await r.json()}catch(e){if(r.ok)throw unreachable();j={}}
     }finally{clearTimeout(tm)}
     if(!j||typeof j!=='object')j={};
     if(!r.ok){const err=new Error(friendly(r.status,j.error,ctx));err.status=r.status;throw err}return j}
-  const pull=(cursor,docs)=>api('/v1/sync',{protocol:PROTO,device_id:state.device,cursor:cursor||0,docs:docs||[]},'POST',undefined,'sync')
+  // wait: seconds the server may hold the request while nothing is new (only sent when there is nothing to push)
+  const pull=(cursor,docs,wait)=>api('/v1/sync',{protocol:PROTO,device_id:state.device,cursor:cursor||0,docs:docs||[],...(wait?{wait}:{})},'POST',undefined,'sync',undefined,
+      wait?{timeout:(wait+12)*1000,abortable:ac=>{listenAbort=ac}}:undefined)
     .then(res=>{if(!res||typeof res.cursor!=='number'||!Array.isArray(res.docs)){const e=new Error('The sync server sent an answer Sundial does not understand. Nothing was changed; it will retry.');e.status=0;throw e}return res});
   // The keycheck cannot be tombstoned or change kind (the server rejects exists/id/kind), so one found under this
   // server, account and token is cached for the sign-in: a new sign-in or a deleted account means a new token and a
@@ -93,7 +103,8 @@ const Sync=(()=>{
   // Each mark carries a generation number, so an edit made while a request is in flight stays dirty afterwards.
   // (Nothing on the apply path calls this, so there is no "applying" guard: one would drop the user's own edits made
   // while pulled documents are being decrypted.)
-  function markDirty(id){const s=st();s.dirty[id]=++gen;delete s.rejected[id];if(s.mode!=='off'&&key)schedule(2000)}
+  // (sent 0.6 s after the last change when the server pushes news to the other devices at once, 2 s otherwise)
+  function markDirty(id){const s=st();s.dirty[id]=++gen;delete s.rejected[id];if(s.mode!=='off'&&key)schedule(canWait?600:2000)}
   // Only things this device actually has: untouched defaults (labels never renamed, no routines, no note) must never
   // travel, or a brand-new second PC would overwrite the first one's.
   function markAllDirty(){const s=st();for(const t of state.tasks){if(!t.example)s.dirty['task:'+t.id]=++gen}for(const id in state.tombstones)s.dirty['task:'+id]=++gen;
@@ -133,15 +144,22 @@ const Sync=(()=>{
   async function lostKey(msg){const s=st();await forgetKey(false);s.keyOk=false;s.lastError=msg;save();emit('lostkey',msg)}
 
   // ----- the sync itself -----
-  async function syncNow(){const s=st();if(switching||s.mode==='off'||!s.server||!s.token||!key)return false;
-    if(running){queued=true;return false}running=true;emit('start');
+  // listen: nothing to send, so ask the server to hold the request until there is news (see WAIT_SECS above).
+  async function syncNow(listen){const s=st();if(switching||s.mode==='off'||!s.server||!s.token||!key)return false;
+    // a sync that has something to do does not queue behind a request that is only listening: that one is let go
+    if(running){if(listening&&!listen)stopListening();if(!listen)queued=true;return false}running=true;
+    const wait=listen&&canWait&&!Object.keys(s.dirty).length?WAIT_SECS:0;listening=wait>0;listenCancelled=false;if(!listening)emit('start');
+    const began=Date.now();let ok=false,news=false,after=null;
     try{
       const snapshot={...s.dirty};const docs=[];
       for(const did in snapshot){const d=buildDoc(did);if(!d){delete s.dirty[did];continue}const e=d.deleted?{nonce:'',ct:''}:await enc(d.kind,d.id,d.body);docs.push({id:d.id,kind:d.kind,updated_at:d.updated_at,deleted:d.deleted,nonce:e.nonce,ct:e.ct})}
       // One request carries about 2 MB of documents at most (the server takes 8), so a long spell offline still syncs.
       const batches=[];{let cur=[],size=0;for(const d of docs){const n=d.ct.length+300;if(cur.length&&(size+n>2e6||cur.length>=300)){batches.push(cur);cur=[];size=0}cur.push(d);size+=n}if(cur.length)batches.push(cur)}
       let cursor=s.cursor||0,more=true,bi=0,changed=false;
-      while(more||bi<batches.length){const res=await pull(cursor,batches[bi]||[]);
+      while(more||bi<batches.length){const t0=Date.now();const res=await pull(cursor,batches[bi]||[],listening&&bi===0?wait:0);
+        canWait=res.wait===true;
+        // the server's clock against this one, from a request that was answered at once (a held one says nothing about latency)
+        if(typeof res.now==='number'&&!listening)skew=res.now-(t0+Date.now())/2;
         if(bi<batches.length){for(const r of res.rejected||[]){const did=(r.kind==='task'?'task:':r.kind==='note'?'note:':'')+r.id;s.rejected[did]=r.reason||'rejected'}}
         bi++;
         // The server was restored from a backup: forget our place in its history and offer everything again.
@@ -151,16 +169,29 @@ const Sync=(()=>{
         if(!key)return false;
         cursor=res.cursor;more=!!res.more}
       for(const did in snapshot)if(s.dirty[did]===snapshot[did])delete s.dirty[did];
-      s.cursor=cursor;s.lastSync=Date.now();s.lastError='';save();
+      // A check that found nothing changes nothing worth writing: the state is saved when something moved, and
+      // otherwise every five minutes so the "last synced" time on disk is never far behind.
+      news=changed||cursor!==(s.cursor||0)||docs.length>0;const moved=news||!!s.lastError;
+      s.cursor=cursor;s.lastSync=Date.now();s.lastError='';if(moved||Date.now()-lastSaved>300000){save();lastSaved=Date.now()}
       // not under a field someone is typing in: the redraw waits until they leave it (renderWhenIdle in ui.js)
       if(changed){if(typeof renderWhenIdle==='function')renderWhenIdle();else if(typeof render==='function')render()}
-      emit('ok');return true;
+      ok=true;if(!listening||moved)after='ok';return true;
     }catch(e){
-      if(e.status===401){await signOutLocal('This PC was signed out of sync: the account was reset or removed. Your days are still here. Sign in again to resume.',false);emit('signedout');return false}
-      slowOn(e);s.lastError=e.message||String(e);save();emit('error');return false}
-    finally{running=false;if(queued){queued=false;schedule(800)}}
+      if(listening&&listenCancelled)return false;   // let go on purpose: something here needs sending
+      if(e.status===401){await signOutLocal('This '+(window.SundialDesktop?'PC':'device')+' was signed out of sync: from another device, or because the account was reset or removed. Your days are still here. Sign in again to resume.',false);emit('signedout');return false}
+      slowOn(e);s.lastError=e.message||String(e);save();after='error';return false}
+    finally{const was=listening;running=false;listening=false;listenAbort=null;
+      // told only now, so whoever redraws the status line no longer sees a sync in flight
+      if(after)emit(after);
+      // a held request that came straight back with nothing: this server is not holding, so fall back to the 10-second check for a while
+      if(was&&ok&&!news&&Date.now()-began<2000)listenOff=Date.now()+5*60000;
+      if(queued){queued=false;schedule(was?0:800)}else if(ok)listenSoon(was?50:400)}
   }
-  function schedule(ms){clearTimeout(timer);timer=setTimeout(()=>{syncNow().catch(()=>{})},ms)}
+  function schedule(ms){clearTimeout(timer);timer=setTimeout(()=>{timer=null;syncNow().catch(()=>{})},ms)}
+  const shouldListen=()=>canWait&&ticking&&!!key&&!switching&&!document.hidden&&!approvalTimer&&!pairing&&navigator.onLine!==false&&Date.now()>=slowUntil&&Date.now()>=listenOff;
+  // after every finished sync: listen again, unless something is waiting to be sent (its own timer is running)
+  function listenSoon(ms){clearTimeout(listenT);listenT=setTimeout(()=>{listenT=null;if(shouldListen()&&!running&&timer==null&&!Object.keys(st().dirty).length)syncNow(true).catch(()=>{})},ms)}
+  function stopListening(){if(listening&&listenAbort){listenCancelled=true;try{listenAbort.abort()}catch(e){}}}
 
   // ----- setup flows -----
   async function health(server){const s=st();const keep=s.server;s.server=server;try{return await api('/v1/health',null,'GET','')}finally{s.server=keep}}
@@ -245,7 +276,7 @@ const Sync=(()=>{
       schedule(300);emit('ok');return {how,code:newCode}
     }finally{switching=false}}
   // Hold new syncs and let one in flight finish, so a change of account never races a request made against the old one.
-  async function quiesce(){switching=true;clearTimeout(timer);queued=false;for(let i=0;i<300&&running;i++)await new Promise(res=>setTimeout(res,100))}
+  async function quiesce(){switching=true;clearTimeout(timer);timer=null;clearTimeout(listenT);queued=false;stopListening();for(let i=0;i<300&&running;i++)await new Promise(res=>setTimeout(res,100))}
   // Best effort: a static token comes back when the server restarts anyway, and a failure here changes nothing for the user.
   const logoutToken=(server,token)=>(!server||!token)?Promise.resolve():api('/v1/auth/logout',{},'POST',token,undefined,server).catch(()=>{});
   // The desktop that has synced with a static token against the hosted server since before email sign-in existed.
@@ -436,14 +467,22 @@ const Sync=(()=>{
   // device list and the approval prompt on other devices say "DANNY-PC", not "Win32".
   async function ensureMachine(){if(machine||!window.SundialDesktop||!window.SundialDesktop.machineName)return;try{const n=await window.SundialDesktop.machineName();if(n)machine=String(n).slice(0,40)}catch(e){}}
   const emit=(ev,arg)=>listeners.forEach(f=>{try{f(ev,arg)}catch(e){}});
+  // What the account holds on the server, against its limit: {bytes, quota, docs}, or null from a server that does not say.
+  const usage=async()=>{const r=await api('/v1/account',null,'GET');return r&&typeof r.bytes==='number'?{bytes:r.bytes,quota:r.quota||0,docs:r.docs||0}:null};
+  // The devices signed in to this account: {list:[{id,name,platform,last_seen,created_at,current}], canRevoke}; null from a server without the list.
+  const devices=async()=>{try{const r=await api('/v1/devices',null,'GET');return {list:Array.isArray(r.devices)?r.devices:[],canRevoke:!!r.can_revoke}}catch(e){if(e.status===404||e.status===405)return null;throw e}};
+  // Signs another device out: its token stops working, what it holds stays on it.
+  const revokeDevice=id=>api('/v1/devices/revoke',{id:String(id)},'POST');
   // A visible window checks every 10 seconds, so an approval request from a new PC shows up quickly; hidden, every
   // minute. The tick yields to the pairing loop while that is pulling anyway, and sits out a 429 backoff.
   // The regular tick: every 10 s while the window is visible, every 60 s hidden, never beside the pairing watch loop or
   // inside a 429 back-off. Started once, at launch when a key is already there or the moment this device gets one.
   let ticking=false;
-  function startTicking(){if(ticking)return;ticking=true;let n=0;setInterval(()=>{n++;if(approvalTimer||Date.now()<slowUntil)return;if(!document.hidden||n%6===0)schedule(0)},10*1000);addEventListener('online',()=>schedule(0));
-    // browsers freeze background tabs (phones especially): coming back, sync at once instead of waiting for the next tick
-    if(!window.SundialDesktop)document.addEventListener('visibilitychange',()=>{if(!document.hidden)schedule(0)})}
+  function startTicking(){if(ticking)return;ticking=true;let n=0;setInterval(()=>{n++;if(approvalTimer||Date.now()<slowUntil||running)return;if(!document.hidden||n%6===0)schedule(0)},10*1000);addEventListener('online',()=>schedule(0));
+    // Coming back into view: sync at once (browsers freeze background tabs, phones especially), which also starts the
+    // listening again. Going out of view: what is waiting to be sent goes now, not after the usual two seconds, because
+    // a phone freezes the page before then and the other devices would not see the change until it is opened again.
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden){if(!running||listening)schedule(0)}else if(Object.keys(st().dirty).length){clearTimeout(timer);timer=null;syncNow().catch(()=>{})}})}
   // The stored key, read without hiding a failure. ok: loaded. missing: the store answered and has no entry. Neither: the
   // store did not answer (a locked wallet, a keyring that is not up yet at sign-in), which says nothing about the key.
   async function readKey(){const D=window.SundialDesktop;
@@ -464,5 +503,5 @@ const Sync=(()=>{
     go()}
   return {st,markDirty,markAllDirty,syncNow,schedule,health,requestCode,verifyCode,signInByEmailKeepingKey,isSelfOnHosted,connectSelf,checkAccount,setPassphrase:unlockWith,unlockWith,setupFirst,recoveryCode,normalizeSecret,
     startPairing,cancelPairing,finishPairing,pendingPairs,finishing,approvePair,denyPair,liftPairCap,isPairing:()=>!!pairing,pairingCode:()=>pairing?pairing.code:null,pairingSince:()=>pairing?pairing.since:0,pairingReady:()=>!!(pairing&&pairing.ready),setPromptable:f=>{promptable=f},setPromptHook:f=>{promptHook=f},
-    signOut,deleteAccount,start,HOSTED_URL,hasKey:()=>!!key,isRunning:()=>running,pending:()=>Object.keys(st().dirty).length,rejected:()=>Object.keys(st().rejected).length,on:f=>listeners.push(f)};
+    signOut,deleteAccount,start,HOSTED_URL,hasKey:()=>!!key,isRunning:()=>running&&!listening,isListening:()=>listening,canListen:()=>canWait,skew:()=>skew,usage,devices,revokeDevice,pending:()=>Object.keys(st().dirty).length,rejected:()=>Object.keys(st().rejected).length,on:f=>listeners.push(f)};
 })();
