@@ -10,7 +10,7 @@ const Sync=(()=>{
   const PROTO=1;
   const HOSTED_URL='https://sync.sundial.services';
   const PAIR_TTL=15*60*1000,PAIR_UNOPENED=2*60*1000,PAIR_INFO='sundial-pair-1';
-  let key=null,timer=null,running=false,queued=false,applying=false,gen=0,machine='';const listeners=[];
+  let key=null,timer=null,running=false,queued=false,gen=0,machine='';const listeners=[];
   // switching: an account change is under way, no sync may start. pendingServer: where a signed-in device asked for a code.
   let switching=false,pendingServer='';
   // slowUntil: after a 429 every pairing loop here runs at the slow cadence and the regular tick sits out until then.
@@ -67,12 +67,21 @@ const Sync=(()=>{
     return serverMsg||('HTTP '+status);
   }
   // server: another base URL than the one signed in to (asking a code of, or signing out from, a server we are not on yet / any more).
-  async function api(path,body,method,token,ctx,server){const s=st();const tk=token===undefined?s.token:token;let r;
-    try{r=await fetch(String(server||s.server).replace(/\/+$/,'')+path,{method:method||(body?'POST':'GET'),headers:{'content-type':'application/json',...(tk?{authorization:'Bearer '+tk}:{})},body:body?JSON.stringify(body):undefined})}
-    catch(e){const err=new Error(friendly(0,'',ctx));err.status=0;throw err}
-    if(r.status===204)return null;const j=await r.json().catch(()=>({}));
+  // A request gets 30 seconds, then counts as unreachable, so one that never answers cannot hold a sync open for good.
+  // An answer that says 200 but is not JSON (a hotel Wi-Fi sign-in page) is unreachable too, never an empty success.
+  async function api(path,body,method,token,ctx,server){const s=st();const tk=token===undefined?s.token:token;let r,j;
+    const unreachable=()=>{const err=new Error(friendly(0,'',ctx));err.status=0;return err};
+    const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),30000);
+    try{
+      try{r=await fetch(String(server||s.server).replace(/\/+$/,'')+path,{method:method||(body?'POST':'GET'),headers:{'content-type':'application/json',...(tk?{authorization:'Bearer '+tk}:{})},body:body?JSON.stringify(body):undefined,signal:ac.signal})}
+      catch(e){throw unreachable()}
+      if(r.status===204)return null;
+      try{j=await r.json()}catch(e){if(r.ok)throw unreachable();j={}}
+    }finally{clearTimeout(tm)}
+    if(!j||typeof j!=='object')j={};
     if(!r.ok){const err=new Error(friendly(r.status,j.error,ctx));err.status=r.status;throw err}return j}
-  const pull=(cursor,docs)=>api('/v1/sync',{protocol:PROTO,device_id:state.device,cursor:cursor||0,docs:docs||[]},'POST',undefined,'sync');
+  const pull=(cursor,docs)=>api('/v1/sync',{protocol:PROTO,device_id:state.device,cursor:cursor||0,docs:docs||[]},'POST',undefined,'sync')
+    .then(res=>{if(!res||typeof res.cursor!=='number'||!Array.isArray(res.docs)){const e=new Error('The sync server sent an answer Sundial does not understand. Nothing was changed; it will retry.');e.status=0;throw e}return res});
   // The keycheck cannot be tombstoned or change kind (the server rejects exists/id/kind), so one found under this
   // server, account and token is cached for the sign-in: a new sign-in or a deleted account means a new token and a
   // miss. Only a found document is cached, never a null.
@@ -82,7 +91,9 @@ const Sync=(()=>{
 
   // ----- dirty tracking (called from data.js / ui.js on every local change) -----
   // Each mark carries a generation number, so an edit made while a request is in flight stays dirty afterwards.
-  function markDirty(id){if(applying)return;const s=st();s.dirty[id]=++gen;delete s.rejected[id];if(s.mode!=='off'&&key)schedule(2000)}
+  // (Nothing on the apply path calls this, so there is no "applying" guard: one would drop the user's own edits made
+  // while pulled documents are being decrypted.)
+  function markDirty(id){const s=st();s.dirty[id]=++gen;delete s.rejected[id];if(s.mode!=='off'&&key)schedule(2000)}
   // Only things this device actually has: untouched defaults (labels never renamed, no routines, no note) must never
   // travel, or a brand-new second PC would overwrite the first one's.
   function markAllDirty(){const s=st();for(const t of state.tasks){if(!t.example)s.dirty['task:'+t.id]=++gen}for(const id in state.tombstones)s.dirty['task:'+id]=++gen;
@@ -103,16 +114,20 @@ const Sync=(()=>{
       if(!(await keyOpens(key,d))){await lostKey('Another PC set this account up with a different key. Approve this PC from it, or enter its recovery code.')}
       return false}
     const body=d.deleted?null:await dec(d.kind,d.id,d.nonce,d.ct);
+    // What another device wrote is held to the same shapes as an import (cleanTask, cleanNote): it goes into markup.
+    // Every task changed here is noted for undo (noteRemote), so a later Ctrl+Z leaves it alone.
     if(d.kind==='task'){const loc=get(d.id);const tomb=state.tombstones[d.id]||0;
-      if(d.deleted){if(loc){if((loc.updatedAt||0)>d.updated_at)return false;state.tasks=state.tasks.filter(t=>t.id!==d.id);state.tombstones[d.id]=d.updated_at;return true}if(tomb<d.updated_at){state.tombstones[d.id]=d.updated_at;return true}return false}
+      if(d.deleted){if(loc){if((loc.updatedAt||0)>d.updated_at)return false;state.tasks=state.tasks.filter(t=>t.id!==d.id);state.tombstones[d.id]=d.updated_at;noteRemote(d.id);return true}if(tomb<d.updated_at){state.tombstones[d.id]=d.updated_at;return true}return false}
       if(tomb>d.updated_at)return false;
-      if(!body||typeof body!=='object'||!body.id)return false;
-      if(!loc){state.tasks.push(body);delete state.tombstones[d.id];return true}
-      if((loc.updatedAt||0)<d.updated_at){for(const k in loc)delete loc[k];Object.assign(loc,body);return true}
+      const t=cleanTask(body);if(!t||t.id!==d.id)return false;
+      if(!loc){state.tasks.push(t);delete state.tombstones[d.id];noteRemote(d.id);return true}
+      if((loc.updatedAt||0)<d.updated_at){for(const k in loc)delete loc[k];Object.assign(loc,t);noteRemote(d.id);return true}
       return false}
-    if(d.kind==='note'){if((state.notesTs[d.id]||0)>=d.updated_at)return false;if(d.deleted)delete state.notes[d.id];else state.notes[d.id]=body.html;state.notesTs[d.id]=d.updated_at;return true}
-    if(d.kind==='labels'){if((state.labelsTs||0)>=d.updated_at)return false;Object.assign(state.labels,body);state.labelsTs=d.updated_at;return true}
-    if(d.kind==='routines'){if((state.routinesTs||0)>=d.updated_at)return false;if(Array.isArray(body))state.routines=body;state.routinesTs=d.updated_at;return true}
+    if(d.kind==='note'){if(!DATE_RE.test(d.id)||(state.notesTs[d.id]||0)>=d.updated_at)return false;if(d.deleted)delete state.notes[d.id];else{if(!body||typeof body.html!=='string')return false;state.notes[d.id]=typeof cleanNote==='function'?cleanNote(body.html):body.html}state.notesTs[d.id]=d.updated_at;return true}
+    if(d.kind==='labels'){if((state.labelsTs||0)>=d.updated_at||!body||typeof body!=='object')return false;for(const [k] of COLORS){if(typeof body[k]==='string'&&body[k].trim())state.labels[k]=body[k].slice(0,40)}state.labelsTs=d.updated_at;return true}
+    if(d.kind==='routines'){if((state.routinesTs||0)>=d.updated_at)return false;
+      if(Array.isArray(body))state.routines=body.filter(r=>r&&typeof r==='object'&&typeof r.id==='string'&&ID_RE.test(r.id)).map(r=>({id:r.id,name:typeof r.name==='string'?r.name:'Routine',lines:(Array.isArray(r.lines)?r.lines:[]).filter(l=>typeof l==='string')}));
+      state.routinesTs=d.updated_at;return true}
     return false;
   }
   async function lostKey(msg){const s=st();await forgetKey(false);s.keyOk=false;s.lastError=msg;save();emit('lostkey',msg)}
@@ -123,19 +138,22 @@ const Sync=(()=>{
     try{
       const snapshot={...s.dirty};const docs=[];
       for(const did in snapshot){const d=buildDoc(did);if(!d){delete s.dirty[did];continue}const e=d.deleted?{nonce:'',ct:''}:await enc(d.kind,d.id,d.body);docs.push({id:d.id,kind:d.kind,updated_at:d.updated_at,deleted:d.deleted,nonce:e.nonce,ct:e.ct})}
-      let cursor=s.cursor||0,more=true,first=true,changed=false;
-      while(more){const res=await pull(cursor,first?docs:[]);
-        if(first){for(const r of res.rejected||[]){const did=(r.kind==='task'?'task:':r.kind==='note'?'note:':'')+r.id;s.rejected[did]=r.reason||'rejected'}}
-        first=false;
+      // One request carries about 2 MB of documents at most (the server takes 8), so a long spell offline still syncs.
+      const batches=[];{let cur=[],size=0;for(const d of docs){const n=d.ct.length+300;if(cur.length&&(size+n>2e6||cur.length>=300)){batches.push(cur);cur=[];size=0}cur.push(d);size+=n}if(cur.length)batches.push(cur)}
+      let cursor=s.cursor||0,more=true,bi=0,changed=false;
+      while(more||bi<batches.length){const res=await pull(cursor,batches[bi]||[]);
+        if(bi<batches.length){for(const r of res.rejected||[]){const did=(r.kind==='task'?'task:':r.kind==='note'?'note:':'')+r.id;s.rejected[did]=r.reason||'rejected'}}
+        bi++;
         // The server was restored from a backup: forget our place in its history and offer everything again.
-        if(res.epoch&&s.epoch&&res.epoch!==s.epoch){s.epoch=res.epoch;s.cursor=0;kcCache=null;markAllDirty();save();running=false;return syncNow()}
+        if(res.epoch&&s.epoch&&res.epoch!==s.epoch){s.epoch=res.epoch;s.cursor=0;kcCache=null;markAllDirty();save();running=false;return await syncNow()}
         if(res.epoch)s.epoch=res.epoch;
-        applying=true;try{for(const d of res.docs||[]){try{if(await applyDoc(d))changed=true}catch(e){console.warn('sync: could not apply',d.kind,d.id,e.message||e)}}}finally{applying=false}
+        for(const d of res.docs){try{if(await applyDoc(d))changed=true}catch(e){console.warn('sync: could not apply',d.kind,d.id,e.message||e)}}
         if(!key)return false;
         cursor=res.cursor;more=!!res.more}
       for(const did in snapshot)if(s.dirty[did]===snapshot[did])delete s.dirty[did];
       s.cursor=cursor;s.lastSync=Date.now();s.lastError='';save();
-      if(changed&&typeof render==='function')render();
+      // not under a field someone is typing in: the redraw waits until they leave it (renderWhenIdle in ui.js)
+      if(changed){if(typeof renderWhenIdle==='function')renderWhenIdle();else if(typeof render==='function')render()}
       emit('ok');return true;
     }catch(e){
       if(e.status===401){await signOutLocal('This PC was signed out of sync: the account was reset or removed. Your days are still here. Sign in again to resume.',false);emit('signedout');return false}
@@ -155,7 +173,7 @@ const Sync=(()=>{
     await api('/v1/auth/request',{email},'POST','','code',url)}
   // The one verify request both sign-in paths send; the desktop's name is the machine name when the shell has told us it.
   const verifyRequest=(email,code,server)=>api('/v1/auth/verify',{email,code:String(code).replace(/\D/g,''),device:{id:state.device,name:deviceName(),platform:navigator.platform}},'POST','','code',server);
-  async function verifyCode(email,code){const s=st();await ensureMachine();const server=pendingServer||s.server;const r=await verifyRequest(email,code,server);
+  async function verifyCode(email,code){const s=st();await ensureMachine();const server=pendingServer||s.server||HOSTED_URL;const r=await verifyRequest(email,code,server);
     Object.assign(s,{server,token:r.token,accountId:r.account_id,salt:r.salt,email,mode:'hosted',plan:r.plan||'beta',cursor:0,keyOk:false,lastError:'',epoch:0,rejected:{}});pendingServer='';save()}
   async function connectSelf(server,token){const s=st();s.server=server.trim();const r=await api('/v1/account',null,'GET',token.trim());
     Object.assign(s,{token:token.trim(),accountId:r.account_id,salt:r.salt,email:'',mode:'self',plan:r.plan||'',cursor:0,keyOk:false,lastError:'',epoch:0,rejected:{}});save()}
@@ -426,10 +444,24 @@ const Sync=(()=>{
   function startTicking(){if(ticking)return;ticking=true;let n=0;setInterval(()=>{n++;if(approvalTimer||Date.now()<slowUntil)return;if(!document.hidden||n%6===0)schedule(0)},10*1000);addEventListener('online',()=>schedule(0));
     // browsers freeze background tabs (phones especially): coming back, sync at once instead of waiting for the next tick
     if(!window.SundialDesktop)document.addEventListener('visibilitychange',()=>{if(!document.hidden)schedule(0)})}
-  function start(){st();ensureMachine();
-    loadKey().then(ok=>{const s=st();if(s.mode==='off')return;
-      if(ok){schedule(1500);startTicking()}
-      else if(s.keyOk){lostKey('This PC no longer has its sync key. Approve it again from another PC, or enter the recovery code.')}})}
+  // The stored key, read without hiding a failure. ok: loaded. missing: the store answered and has no entry. Neither: the
+  // store did not answer (a locked wallet, a keyring that is not up yet at sign-in), which says nothing about the key.
+  async function readKey(){const D=window.SundialDesktop;
+    try{const raw=D?await D.secret.get('sync:key'):(st().sync_key||null);if(raw){key=await keyFromRaw(raw);return {ok:true}}
+      // Linux falls back to a file when the keyring fails, and that file has no entry for a key the keyring holds
+      if(D&&D.secretStore){const kind=await D.secretStore().catch(()=>'unknown');if(kind==='file'||kind==='unknown')return {ok:false}}
+      return {ok:false,missing:true}}
+    catch(e){console.warn('sync: key read failed',e);return {ok:false}}}
+  const KEYRING_MSG='Could not read the sync key from the system keyring. Unlock it; Sundial keeps trying.';
+  // At launch a key that cannot be read is never deleted: the read is tried again (every 5 s at first, then every 30 s),
+  // and only a store that plainly has no entry leads to the "approve this PC again" prompt.
+  function start(){st();ensureMachine();let tries=0;
+    const go=()=>readKey().then(r=>{const s=st();if(s.mode==='off')return;
+      if(r.ok){if(s.lastError===KEYRING_MSG){s.lastError='';save()}schedule(1500);startTicking();if(tries)emit('ok');return}
+      if(!s.keyOk)return;
+      if(!r.missing){if(s.lastError!==KEYRING_MSG){s.lastError=KEYRING_MSG;save();emit('error')}if(tries++<240)setTimeout(go,tries<6?5000:30000);return}
+      s.keyOk=false;s.lastError='This PC no longer has its sync key. Approve it again from another PC, or enter the recovery code.';save();emit('lostkey',s.lastError)});
+    go()}
   return {st,markDirty,markAllDirty,syncNow,schedule,health,requestCode,verifyCode,signInByEmailKeepingKey,isSelfOnHosted,connectSelf,checkAccount,setPassphrase:unlockWith,unlockWith,setupFirst,recoveryCode,normalizeSecret,
     startPairing,cancelPairing,finishPairing,pendingPairs,finishing,approvePair,denyPair,liftPairCap,isPairing:()=>!!pairing,pairingCode:()=>pairing?pairing.code:null,pairingSince:()=>pairing?pairing.since:0,pairingReady:()=>!!(pairing&&pairing.ready),setPromptable:f=>{promptable=f},setPromptHook:f=>{promptHook=f},
     signOut,deleteAccount,start,HOSTED_URL,hasKey:()=>!!key,isRunning:()=>running,pending:()=>Object.keys(st().dirty).length,rejected:()=>Object.keys(st().rejected).length,on:f=>listeners.push(f)};

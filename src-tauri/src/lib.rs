@@ -67,44 +67,117 @@ fn today_utc() -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// A byte-order mark in front (some editors add one) is not part of the JSON.
+fn no_bom(text: &str) -> &str {
+    text.trim_start_matches('\u{feff}')
+}
+
+/// True when the text is a Sundial state: a JSON object with a "tasks" array. A file cut short by a power cut, or
+/// broken by a hand edit, is not.
+fn is_state(text: &str) -> bool {
+    serde_json::from_str::<Value>(no_bom(text))
+        .ok()
+        .and_then(|v| v.get("tasks").map(|t| t.is_array()))
+        .unwrap_or(false)
+}
+
+/// The daily backups in `dir` (sundial-YYYY-MM-DD.json), oldest first. Nothing else in that folder is ours to touch.
+fn daily_backups(dir: &PathBuf) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = match fs::read_dir(dir) {
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.len() == 23 && n.starts_with("sundial-") && n.ends_with(".json"))
+                    .unwrap_or(false)
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    files.sort();
+    files
+}
+
 #[tauri::command]
 fn load_db(app: AppHandle) -> Result<Option<String>, String> {
     let p = data_dir(&app)?.join(DB_FILE);
     if !p.exists() {
         return Ok(None);
     }
-    fs::read_to_string(&p).map(Some).map_err(|e| e.to_string())
+    fs::read_to_string(&p)
+        .map(|t| Some(no_bom(&t).to_string()))
+        .map_err(|e| e.to_string())
 }
 
-/// Atomic write (temp file + rename), then one backup per day, oldest pruned.
+/// Atomic write: the text goes to a temp file, is flushed to the disk, and only then takes the data file's name, so a
+/// power cut leaves either the old file or the new one, never a hollow one. Before the first write of a (UTC) day the
+/// file as it was is copied to backups/: a backup holds the state before that day's changes, so a damaging first write
+/// can never become the backup. A file that is not a readable state is not taken as a backup. Oldest backups pruned.
 #[tauri::command]
 fn save_db(app: AppHandle, json: String) -> Result<(), String> {
     let dir = data_dir(&app)?;
     let target = dir.join(DB_FILE);
     let tmp = dir.join(format!("{DB_FILE}.tmp"));
-    fs::write(&tmp, json.as_bytes()).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, &target).map_err(|e| e.to_string())?;
-
+    {
+        use std::io::Write;
+        let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        f.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
+        f.sync_all().map_err(|e| e.to_string())?;
+    }
     let backups = dir.join("backups");
-    if fs::create_dir_all(&backups).is_ok() {
+    let have_backups = fs::create_dir_all(&backups).is_ok();
+    if have_backups && target.exists() {
         let b = backups.join(format!("sundial-{}.json", today_utc()));
-        if !b.exists() {
+        if !b.exists() && fs::read_to_string(&target).map(|t| is_state(&t)).unwrap_or(false) {
             let _ = fs::copy(&target, &b);
         }
-        if let Ok(rd) = fs::read_dir(&backups) {
-            let mut files: Vec<PathBuf> = rd
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
-                .collect();
-            files.sort();
-            while files.len() > BACKUPS_TO_KEEP {
-                let old = files.remove(0);
-                let _ = fs::remove_file(old);
-            }
+    }
+    fs::rename(&tmp, &target).map_err(|e| e.to_string())?;
+    if have_backups {
+        let mut files = daily_backups(&backups);
+        while files.len() > BACKUPS_TO_KEEP {
+            let old = files.remove(0);
+            let _ = fs::remove_file(old);
         }
     }
     Ok(())
+}
+
+/// A data file that cannot be read as a Sundial state is kept under another name instead of being written over.
+/// Returns the new file name. Refuses a file that is readable: there is nothing to set aside then.
+#[tauri::command]
+fn set_aside_db(app: AppHandle) -> Result<String, String> {
+    let dir = data_dir(&app)?;
+    let target = dir.join(DB_FILE);
+    if !target.exists() {
+        return Err("there is no data file".into());
+    }
+    if fs::read_to_string(&target).map(|t| is_state(&t)).unwrap_or(false) {
+        return Err("the data file is readable".into());
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let name = format!("sundial.unreadable-{secs}.json");
+    fs::rename(&target, dir.join(&name)).map_err(|e| e.to_string())?;
+    Ok(name)
+}
+
+/// The text of the newest daily backup that is a readable Sundial state, or None.
+#[tauri::command]
+fn newest_backup(app: AppHandle) -> Result<Option<String>, String> {
+    let backups = data_dir(&app)?.join("backups");
+    for p in daily_backups(&backups).into_iter().rev() {
+        if let Ok(t) = fs::read_to_string(&p) {
+            if is_state(&t) {
+                return Ok(Some(no_bom(&t).to_string()));
+            }
+        }
+    }
+    Ok(None)
 }
 
 #[tauri::command]
@@ -120,9 +193,16 @@ fn reveal_data(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Only web links and mail links leave the app. The opener called from Rust has no scope of its own, so anything else
+/// (a file path, a program, another scheme) would be handed to the OS as it is.
 #[tauri::command]
 fn open_url(app: AppHandle, url: String) -> Result<(), String> {
-    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+    let u = url.trim();
+    let l = u.to_ascii_lowercase();
+    if !(l.starts_with("https://") || l.starts_with("http://") || l.starts_with("mailto:")) {
+        return Err("unsupported link".into());
+    }
+    app.opener().open_url(u.to_string(), None::<&str>).map_err(|e| e.to_string())
 }
 
 // ---------- notifications / autostart ----------
@@ -1127,7 +1207,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            load_db, save_db, data_path, reveal_data, open_url, notify,
+            load_db, save_db, set_aside_db, newest_backup, data_path, reveal_data, open_url, notify,
             autostart_get, autostart_set, secret_set, secret_get, secret_delete, secret_store,
             set_hotkeys, ai_parse, app_version, update_check, update_install,
             toast_show, toast_payload, toast_action, deep_link_pending, machine_name,

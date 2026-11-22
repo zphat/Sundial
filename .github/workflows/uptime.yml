@@ -1,5 +1,8 @@
 # Uptime check for the hosted sync server. GitHub emails the repository owner when a scheduled run fails,
 # so a failing health check is the alert: no extra service, no account to make.
+# One failed probe is not an outage (a network blip, a restart for updates): the check tries three times, a minute
+# apart, and the run fails only when all three fail. A run that GitHub itself could not start still shows as failed;
+# that one is GitHub's, and the next run tells the two apart.
 name: uptime
 
 on:
@@ -10,16 +13,33 @@ on:
 jobs:
   health:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
       - name: sync.sundial.services must answer healthy
         run: |
           set -o pipefail
-          body=$(curl -sS --max-time 15 https://sync.sundial.services/v1/health) || { echo "::error::sync server unreachable"; exit 1; }
-          echo "$body"
-          echo "$body" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("ok") is True and d.get("mode")=="hosted", d' \
-            || { echo "::error::sync server answered but is not healthy: $body"; exit 1; }
+          # healthy = it answers, says ok (the server reports its own database trouble there) and runs in hosted mode
+          check() {
+            body=$(curl -sS --max-time 15 https://sync.sundial.services/v1/health) || { echo "sync server unreachable"; return 1; }
+            echo "$body"
+            echo "$body" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("ok") is True and d.get("mode")=="hosted", d' \
+              || { echo "sync server answered but is not healthy: $body"; return 1; }
+          }
+          ok=0
+          for i in 1 2 3; do
+            if check; then ok=1; break; fi
+            echo "check $i of 3 failed"
+            if [ "$i" -lt 3 ]; then sleep 60; fi
+          done
+          if [ "$ok" != 1 ]; then echo "::error::sync server down: three checks a minute apart all failed"; exit 1; fi
           # the certificate must have more than 14 days left (Caddy renews at 30; this catches a stuck renewal)
-          exp=$(echo | openssl s_client -servername sync.sundial.services -connect sync.sundial.services:443 2>/dev/null | openssl x509 -noout -enddate | cut -d= -f2)
+          exp=""
+          for i in 1 2 3; do
+            exp=$(echo | timeout 20 openssl s_client -servername sync.sundial.services -connect sync.sundial.services:443 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2 || true)
+            if [ -n "$exp" ]; then break; fi
+            sleep 20
+          done
+          if [ -z "$exp" ]; then echo "::error::could not read the TLS certificate of sync.sundial.services"; exit 1; fi
           left=$(( ( $(date -d "$exp" +%s) - $(date +%s) ) / 86400 ))
           echo "certificate expires in $left days ($exp)"
           [ "$left" -gt 14 ] || { echo "::error::TLS certificate expires in $left days"; exit 1; }

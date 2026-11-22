@@ -130,6 +130,8 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .grid7 .d.over{background:var(--accent-soft);box-shadow:inset 0 0 0 1.5px var(--accent-ink)}
 .grid7 .d .dots{position:absolute;bottom:3px;left:0;right:0;display:flex;justify-content:center;gap:2px}
 .grid7 .d .dots i{width:3px;height:3px;border-radius:50%;background:var(--dot)}
+:root[data-theme="light"] .grid7 .d:not(.sel) .dots i{background:color-mix(in srgb,var(--dot) 60%,var(--fg-2))}
+@media (prefers-color-scheme: light){ :root:not([data-theme="dark"]) .grid7 .d:not(.sel) .dots i{background:color-mix(in srgb,var(--dot) 60%,var(--fg-2))} }
 .legend{padding:0 14px 10px;display:grid;grid-template-columns:1fr 1fr;gap:3px 10px;margin-top:0}
 .legend .eyebrow,.legend .hint{grid-column:1/-1}
 .legend .row{min-width:0}
@@ -224,7 +226,10 @@ input[type=range]{accent-color:var(--accent);width:120px}
 .task .meta .al{color:var(--sun-ink)}
 .task .meta .rp{color:var(--fg-3)}
 .task .note-ind{color:var(--fg-3);font-size:11px}
-.task .acts{display:flex;gap:2px;opacity:0;transition:opacity .15s}
+.task .acts{display:flex;gap:2px;opacity:0;transition:opacity .15s;grid-column:4}
+.task .check{grid-column:5}
+/* no hover (tablets, phones on their side): buttons at opacity 0 would still take taps next to the done circle */
+@media (hover:none){.task .acts{display:none}.task.open .acts{display:flex;opacity:1}}
 .task:hover .acts,.task.open .acts,.task.cursor .acts{opacity:1}
 .task .acts button{width:22px;height:22px;border-radius:6px;color:var(--fg-3);font-size:13px;display:grid;place-items:center;transition:background .15s,color .15s}
 .task .acts button:hover{background:var(--line-2);color:var(--fg)}
@@ -743,8 +748,9 @@ html.nomotion *{transition:none!important;animation:none!important}
   .task .check::before{content:"";position:absolute;inset:-12px}
   .task .check{width:24px;height:24px}
   .task .check svg{width:13px;height:13px}
-  .task .acts{display:none}
+  .task .acts{display:none;grid-column:3}
   .task.open .acts{display:flex;opacity:1}
+  .task .check{grid-column:4}
   .task .acts button{width:36px;height:36px}
   .drawer .fields{grid-template-columns:1fr 1fr}
   .drawer .f input,.drawer .f select{min-height:44px;padding:8px 10px}

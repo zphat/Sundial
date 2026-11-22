@@ -123,7 +123,7 @@ class Store:
         return {"token": token, "account_id": account, "salt": self.salt(account), "plan": "beta"}
 
     def sync(self, account, device_id, cursor, docs):
-        pushed, rejected = set(), []
+        pushed, rejected, stale = set(), [], []
         t = now_ms()
         used = self.db.execute("SELECT COALESCE(SUM(LENGTH(ct)),0) FROM docs WHERE account=?", (account,)).fetchone()[0] if docs else 0
         for d in docs:
@@ -137,7 +137,7 @@ class Store:
             cur = self.db.execute("SELECT updated_at, LENGTH(ct), kind FROM docs WHERE account=? AND id=?", (account, did)).fetchone()
             if cur and (kind == "keycheck" or cur[2] == "keycheck"): rejected.append({"id": did, "kind": kind, "reason": "exists"}); continue   # the key is set once, never withdrawn or re-typed
             if cur and cur[2] != kind: rejected.append({"id": did, "kind": kind, "reason": "kind"}); continue
-            if cur and cur[0] > up: continue   # the stored version is newer; it comes back in the pull
+            if cur and cur[0] > up: stale.append(did); continue   # the stored version is newer: it goes back in this response
             if deleted: ct = ""
             nxt = used - (cur[1] if cur else 0) + len(ct)
             if nxt > QUOTA: rejected.append({"id": did, "kind": kind, "reason": "quota"}); continue
@@ -152,6 +152,12 @@ class Store:
         more = len(rows) > PAGE
         rows = rows[:PAGE]
         out = [{"id": r[0], "kind": r[1], "updated_at": r[2], "deleted": bool(r[3]), "nonce": r[4], "ct": r[5], "seq": r[6]} for r in rows if r[0] not in pushed]
+        # a push that lost to a newer stored version gets that version back, even when the cursor is already past it
+        have = {o["id"] for o in out}
+        for did in stale[:200]:
+            if did in have: continue
+            r = self.db.execute("SELECT id,kind,updated_at,deleted,nonce,ct,seq FROM docs WHERE account=? AND id=?", (account, did)).fetchone()
+            if r: out.append({"id": r[0], "kind": r[1], "updated_at": r[2], "deleted": bool(r[3]), "nonce": r[4], "ct": r[5], "seq": r[6]}); have.add(did)
         # nothing newer: the account's real position, even when that is below the cursor sent (restore from backup)
         new_cursor = rows[-1][6] if rows else self.db.execute("SELECT seq FROM accounts WHERE id=?", (account,)).fetchone()[0]
         epoch = self.db.execute("SELECT value FROM meta WHERE key='epoch'").fetchone()[0]

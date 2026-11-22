@@ -29,6 +29,8 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 const PROTOCOL: i64 = 1;
 const PAGE: i64 = 500;
+// About 2 MB of ciphertext per page: 500 rows at the 64 KB document limit would be 44 MB in one response.
+const PAGE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CT_B64: usize = 64 * 1024 * 4 / 3 + 8;
 const FUTURE_MS: i64 = 24 * 3600 * 1000;
 const CODE_TTL_MS: i64 = 10 * 60 * 1000;
@@ -99,8 +101,13 @@ fn mail_limited() -> ApiError {
 fn mail_unavailable() -> ApiError {
     ApiError(StatusCode::SERVICE_UNAVAILABLE, "email could not be sent right now, try again in a few minutes".to_string())
 }
+/// When a request last failed inside the server (ms since the epoch, 0 = never). /v1/health reports it for five
+/// minutes, so the uptime check sees a server that answers but cannot do its work (a full disk, a locked database).
+static LAST_INTERNAL_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
 fn internal<E: std::fmt::Display>(e: E) -> ApiError {
     tracing::error!("internal: {e}");
+    LAST_INTERNAL_MS.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
     ApiError(StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
 }
 
@@ -163,7 +170,7 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && s.len() <= 256)
 }
 
 /// The client address for rate limits. Behind the reverse proxy on the same box (Caddy replaces any incoming
@@ -218,7 +225,7 @@ fn salt_for(db: &Connection, account: &str) -> rusqlite::Result<String> {
 fn allow(app: &App, key: &str, max: u32, window: Duration) -> bool {
     let mut m = app.limits.lock().unwrap();
     let now = Instant::now();
-    if m.len() > 50_000 {
+    if m.len() > 2_000 {
         m.retain(|_, v| now.duration_since(v.0) < v.2);
     }
     let e = m.entry(key.to_string()).or_insert((now, 0, window));
@@ -229,8 +236,16 @@ fn allow(app: &App, key: &str, max: u32, window: Duration) -> bool {
     e.1 <= max
 }
 
-async fn health(State(app): State<App>) -> Json<Value> {
-    Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION"), "mode": if app.hosted { "hosted" } else { "self" }, "protocol": PROTOCOL }))
+async fn health(State(app): State<App>) -> (StatusCode, Json<Value>) {
+    // ok means the database answers and nothing failed inside the server in the last five minutes
+    let db_ok = match app.db.lock() {
+        Ok(db) => db.query_row("SELECT value FROM meta WHERE key='epoch'", params![], |r| r.get::<_, i64>(0)).optional().is_ok(),
+        Err(_) => false,
+    };
+    let last = LAST_INTERNAL_MS.load(std::sync::atomic::Ordering::Relaxed);
+    let ok = db_ok && (last == 0 || now_ms() - last > 5 * 60 * 1000);
+    let code = if ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    (code, Json(json!({ "ok": ok, "version": env!("CARGO_PKG_VERSION"), "mode": if app.hosted { "hosted" } else { "self" }, "protocol": PROTOCOL })))
 }
 
 #[derive(Deserialize)]
@@ -550,15 +565,25 @@ async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncR
     if body.protocol != PROTOCOL {
         return Err(bad("unsupported protocol"));
     }
-    // per device, not per token: a self-hosted household shares one token across its PCs
-    if !allow(&app, &format!("sync:{token}:{}", body.device_id.chars().take(40).collect::<String>()), 60, Duration::from_secs(60)) {
+    // the device id is stored with every document a device writes, so it is bounded like everything else
+    if body.device_id.len() > 64 {
+        return Err(bad("device id too long"));
+    }
+    // per device, not per token: a self-hosted household shares one token across its PCs. Keyed on the token's hash,
+    // so the limiter never holds a raw token.
+    if !allow(&app, &format!("sync:{}:{}", token_hash(&token), body.device_id), 60, Duration::from_secs(60)) {
         return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "slow down".into()));
     }
     let mut db = app.db.lock().unwrap();
     let acct = account_for(&db, &token).map_err(internal)?.ok_or_else(unauthorized)?;
+    // and a ceiling per account, so inventing device ids buys nothing (ten devices at their fastest stay far below it)
+    if !allow(&app, &format!("acct:{acct}"), 600, Duration::from_secs(60)) {
+        return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "slow down".into()));
+    }
     let now = now_ms();
     let mut pushed: Vec<String> = Vec::new();
     let mut rejected: Vec<Value> = Vec::new();
+    let mut stale: Vec<String> = Vec::new();
     let tx = db.transaction().map_err(internal)?;
     // Ciphertext the account holds now; kept current while documents are accepted below.
     let mut used: i64 = if body.docs.is_empty() {
@@ -572,7 +597,7 @@ async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncR
             Some("id")
         } else if !KINDS.contains(&d.kind.as_str()) {
             Some("kind")
-        } else if d.ct.len() > MAX_CT_B64 {
+        } else if d.ct.len() > MAX_CT_B64 || d.nonce.len() > 64 {
             Some("size")
         } else if d.updated_at > now + FUTURE_MS {
             Some("future")
@@ -606,7 +631,9 @@ async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncR
                 continue;
             }
             if u > d.updated_at {
-                continue; // the stored version is newer; it will come back in the pull
+                // the stored version is newer: it goes back in this response, whatever the device's cursor says
+                stale.push(d.id.clone());
+                continue;
             }
             old_len = len;
         }
@@ -629,6 +656,8 @@ async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncR
     let mut out = Vec::new();
     let mut last_seq = body.cursor;
     let mut count = 0i64;
+    let mut bytes = 0usize;
+    let mut more = false;
     {
         let mut st = tx
             .prepare("SELECT id,kind,updated_at,deleted,nonce,ct,seq FROM docs WHERE account=?1 AND seq>?2 ORDER BY seq LIMIT ?3")
@@ -648,10 +677,14 @@ async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncR
             .map_err(internal)?;
         for row in rows {
             let (id, kind, updated_at, deleted, nonce, ct, seq) = row.map_err(internal)?;
-            count += 1;
-            if count > PAGE {
+            // a page ends after PAGE rows or about PAGE_BYTES of ciphertext, whichever comes first; it always holds
+            // at least one row, and the client asks again while `more` is true
+            if count >= PAGE || bytes > PAGE_BYTES {
+                more = true;
                 break;
             }
+            count += 1;
+            bytes += ct.len();
             last_seq = seq;
             if pushed.contains(&id) {
                 continue;
@@ -659,7 +692,27 @@ async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncR
             out.push(json!({ "id": id, "kind": kind, "updated_at": updated_at, "deleted": deleted != 0, "nonce": nonce, "ct": ct, "seq": seq }));
         }
     }
-    let more = count > PAGE;
+    // A push that lost to a newer stored version: the device may already be past that version's place in the history
+    // (it pulled it, then edited with a clock that runs behind the writer's). Without this it would go on showing an
+    // edit the server never took, and nobody would know. The stored version goes back so every device agrees.
+    for id in stale.iter().take(200) {
+        if bytes > 2 * PAGE_BYTES {
+            break;
+        }
+        if out.iter().any(|v: &Value| v["id"].as_str() == Some(id.as_str())) {
+            continue;
+        }
+        let row = tx
+            .query_row("SELECT kind,updated_at,deleted,nonce,ct,seq FROM docs WHERE account=?1 AND id=?2", params![acct, id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, i64>(5)?))
+            })
+            .optional()
+            .map_err(internal)?;
+        if let Some((kind, updated_at, deleted, nonce, ct, seq)) = row {
+            bytes += ct.len();
+            out.push(json!({ "id": id, "kind": kind, "updated_at": updated_at, "deleted": deleted != 0, "nonce": nonce, "ct": ct, "seq": seq }));
+        }
+    }
     if count == 0 {
         // Nothing newer: hand back the account's real position. After a restore from backup this is lower than the
         // cursor the client sent, which is the point; the client stores whatever comes back. No loop: `more` is false.
@@ -697,6 +750,28 @@ button,a.btn{{font:inherit;font-weight:bold;font-size:14px;border-radius:999px;p
 <div class="row"><button class="primary" id="cp">Copy code</button><a class="btn" href="sundial://signin?code={code}">Open Sundial</a>{web_btn}</div>
 <small>If you didn&#8217;t ask for this, close this page; nothing happens without the code.</small></div>
 <script>document.getElementById('cp').onclick=function(){{navigator.clipboard.writeText('{code}').then(function(){{document.getElementById('cp').textContent='Copied'}},function(){{}})}}</script></body></html>"##))
+}
+
+/// Resolves on Ctrl-C or, on Unix, on SIGTERM: what systemd, a reboot and `docker stop` send. Requests in flight finish.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = term => {}
+    }
 }
 
 #[tokio::main]
@@ -757,7 +832,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(bind).await.expect("bind");
     // Connect info is what lets the handlers see the peer address (and so trust X-Forwarded-For only from the proxy).
     axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(async { let _ = tokio::signal::ctrl_c().await; })
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("server");
 }

@@ -86,15 +86,19 @@ The operator configures one or more tokens. There is no email step. `GET /v1/acc
   "rejected": [ { "id": "2026-10-17", "kind": "note", "reason": "size" } ] }
 ```
 Server rules for each pushed document: if there is no stored version, or the pushed `updated_at` is greater than or
-equal to the stored one, store it and give it a new sequence number. Otherwise ignore it; the stored version will
-come back in the pull and the client converges. At most 500 documents are returned per call; `more: true` means
-call again with the new cursor.
+equal to the stored one, store it and give it a new sequence number. Otherwise it is not stored, and the stored
+version is returned in `docs` of the same response, whatever the cursor says (server 0.1.12 and later): a device that
+already pulled that version, and then edited with a clock that runs behind the writer's, would otherwise keep showing
+an edit the server never took. At most 500 documents or about 2 MB of ciphertext are returned per call, whichever
+comes first; `more: true` means call again with the new cursor. A client pushes in batches of about 2 MB too (the
+request body limit is 8 MB), so a long spell offline never has to fit in one request. `device_id` is at most 64
+characters.
 
 Documents that fail validation are not stored and are listed in `rejected` with a reason: `id` (empty or over
-128 characters), `kind` (not one of the six), `size` (ciphertext over 64 KB), `future` (`updated_at` more than
+128 characters), `kind` (not one of the six), `size` (ciphertext over 64 KB, or a nonce over 64 characters), `future` (`updated_at` more than
 24 hours ahead of the server clock) or `quota` (the account would pass 50 MB of ciphertext). A client must not
 treat a rejected document as synced: keep it dirty or tell the user. Documents skipped because the stored copy is
-newer are not listed; they come back in the pull.
+newer are not listed; the stored copy comes back in `docs`.
 
 `cursor` is per account, assigned by the server, and opaque to clients: store whatever comes back and send it next
 time. When nothing newer than the sent cursor exists, the server returns the account's current sequence number,
@@ -123,9 +127,10 @@ Self-hosted (token) accounts: bearer only, no body.
   labels and routines compare their own timestamps. Applying never marks anything dirty.
 - A `401` from `/v1/sync` means the token is gone (signed out elsewhere, account deleted or reset): the client drops
   its sync state and asks for a new sign-in. Local data stays.
-- Clocks: `updated_at` comes from device clocks. A device whose clock is badly ahead "wins" edits it should not;
-  clients therefore cap their own `updated_at` at `max(now, last seen server time)` and the server rejects
-  documents more than 24 hours in the future.
+- Clocks: `updated_at` comes from device clocks, and a clock that runs ahead must not shadow later edits made
+  elsewhere. So a client stamps every change with `max(now, stamp of the version it replaces + 1)`: an edit is
+  always later than what it edits, whichever clock wrote that. Tombstones follow the same rule, and a task put back
+  after a delete is stamped later than its tombstone. The server rejects documents more than 24 hours in the future.
 
 ## Approving another PC
 

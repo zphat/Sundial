@@ -5,6 +5,31 @@ const anim={enter:null,pop:null,slide:null};
 let lastDeleted=null, recordingHotkey=false, sheetTab='general';
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// Day notes are HTML made by the editor. Anything that reaches them from outside (a paste, an import, another device)
+// is cut down to what the toolbar itself produces: no images, links, scripts or event handlers, and no style but a
+// highlight colour. A note that needs no change comes back as the very same string.
+const NOTE_KEEP=new Set(['H1','H2','H3','H4','P','DIV','BR','UL','OL','LI','B','STRONG','I','EM','U','S','STRIKE','DEL','MARK','SPAN','BLOCKQUOTE']);
+const NOTE_DROP=new Set(['SCRIPT','STYLE','IFRAME','FRAME','FRAMESET','OBJECT','EMBED','LINK','META','BASE','IMG','PICTURE','SOURCE','SVG','MATH','VIDEO','AUDIO','TRACK','CANVAS','FORM','INPUT','BUTTON','TEXTAREA','SELECT','OPTION','NOSCRIPT','TEMPLATE','TITLE','HEAD','XMP','PLAINTEXT']);
+const NOTE_BG=/^(?:rgba?\(\s*[\d.]+%?(?:\s*,\s*[\d.]+%?){2,3}\s*\)|#[0-9a-f]{3,8}|[a-z]{3,20})$/i;
+function cleanNote(html){
+  if(typeof html!=='string')return '';
+  if(!html.includes('<'))return html;
+  let doc;try{doc=new DOMParser().parseFromString('<!doctype html><body>'+html,'text/html')}catch(e){return esc(html.replace(/<[^>]*>/g,' '))}
+  let changed=false;
+  const walk=node=>{
+    for(const n of [...node.childNodes]){if(n.nodeType!==1&&n.nodeType!==3){n.remove();changed=true}}
+    for(const el of [...node.children]){const tag=el.tagName.toUpperCase();
+      if(NOTE_DROP.has(tag)){el.remove();changed=true;continue}
+      walk(el);
+      if(!NOTE_KEEP.has(tag)){el.replaceWith(...el.childNodes);changed=true;continue}
+      for(const a of [...el.attributes]){
+        if(a.name==='style'&&(tag==='MARK'||tag==='SPAN')){const m=/(?:^|;)\s*(background(?:-color)?)\s*:\s*([^;]+)/i.exec(a.value),v=m?m[2].trim():'';
+          if(!m||!NOTE_BG.test(v)){el.removeAttribute('style');changed=true}
+          else if(a.value.split(';').filter(s=>s.trim()).length!==1){el.setAttribute('style',m[1].toLowerCase()+':'+v);changed=true}}
+        else{el.removeAttribute(a.name);changed=true}}}};
+  walk(doc.body);
+  return changed?doc.body.innerHTML:html}
+const noteWords=html=>String(html||'').replace(/<[^>]+>/g,' ').replace(/&nbsp;/g,' ').trim().split(/\s+/).filter(Boolean).length;
 const CHECK='<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 6.5l2.6 2.6L10 3.5"/></svg>';
 const LOCK='<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="2" y="5.5" width="8" height="5.5" rx="1.2"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5"/></svg>';
 const UNLOCK='<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="2" y="5.5" width="8" height="5.5" rx="1.2"/><path d="M4 5.5V4a2 2 0 0 1 4 0"/></svg>';
@@ -108,23 +133,37 @@ function openDrawerEl(dr,instant){
 function collapseDrawerEl(dr){dr.classList.add('instant');dr.style.height=dr.offsetHeight+'px';void dr.offsetHeight;dr.classList.remove('instant','on');dr.style.height='0px'}
 let lastView=null,lastSel=null,sheetAnim=false,viewInT=null;
 // Redraws are whole-pane innerHTML swaps; keep the user's scroll positions so nothing jumps.
-function render(){const keepList=$('#list')?.scrollTop||0,cols=$('.cols'),keepCols=cols?cols.scrollTop:0,keepWin=window.scrollY;renderCore();const nl=$('#list');if(nl&&keepList)nl.scrollTop=keepList;if(cols&&keepCols)cols.scrollTop=keepCols;if(keepWin&&window.scrollY!==keepWin)window.scrollTo(0,keepWin)}
+// (The list keeps its offset only while the same day and view are showing: another day starts at its top.)
+function render(){const moved=sel!==lastSel||view!==lastView;const keepList=moved?0:$('#list')?.scrollTop||0,cols=$('.cols'),keepCols=cols?cols.scrollTop:0,keepWin=window.scrollY;renderCore();const nl=$('#list');if(nl&&keepList)nl.scrollTop=keepList;if(cols&&keepCols)cols.scrollTop=keepCols;if(keepWin&&window.scrollY!==keepWin)window.scrollTo(0,keepWin)}
+// A redraw that no click or key asked for (a sync pull, an AI answer, another tab's save) waits while someone is typing
+// in a field the redraw would rebuild: the pane swap would drop the focus, and the next keys would run as shortcuts
+// (Backspace deletes the open task). It runs as soon as they leave the field.
+let renderWaiting=false;
+function renderWhenIdle(){const busy=()=>{const a=document.activeElement;return !!a&&a.id!=='qa'&&!!a.closest('#cols')&&(/INPUT|TEXTAREA|SELECT/.test(a.tagName)||a.isContentEditable)};
+  if(!busy()){render();return}if(renderWaiting)return;renderWaiting=true;
+  // leaving the field is the signal; the once-a-second look covers a field that went away without a focusout (its row was redrawn or removed)
+  const go=()=>{if(busy())return;document.removeEventListener('focusout',f,true);clearInterval(iv);renderWaiting=false;render()};
+  const f=()=>setTimeout(go,0);document.addEventListener('focusout',f,true);const iv=setInterval(go,1000)}
 function renderCore(){
   snap();
+  // a drawer or a cursor only exists on the day list that is showing: Backspace, Space and Enter must never reach a task that is not on screen
+  if(openId){const o=get(openId);if(!o||o.date!==sel||view!=='day')openId=null}
+  if(cursorId){const c=get(cursorId);if(!c||c.date!==sel||view!=='day')cursorId=null}
+  const dayMoved=sel!==lastSel;
   const wasOpen=document.querySelector('.drawer.on [data-drawer]')?.dataset.drawer;
   const bp=$('#boardPane');if(view!==lastView){bp.classList.remove('view-in');void bp.offsetWidth;bp.classList.add('view-in');lastView=view;clearTimeout(viewInT);viewInT=setTimeout(()=>bp.classList.remove('view-in'),320)}
   if(sel!==lastSel){const te=$('#title');te.classList.remove('swap');void te.offsetWidth;te.classList.add('swap');lastSel=sel}
   const d=fromYmd(sel),ws=fromYmd(weekStart(sel));
   const ts=dayTasks(sel),done=ts.filter(x=>x.done).length;
   $('#title').innerHTML=view==='month'?`${MON[d.getMonth()]} <span class="y">${d.getFullYear()}</span>`
-    :view==='week'?`${isPhone()?'':'Week of '}${MON[ws.getMonth()].slice(0,3)} ${ws.getDate()} <span class="y">${d.getFullYear()}</span>`
+    :view==='week'?`${isPhone()?'':'Week of '}${MON[ws.getMonth()].slice(0,3)} ${ws.getDate()} <span class="y">${ws.getFullYear()}</span>`
     :`${relDay(sel)} <span class="y">${MON[d.getMonth()].slice(0,3)} ${d.getDate()}</span>${ts.length&&view==='day'?ringSvg(done,ts.length):''}`;
   document.querySelectorAll('.seg [data-view]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.view===view)));
   if(state.layout.cal){renderMini();renderUpnext();renderLegend()}
   if(state.layout.board){
     // keep what the user is typing in the quick-add across any re-render (minute ticks, completing a task)
     const q=$('#qa');const qs=q&&q.value?{v:q.value,s:q.selectionStart,e:q.selectionEnd,f:document.activeElement===q}:null;const qf=q&&document.activeElement===q;
-    const sc=$('#list')?.scrollTop||0;if(view==='day')renderDay();else if(view==='week')renderWeek();else if(view==='month')renderMonth();else renderNotes();const l=$('#list');if(l&&!anim.slide)l.scrollTop=sc;
+    const sc=$('#list')?.scrollTop||0;if(view==='day')renderDay();else if(view==='week')renderWeek();else if(view==='month')renderMonth();else renderNotes();const l=$('#list');if(l&&!anim.slide&&!dayMoved)l.scrollTop=sc;
     const q2=$('#qa');if(q2&&qs){q2.value=qs.v;previewParse();if(qs.f){q2.focus();try{q2.setSelectionRange(qs.s,qs.e)}catch(e){}}}else if(q2&&qf)q2.focus();
   }
   if(state.layout.tl)renderSide();
@@ -176,7 +215,7 @@ function drawer(x){
       <div class="f"><label>Time</label><input id="edTime" type="time" value="${x.time!=null?pad(Math.floor(x.time/60))+':'+pad(x.time%60):''}"></div>
       <div class="f"><label>Length</label><input id="edDur" placeholder="45m, 1h30" value="${fmtDur(x.dur)}"></div>
       <div class="f"><label>Repeat</label><select id="edRepeat">${['','daily','weekdays','weekly','monthly'].map(v=>`<option value="${v}" ${(x.repeat||'')===v?'selected':''}>${v||'never'}</option>`).join('')}</select></div>
-      <div class="f"><label>Remind</label><select id="edRemind">${opt('','default · '+fmtLead(S().defaultRemind))}${opt('-1','none')}${opt('5','5m before')}${opt('15','15m before')}${opt('30','30m before')}${opt('60','1h before')}${opt('120','2h before')}${opt('1440','1d before')}</select></div>
+      <div class="f"><label>Remind</label><select id="edRemind">${opt('','default · '+fmtLead(S().defaultRemind))}${opt('-1','none')}${opt('5','5m before')}${opt('15','15m before')}${opt('30','30m before')}${opt('60','1h before')}${opt('120','2h before')}${opt('1440','1d before')}${rem!==''&&!['-1','5','15','30','60','120','1440'].includes(rem)?opt(rem,fmtLead(+rem)):''}</select></div>
     </div>
     <div class="rowx"><div class="colors">${COLORS.map(([k])=>`<button data-setcolor="${k}" aria-pressed="${k===x.color}" style="--sw:var(--c-${k})" title="${esc(state.labels[k])}"></button>`).join('')}</div>
       <div class="al"><button class="tog" id="edNotify" role="switch" aria-checked="${!!x.notify}" aria-label="Notify"></button><span>Notify${x.time==null?' (needs a time)':''}</span></div></div>
@@ -237,7 +276,7 @@ function renderMonth(){
   $('#boardPane').innerHTML=h+'</div></div>';
 }
 function renderNotes(){
-  const words=(state.notes[sel]||'').replace(/<[^>]+>/g,' ').trim().split(/\s+/).filter(Boolean).length;
+  const words=noteWords(state.notes[sel]);
   $('#boardPane').innerHTML=railHtml()+`<div class="nb">
     <div class="daynav"><button class="arrow" data-nav="-1">‹</button><b>${relDay(sel)} · ${MON[fromYmd(sel).getMonth()].slice(0,3)} ${fromYmd(sel).getDate()}</b><button class="arrow" data-nav="1">›</button><span class="cnt">${words?words+' words':'empty page'}</span></div>
     <div class="tools">
@@ -246,7 +285,7 @@ function renderNotes(){
       <span class="sep"></span><span class="lbl">HILITE</span>${COLORS.map(([k],i)=>`<button class="hl" data-hl="${k}" style="--sw:var(--c-${k})" title="${esc(state.labels[k])} (Ctrl+${i+1})"></button>`).join('')}<button data-hl="none" title="Remove highlight" style="font-weight:400">⌀</button>
       <span class="sep"></span><button data-cmd="removeFormat" title="Clear formatting" style="font-weight:400">Tx</button>
     </div>
-    <div class="page" id="page" contenteditable="true" data-ph="Notes for ${relDay(sel).toLowerCase()}. Select text, hit a highlighter." spellcheck="true">${state.notes[sel]||''}</div></div>`;
+    <div class="page" id="page" contenteditable="true" data-ph="Notes for ${relDay(sel).toLowerCase()}. Select text, hit a highlighter." spellcheck="true">${cleanNote(state.notes[sel]||'')}</div></div>`;
 }
 function renderSide(){
   const side=$('#tlPane');const ts=dayTasks(sel);const timed=ts.filter(t=>t.time!=null),any=ts.filter(t=>t.time==null&&!t.done);
@@ -301,16 +340,18 @@ function bannerHost(){let b=$('#banners');if(!b){b=document.createElement('div')
 function dismissBanner(el){if(!el||el.classList.contains('out'))return;el.classList.add('out');if(el._repeat)SFX.stopRepeat();setTimeout(()=>el.remove(),260)}
 function snooze(t){if(t&&t.id){upd(t.id,{snoozeUntil:Date.now()+10*60000},true)}toast('Snoozed 10 minutes')}
 function notify(ev,demo){
-  const t=ev.task,st=S(),start=ev.kind==='start';
+  const t=ev.task,st=S(),start=ev.kind==='start',late=!!ev.late;
   const style=start?st.startStyle:st.remindStyle;const popup=style!=='off'||demo;
   if(!demo)markFired(ev.key);
   // sound and popup are independent switches; the sound only repeats when there is a Continue button to stop it
   let owner=null;
-  if(st.sounds.enabled){const nm=start?'start.'+st.sounds.start:'remind.'+st.sounds.remind;SFX.play(nm);if(start&&st.sounds.repeat&&popup){document.querySelectorAll('.banner').forEach(b=>b._repeat=false);SFX.repeat(nm,st.sounds.repeat);owner=true}}
-  const label=start?'Starting now':'In '+fmtLead(ev.lead||0).replace(' before','');
+  if(st.sounds.enabled){const nm=start?'start.'+st.sounds.start:'remind.'+st.sounds.remind;SFX.play(nm);if(start&&st.sounds.repeat&&popup&&!late){document.querySelectorAll('.banner').forEach(b=>b._repeat=false);SFX.repeat(nm,st.sounds.repeat);owner=true}}
+  // late: it came due while the PC slept or the tab was frozen, so it is reported as missed, not as happening now
+  const label=late?(start?'Missed, started '+fmtTime(t.time):'Missed reminder'):start?'Starting now':'In '+fmtLead(ev.lead||0).replace(' before','');
   const meta=(t.time!=null?fmtTime(t.time):'')+(t.dur?' · '+fmtDur(t.dur):'')+(t.notes?' · '+t.notes.slice(0,60):'');
   if(!popup)return;
-  if(start&&style==='takeover'){takeover(t,demo,owner);return}
+  // one full-window alert at a time: a second task starting meanwhile gets a banner instead of being dropped
+  if(start&&style==='takeover'&&!late&&!$('.scrim.alarm-host:not(.out)')){takeover(t,demo,owner);return}
   // desktop: a corner toast window (Steam-style) instead of the in-app banner and the OS toast. Not on Linux (see cornerToasts): there the
   // fall-through below sends a desktop notification while the window is hidden or unfocused, and the in-app banner otherwise.
   if(cornerToasts()){
@@ -325,10 +366,11 @@ function notify(ev,demo){
       if(navigator.serviceWorker&&navigator.serviceWorker.controller)navigator.serviceWorker.ready.then(r=>r.showNotification('Sundial · '+t.title,o)).catch(()=>{});else new Notification('Sundial · '+t.title,o)}}catch(_){}
   inAppBanner();
   function inAppBanner(){
-  const host=bannerHost();while(host.children.length>=3){const first=host.firstChild;if(first._repeat)SFX.stopRepeat();first.remove()}
+  // three alerts at most; only alerts make room for a new one (a pairing, storage or update banner stays)
+  const host=bannerHost();let old;while(host.children.length>=3&&(old=host.querySelector('.banner.alert:not(.out)'))){if(old._repeat)SFX.stopRepeat();old.remove()}
   const sticky=!!owner;
-  const el=document.createElement('div');el.className='banner '+(start?'start':'remind');el._repeat=sticky;
-  el.innerHTML=`<div class="ic">${start?'☉':'◔'}</div><div class="tx"><span class="k">${start?'Starting now':'In '+fmtLead(ev.lead||0).replace(' before','')}${demo?' · preview':''}</span><b>${esc(t.title)}</b><small>${t.time!=null?fmtTime(t.time):''}${t.dur?' · '+fmtDur(t.dur):''}${t.notes?' · '+esc(t.notes.slice(0,60)):''}</small></div>
+  const el=document.createElement('div');el.className='banner alert '+(start?'start':'remind');el._repeat=sticky;
+  el.innerHTML=`<div class="ic">${start?'☉':'◔'}</div><div class="tx"><span class="k">${esc(label)}${demo?' · preview':''}</span><b>${esc(t.title)}</b><small>${t.time!=null?fmtTime(t.time):''}${t.dur?' · '+fmtDur(t.dur):''}${t.notes?' · '+esc(t.notes.slice(0,60)):''}</small></div>
     <div class="bt">${start?'<button data-b="snooze">10m</button><button class="ok" data-b="ok">Continue</button>':'<button data-b="open">Open</button><button class="ok" data-b="ok">OK</button>'}</div>${sticky?'':`<div class="bar" style="--secs:${st.bannerSecs}s"></div>`}`;
   el.querySelector('[data-b="ok"]').onclick=()=>dismissBanner(el);
   const op=el.querySelector('[data-b="open"]');if(op)op.onclick=()=>{dismissBanner(el);if(t.id){view='day';goDay(t.date);openId=t.id;render()}};
@@ -337,8 +379,10 @@ function notify(ev,demo){
   const bar=el.querySelector('.bar');
   if(bar){const secs=st.bannerSecs*1000;let done=false;const fin=()=>{if(!done){done=true;dismissBanner(el)}};
     bar.addEventListener('animationend',fin);
-    const arm=ms=>setTimeout(()=>{if(done)return;if(el.matches(':hover'))arm(1000);else fin()},ms);
-    arm(reduced()?secs:secs+1500)}
+    const arm=ms=>setTimeout(()=>{if(done)return;if(document.hidden||el.matches(':hover'))arm(1000);else fin()},ms);
+    // a banner raised while the tab or window is hidden does not count down until someone can see it
+    const go=()=>{bar.style.animationPlayState='';arm(reduced()?secs:secs+1500)};
+    if(document.hidden){bar.style.animationPlayState='paused';const seen=()=>{if(document.hidden)return;document.removeEventListener('visibilitychange',seen);go()};document.addEventListener('visibilitychange',seen)}else go()}
   host.appendChild(el);
   }
 }
@@ -353,15 +397,22 @@ function onToastAction(ev){const a=ev.action,p=ev.payload||{};const t=p.id?get(p
   if(a==='later')return;
 }
 function takeover(x,demo){
-  if($('.scrim.alarm-host'))return;
+  if($('.scrim.alarm-host:not(.out)'))return;
   const s=scrim(`<span class="eyebrow">▲ STARTING NOW${demo?' · PREVIEW':''}</span><h2>${esc(x.title)}</h2><div class="when">${fmtTime(x.time)}${x.dur?' · '+fmtDur(x.dur):''}${x.notes?'<br>'+esc(x.notes.slice(0,120)):''}</div><button class="go" id="toGo">Continue</button><button class="snooze" id="toSnooze">Remind me in 10 minutes</button>`,'alarm');
   s.classList.add('alarm-host');
   s.querySelector('#toGo').focus();s.querySelector('#toGo').onclick=()=>closeScrim(s);
   s.querySelector('#toSnooze').onclick=()=>{snooze(x);closeScrim(s)};
 }
-function previewNotify(kind){const t=dayTasks(sel).find(x=>x.time!=null)||{title:'Call the bank about the card',time:13*60,dur:15,notes:''};notify({task:t,kind,key:'demo',lead:S().defaultRemind},true)}
+// a preview borrows a task's words but not its id, so 10m, Open and Continue on it never touch the real task
+function previewNotify(kind){const src=dayTasks(sel).find(x=>x.time!=null);const t=src?{...src,id:null}:{title:'Call the bank about the card',time:13*60,dur:15,notes:''};notify({task:t,kind,key:'demo',lead:S().defaultRemind},true)}
 
 // ----- settings sheet -----
+// Settings on a given tab: opens the sheet, or turns the open one to that tab (settings() alone would close it).
+function openSettings(tab){sheetTab=tab;if($('.scrim.sheet-host:not(.out)')){sheetAnim=true;renderSheet()}else settings()}
+// A sheet that redraws while someone is typing a code or a token into it must not empty the field (sync events redraw it).
+const KEEP_FIELDS=['syncPass','syncToken','syncCodeIn','migCodeIn','syncResetIn','impBox','syncEmail','syncUrl','migEmail'];
+function keepFields(root){const kept={};for(const id of KEEP_FIELDS){const el=root.querySelector('#'+id);if(el&&el.value)kept[id]={v:el.value,f:document.activeElement===el,s:el.selectionStart,e:el.selectionEnd}}
+  return ()=>{for(const id in kept){const el=root.querySelector('#'+id);if(!el)continue;if(!el.value)el.value=kept[id].v;if(kept[id].f&&document.activeElement!==el){el.focus();try{el.setSelectionRange(kept[id].s,kept[id].e)}catch(_){}}}}}
 function settings(){
   if($('.scrim.sheet-host')){closeScrim($('.scrim.sheet-host'));return}
   const s=scrim(`<button class="x" data-close>×</button><h2>Settings</h2><div class="tabs" id="stabs"></div><div id="sbody"></div>`,'sheet');s.classList.add('sheet-host');
@@ -419,9 +470,8 @@ function renderSheet(){
     +opt('Live two-way sync','CalDAV / Google Calendar API in the desktop build.','<span class="soon">Planned</span>')
     +opt('Export JSON','Tasks, notes, labels and the change log. Routines and settings are not included.','<button class="btn" data-run="expJson">Copy</button>')
     +opt('Import JSON','Paste a backup and press Import. Merges by id, newest wins.','<button class="btn" data-run="impJson">Import</button>')
-    +`<textarea id="impBox" placeholder="{ &quot;tasks&quot;: [ … ] }"></textarea>`
-    +`<h3>Input</h3>`+opt('AI parsing','“lunch with Kai next thursday, same place” → task with time and notes.','<span class="soon">Planned</span>');
-  body.innerHTML=h;bindFinBox();if(sheetAnim){sheetAnim=false;body.classList.add('tab-in');s.querySelector('.card').scrollTop=0}else{body.classList.remove('tab-in');s.querySelector('.card').scrollTop=sc}
+    +`<textarea id="impBox" placeholder="{ &quot;tasks&quot;: [ … ] }"></textarea>`;
+  const putBack=keepFields(body);body.innerHTML=h;putBack();bindFinBox();if(sheetAnim){sheetAnim=false;body.classList.add('tab-in');s.querySelector('.card').scrollTop=0}else{body.classList.remove('tab-in');s.querySelector('.card').scrollTop=sc}
 }
 const getPath=(o,p)=>p.split('.').reduce((a,k)=>a&&a[k],o);
 const setPath=(o,p,v)=>{const ks=p.split('.');const last=ks.pop();const t=ks.reduce((a,k)=>a[k],o);t[last]=v};
@@ -445,7 +495,7 @@ function openSearch(){
   const s=scrim(`<input id="sq" placeholder="Search tasks and notes…" autocomplete="off"><div class="res" id="sres"></div>`,'search');
   const q=s.querySelector('#sq');q.focus();
   const run=()=>{const v=q.value.trim().toLowerCase();const res=s.querySelector('#sres');if(!v){res.innerHTML='';return}
-    const strip=h=>h.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+    const strip=h=>new DOMParser().parseFromString(String(h).replace(/<[^>]+>/g,' '),'text/html').body.textContent.replace(/\s+/g,' ');
     const tasks=state.tasks.filter(t=>t.title.toLowerCase().includes(v)||(t.notes||'').toLowerCase().includes(v)).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,20);
     const notes=Object.keys(state.notes).filter(d=>strip(state.notes[d]).toLowerCase().includes(v)).sort().reverse().slice(0,10);
     res.innerHTML=tasks.map(t=>`<button class="r" data-sid="${t.id}"><span class="when">${esc(relDay(t.date))} ${fromYmd(t.date).getDate()}</span><span class="swatch" style="--sw:var(--c-${t.color})"></span><span class="t">${esc(t.title)}</span><span class="kind">${t.done?'DONE':'TASK'}</span></button>`).join('')
@@ -488,11 +538,13 @@ function revealTask(id){setTimeout(()=>{const el=document.querySelector('.task[d
 // The stacked-unlocked and phone layouts scroll the whole column or page, which would pull the add field away, so they are left alone.
 function revealBlock(id){const b=document.querySelector(`.hours .blk[data-id="${id}"]`);const tl=b&&b.closest('.tl');if(!tl||getComputedStyle(tl).overflowY!=='auto')return;const r=b.getBoundingClientRect(),s=tl.getBoundingClientRect();const bank=tl.querySelector('.anytime:not(.empty)');const top=s.top+(bank?bank.offsetHeight:0);
   if(r.top<top)tl.scrollTop-=top-r.top+8;else if(r.bottom>s.bottom)tl.scrollTop+=r.bottom-s.bottom+8}
-function closeDrawer(){const dr=$('.drawer');if(dr&&!reduced()){collapseDrawerEl(dr);setTimeout(()=>{openId=null;render()},240)}else{openId=null;render()}}
+// (the delayed reset only closes the drawer it was started for: another one opened in the meantime stays open)
+function closeDrawer(){const dr=$('.drawer'),was=openId;if(dr&&!reduced()){collapseDrawerEl(dr);setTimeout(()=>{if(openId===was){openId=null;render()}},240)}else{openId=null;render()}}
 function goDay(ds,dir){if(ds===sel)return;anim.slide=dir||(ds>sel?'slide-l':'slide-r');sel=ds;miniMonth=sel.slice(0,7);cursorId=null}
 function removeTask(id,animate){
   const t=get(id);if(!t)return;
-  const finish=()=>{lastDeleted=deleteTask(id);if(openId===id)openId=null;if(cursorId===id)cursorId=null;render();toast('Deleted “'+t.title.slice(0,28)+(t.title.length>28?'…':'')+'”',()=>{if(lastDeleted){restoreTask(lastDeleted);anim.enter=lastDeleted.id;lastDeleted=null;render()}})};
+  // each toast puts back its own task: a second delete during the fade finds nothing left and leaves the first toast alone
+  const finish=()=>{const copy=deleteTask(id);if(!copy)return;lastDeleted=copy;if(openId===id)openId=null;if(cursorId===id)cursorId=null;render();toast('Deleted “'+t.title.slice(0,28)+(t.title.length>28?'…':'')+'”',()=>{restoreTask(copy);anim.enter=copy.id;render()})};
   const el=animate&&document.querySelector(`.task[data-id="${id}"]`);
   if(el&&!reduced()){const dr=el.parentElement.querySelector('.drawer');if(dr)collapseDrawerEl(dr);el.style.height=el.offsetHeight+'px';void el.offsetHeight;el.classList.add('gone');setTimeout(finish,240)}else finish();
 }
@@ -504,20 +556,24 @@ function toggleDone(id){
 }
 document.addEventListener('click',e=>{
   if(suppressClick||e.target.closest('.rz'))return;
+  // a hotkey recorder left armed would swallow every key: clicking anywhere else puts its chip back and disarms it
+  if(recordingHotkey&&!e.target.closest('[data-run="recHotkey"],[data-run="recQuick"]')){const rb=$('[data-run="recHotkey"].rec,[data-run="recQuick"].rec');if(rb){rb.classList.remove('rec');rb.textContent=getPath(S(),recordingHotkey)}recordingHotkey=false}
   const inMenu=e.target.closest('.menu');if(!inMenu)closeMenu();
   const b=e.target.closest('button,[data-act],[data-date]');if(!b)return;
+  // a top-bar button clicked with the mouse gives the focus back, so Enter and Space go to the task under the cursor again
+  if(e.detail>0&&b.tagName==='BUTTON'&&b.closest('.top'))b.blur();
   if(b.dataset.view){view=b.dataset.view;openId=null;render();return}
   if(b.id==='layoutBtn'){state.layout.mode=effectiveMode()==='column'?'row':'column';save();applyLayout();render();return}
   if(b.dataset.lock){const L=state.layout,k=b.dataset.lock;L.lock=L.lock||{};if(!L.lock[k])L[HK[k]]=Math.round($(PANE[k]).getBoundingClientRect().height);L.lock[k]=!L.lock[k];save();applyLayout();return}
   if(b.dataset.pane){togglePane(b.dataset.pane);return}
-  if(b.id==='todayBtn'){goDay(todayStr());render();return}
+  if(b.id==='todayBtn'){goDay(todayStr());miniMonth=sel.slice(0,7);render();return}
   if(b.id==='settingsBtn'){settings();return}
   if(b.id==='searchBtn'){openSearch();return}
   if(b.id==='quickBtn'){openQuickAdd();return}
   if(b.dataset.act==='routines'){const r=b.getBoundingClientRect();routinesMenu(r.left,r.bottom+4);return}
   if(b.dataset.rtApply){const n=applyRoutine(b.dataset.rtApply,b.dataset.to);closeMenu();SFX.play('ui.add');render();renderSheet();toast(n+' added to '+dayLabel(b.dataset.to),()=>{undo();render()});return}
   if(b.dataset.rtDel){deleteRoutine(b.dataset.rtDel);renderSheet();render();return}
-  if(b.dataset.rtManage){closeMenu();sheetTab='routines';settings();return}
+  if(b.dataset.rtManage){closeMenu();openSettings('routines');return}
   if(b.id==='mic'){toggleVoice();return}
   if(b.id==='mPrev'||b.id==='mNext'){let[y,m]=miniMonth.split('-').map(Number);m+=b.id==='mNext'?1:-1;if(m<1){m=12;y--}if(m>12){m=1;y++}miniMonth=y+'-'+pad(m);renderMini();return}
   if(b.dataset.nav){const n=b.dataset.nav;let ds,dir;if(n.startsWith('month:')){const d=fromYmd(sel);d.setDate(1);d.setMonth(d.getMonth()+(+n.slice(6)));ds=ymd(d);dir=+n.slice(6)}
@@ -545,14 +601,16 @@ document.addEventListener('click',e=>{
   if(act==='clearDone'){const gone=clearDone(sel);render();toast(gone.length+' done tasks cleared',()=>{gone.forEach(restoreTask);render()});return}
   if(act==='carry'){const n=carryAll(sel);render();toast(n+' brought to today',()=>{undo();render()});return}
   if(act==='carryDismiss'){state.carryDismissed=sel;save();render();return}
-  if(!act){if(b.dataset.date){goDay(b.dataset.date);if(b.dataset.goto)view=b.dataset.goto;openId=null;render()}return}
+  // (the timeline's own wrapper carries the day for drops; a click on its empty space is not a "go to this day")
+  if(!act){if(b.dataset.date&&!b.classList.contains('tl')){goDay(b.dataset.date);if(b.dataset.goto)view=b.dataset.goto;openId=null;render()}return}
   if(!id)return;closeMenu();
   if(act==='done'){toggleDone(id);return}
   if(act==='color'){const x=get(id);const i=COLORS.findIndex(c=>c[0]===x.color);upd(id,{color:COLORS[(i+1)%COLORS.length][0]});render();return}
   if(act==='open'){const x=get(id);if(!x)return;if(openId===id){closeDrawer();return}openId=id;cursorId=id;if(view!=='day')view='day';if(x.date!==sel)goDay(x.date);
     if(!state.layout.board){state.layout.board=true;save();applyLayout()}
     render();revealTask(id);return}
-  if(act==='tomorrow'){moveTo(id,addDays(get(id).date,1));render();toast('Moved to '+relDay(get(id).date).toLowerCase());return}
+  // tomorrow means tomorrow for a task from today or before; a task already ahead moves one day on
+  if(act==='tomorrow'){const x=get(id);if(!x)return;const td=todayStr();moveTo(id,addDays(x.date<td?td:x.date,1));render();toast('Moved to '+relDay(x.date).toLowerCase()+(x.date>addDays(td,1)?' '+fromYmd(x.date).getDate():''));return}
   if(act==='nextweek'){moveTo(id,addDays(get(id).date,7));render();toast('Moved a week out');return}
   if(act==='dup'){duplicate(id);render();return}
   if(act==='notify'){upd(id,{notify:!get(id).notify});render();return}
@@ -580,7 +638,7 @@ function runSetting(k,b){
   if(k==='migCode'){const em=($('#migEmail')?.value||'').trim();if(!/.+@.+\..+/.test(em)){toast('Enter your email address');return}syncSetup.migEmail=em;syncSetup.migError=null;b.textContent='…';Sync.requestCode(Sync.st().server,em).then(()=>{syncSetup.migSent=true;syncRefresh();toast('Code sent. Check your mail.')}).catch(e=>{syncSetup.migError=e.message||String(e);syncRefresh()})}
   if(k==='migVerify'){const code=($('#migCodeIn')?.value||'').replace(/\D/g,'');if(code.length<6){toast('Enter the six-digit code from the email');return}b.textContent='…';b.disabled=true;syncSetup.migError=null;
     Sync.signInByEmailKeepingKey(syncSetup.migEmail,code).then(r=>{syncFlowReset();if(r.code){syncSetup.recovery=r.code;syncSetup.showRecovery=true}syncRefresh();
-      if(r.how==='mismatch')toast('This email already syncs days locked with a different key. Approve this '+DEV()+' from the device that set it up, or enter its recovery code.',()=>{sheetTab='data';settings()},'Open');
+      if(r.how==='mismatch')toast('This email already syncs days locked with a different key. Approve this '+DEV()+' from the device that set it up, or enter its recovery code.',()=>openSettings('data'),'Open');
       else if(r.code)toast('Signed in with your email. Same days. Save the new recovery code shown below.');
       else toast('Signed in with your email. Same days, same key.')})
     .catch(e=>{syncSetup.migError=e.message||String(e);syncRefresh()})}
@@ -619,8 +677,8 @@ function runSetting(k,b){
   if(k==='updateDownload')openExternal(RELEASES_URL);
   if(k==='aiSaveKey'){const v=($('#aiKey')?.value||'').trim();if(!v){toast('Paste a key first');return}const D=window.SundialDesktop;
     if(D)D.secret.set('ai:'+S().ai.provider,v).then(()=>refreshSecretKind()).then(()=>{aiKeySaved=true;renderSheet();toast('Key saved to '+secretStore())}).catch(e=>toast('Could not save: '+e));
-    else{S().ai.keyInBrowser=v;save();aiKeySaved=true;renderSheet();toast('Key saved in this browser')}}
-  if(k==='aiRemoveKey'){const D=window.SundialDesktop;if(D)D.secret.del('ai:'+S().ai.provider).then(()=>{aiKeySaved=false;renderSheet();toast('Key removed')}).catch(e=>toast(String(e)));else{S().ai.keyInBrowser='';save();aiKeySaved=false;renderSheet();toast('Key removed')}}
+    else{S().ai.keysInBrowser[S().ai.provider]=v;save();aiKeySaved=true;renderSheet();toast('Key saved in this browser')}}
+  if(k==='aiRemoveKey'){const D=window.SundialDesktop;if(D)D.secret.del('ai:'+S().ai.provider).then(()=>{aiKeySaved=false;renderSheet();toast('Key removed')}).catch(e=>toast(String(e)));else{delete S().ai.keysInBrowser[S().ai.provider];save();aiKeySaved=false;renderSheet();toast('Key removed')}}
   if(k==='aiTest'){b.textContent='…';AI.parse('lunch with Sam at the usual place next thursday, bring the contract',sel).then(r=>{b.textContent='Test';toast('AI understood: '+[r.title,r.date,r.time!=null?fmtTime(r.time):null,r.notes].filter(Boolean).join(' · ').slice(0,160))}).catch(e=>{b.textContent='Test';toast('AI: '+(e.message||e))})}
 }
 function copy(text,label){const done=()=>toast(label+' copied');(navigator.clipboard?navigator.clipboard.writeText(text):Promise.reject()).then(done).catch(()=>{const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');done()}catch(_){toast('Copy blocked here; select the text instead')}ta.remove()})}
@@ -630,8 +688,13 @@ document.addEventListener('mousedown',e=>{
   const b=e.target.closest('.nb .tools button');if(!b)return;e.preventDefault();
   if(b.dataset.cmd)document.execCommand(b.dataset.cmd,false,b.dataset.val||null);
   if(b.dataset.hl){document.execCommand('styleWithCSS',false,true);document.execCommand('hiliteColor',false,b.dataset.hl==='none'?'transparent':HL[b.dataset.hl])}
-  const p=$('#page');if(p){state.notes[sel]=p.innerHTML;state.notesTs[sel]=Date.now();touch('note:'+sel);save()}
+  const p=$('#page');if(p){state.notes[sel]=cleanNote(p.innerHTML);state.notesTs[sel]=stamp(state.notesTs[sel]);touch('note:'+sel);save()}
 });
+// Pasting into the day note: what comes from a web page or a document is cut down to the note's own formatting first
+// (no images, links or fonts), and plain text stays plain.
+document.addEventListener('paste',e=>{const at=e.target&&(e.target.nodeType===1?e.target:e.target.parentElement);if(!at||!at.closest('#page')||!e.clipboardData)return;
+  const html=e.clipboardData.getData('text/html'),text=e.clipboardData.getData('text/plain');if(!html&&!text)return;e.preventDefault();
+  document.execCommand('insertHTML',false,html?cleanNote(html):esc(text).replace(/\r?\n/g,'<br>'))});
 function chipsHtml(value){const p=parse(value,sel);return value.trim()?p.hits.map(h=>typeof h==='string'?`<span class="chip">${h}</span>`:`<span class="chip"><span class="swatch" style="--sw:var(--c-${h.sw})"></span>${esc(h.label)}</span>`).join('')+(p.hits.length?'':'<span class="chip ghost">try “3pm”, “45m”, “#work”, “tmrw”, “every mon”, “remind 1d”</span>'):''}
 function previewParse(){const t=$('#qa'),box=$('#parse');if(!t||!box)return;const html=chipsHtml(t.value);if(box.innerHTML!==html)box.innerHTML=html}
 // Quick add from anywhere: a floating bar over whatever view is showing. Adds to the selected day unless the line names another.
@@ -653,8 +716,9 @@ document.addEventListener('keyup',e=>{if(e.target.id==='qa')previewParse()});
 document.addEventListener('input',e=>{
   const t=e.target;
   if(t.id==='qa'){previewParse();return}
-  if(t.id==='page'){const html=t.innerHTML;if(html==='<br>'||(!t.textContent.trim()&&!html.includes('<mark')))delete state.notes[sel];else state.notes[sel]=html;state.notesTs[sel]=Date.now();touch('note:'+sel);save();return}
-  if(t.dataset.color){state.labels[t.dataset.color]=t.value;state.labelsTs=Date.now();touch('labels');save();const tag=t.closest('.colorrow')?.querySelector('.mono');if(tag)tag.textContent='#'+t.value.toLowerCase().replace(/\s+/g,'');if(t.closest('.sheet')&&state.layout.cal)renderLegend();return}
+  if(t.id==='page'){const html=cleanNote(t.innerHTML);if(html==='<br>'||(!t.textContent.trim()&&!html.includes('<mark')))delete state.notes[sel];else state.notes[sel]=html;state.notesTs[sel]=stamp(state.notesTs[sel]);touch('note:'+sel);save();
+    const cnt=$('.nb .daynav .cnt');if(cnt){const w=noteWords(state.notes[sel]);cnt.textContent=w?w+' words':'empty page'}return}
+  if(t.dataset.color){state.labels[t.dataset.color]=t.value;state.labelsTs=stamp(state.labelsTs);touch('labels');save();const tag=t.closest('.colorrow')?.querySelector('.mono');if(tag)tag.textContent='#'+tagOf(t.value);if(t.closest('.sheet')&&state.layout.cal)renderLegend();return}
   if(t.dataset.range){const v=+t.value;setPath(S(),t.dataset.range,v);save();if(t.dataset.range==='sounds.volume')SFX.setVolume(v);const l=$('#secsLbl');if(l&&t.dataset.range==='bannerSecs')l.textContent=v+'s';return}
   if(t.dataset.sel){applySetting(t.dataset.sel,t.value);return}
   if(t.dataset.ai){setPath(S(),'ai.'+t.dataset.ai,t.value.trim());save();return}
@@ -668,20 +732,32 @@ document.addEventListener('input',e=>{
   if(t.id==='edDur'){upd(openId,{dur:parse(' '+t.value+' ','').dur});if(state.layout.tl)renderSide()}
   if(t.id==='edRepeat'){upd(openId,{repeat:t.value||null})}
   if(t.id==='edRemind'){upd(openId,{remind:t.value===''?null:+t.value})}
-  if(t.id==='edDate'&&t.value){moveTo(openId,t.value);goDay(t.value);render()}
+  // the Day field: a date typed by hand passes through half-typed values (year 0002), so it is committed when the
+  // typing pauses, on Enter, or when the field is left, never per keystroke
+  if(t.id==='edDate'){clearTimeout(dateT);const id=openId,v=t.value;dateT=setTimeout(()=>commitDate(id,v),800);return}
   const s=$('#saved');if(s){s.textContent='saved';s.style.color='var(--accent-ink)';setTimeout(()=>{s.style.color=''},400)}
 });
+let dateT=null;
+function commitDate(id,v){clearTimeout(dateT);dateT=null;const x=get(id);if(!x||!DATE_RE.test(v||'')||ymd(fromYmd(v))!==v||+v.slice(0,4)<1970||+v.slice(0,4)>2200||x.date===v)return;
+  const had=document.activeElement&&document.activeElement.id==='edDate';moveTo(id,v);if(openId===id)goDay(v);render();if(had)$('#edDate')?.focus()}
+document.addEventListener('focusout',e=>{if(e.target.id==='edDate'&&dateT){const id=openId,v=e.target.value;commitDate(id,v)}});
+const stepMonth=(s,dir)=>{const d=fromYmd(s),day=d.getDate();d.setDate(1);d.setMonth(d.getMonth()+dir);d.setDate(Math.min(day,new Date(d.getFullYear(),d.getMonth()+1,0).getDate()));return ymd(d)};
+// Enter on a task: open its drawer on the day it is on (the row's click, the context menu and the keyboard all end here)
+function openTask(id){const x=get(id);if(!x)return;openId=id;cursorId=id;if(view!=='day')view='day';if(x.date!==sel)goDay(x.date);if(!state.layout.board){state.layout.board=true;save();applyLayout()}render();revealTask(id)}
 document.addEventListener('keydown',e=>{
   const t=e.target;const typing=/INPUT|TEXTAREA|SELECT/.test(t.tagName)||t.isContentEditable;
   if(recordingHotkey){e.preventDefault();if(e.key==='Escape'){recordingHotkey=false;renderSheet();return}const c=comboOf(e);if(!c)return;
     // a bare letter would hijack typing; require a modifier or a function key
     if(!(e.ctrlKey||e.altKey||e.metaKey)&&!/^F\d{1,2}$/.test(e.key)&&!['Pause','ScrollLock'].includes(e.key)){toast('Use Ctrl, Alt or ⌘ with it, or a key on its own like F9, Pause or Scroll Lock');return}
+    // copy, paste, cut, undo, redo, select all and save stay what they are in every other program
+    if((e.ctrlKey||e.metaKey)&&!e.altKey&&!e.shiftKey&&/^[cvxzyas]$/i.test(e.key)){toast('That one belongs to copy, paste, undo and friends. Pick another.');return}
     const other=recordingHotkey==='voice.hotkey'?S().quick.hotkey:S().voice.hotkey;if(c===other){toast('That one is taken by the other hotkey');return}
     setPath(S(),recordingHotkey,c);save();recordingHotkey=false;renderSheet();syncHotkeys();toast('Hotkey set: '+c);return}
   const combo=comboOf(e);
   if(!globalHotkeys){
     if(combo&&combo===S().quick.hotkey){e.preventDefault();openQuickAdd();return}
     if(combo&&S().voice.enabled&&combo===S().voice.hotkey){e.preventDefault();toggleVoice();return}}
+  if(e.key==='Enter'&&t.id==='edDate'){e.preventDefault();commitDate(openId,t.value);return}
   if(e.key==='Enter'&&t.id==='qa'){if(Voice.isActive()){Voice.stop();resetMicUi()}const raw=t.value;const n=addTask(raw,sel);if(n){t.value='';previewParse();SFX.play('ui.add');anim.enter=n.id;if(n.date!==sel)goDay(n.date);render();$('#qa').focus();revealBlock(n.id);aiRefine(n,raw)}return}
   if(e.key==='Enter'&&t.dataset.adddate){const n=addTask(t.value,t.dataset.adddate);if(n){SFX.play('ui.add');anim.enter=n.id;render();const i=document.querySelector(`[data-adddate="${n.date}"]`);if(i)i.focus()}return}
   if(e.key==='Escape'){if($('.menu')){closeMenu();return}if($('.scrim')){closeScrim();return}if(openId){closeDrawer();return}if(cursorId){cursorId=null;render();return}if(typing)t.blur();return}
@@ -692,14 +768,19 @@ document.addEventListener('keydown',e=>{
   if($('.scrim'))return;
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();const ok=e.shiftKey?redo():undo();if(ok){render();toast(e.shiftKey?'Redone':'Undone')}return}
   if(e.key==='/'){e.preventDefault();openSearch();return}
-  if(e.key==='ArrowLeft'){goDay(addDays(sel,view==='month'?-30:view==='week'?-7:-1),'slide-r');render();return}
-  if(e.key==='ArrowRight'){goDay(addDays(sel,view==='month'?30:view==='week'?7:1),'slide-l');render();return}
+  // a button that holds the focus takes Enter and Space for itself, and nothing else acts on them
+  if(t.tagName==='BUTTON'&&(e.key==='Enter'||e.key===' '))return;
+  // while a task's menu is open, the keys printed beside its items act on that task, not on the cursor row
+  const mid=$('.menu')?.dataset.id;
+  if(mid&&get(mid)&&[' ','Enter','Backspace','Delete'].includes(e.key)){e.preventDefault();closeMenu();if(e.key===' ')toggleDone(mid);else if(e.key==='Enter')openTask(mid);else removeTask(mid,true);return}
+  if(e.key==='ArrowLeft'){goDay(view==='month'?stepMonth(sel,-1):addDays(sel,view==='week'?-7:-1),'slide-r');render();return}
+  if(e.key==='ArrowRight'){goDay(view==='month'?stepMonth(sel,1):addDays(sel,view==='week'?7:1),'slide-l');render();return}
   if(e.key==='j'||e.key==='ArrowDown'){e.preventDefault();moveCursor(1);return}
   if(e.key==='k'||e.key==='ArrowUp'){e.preventDefault();moveCursor(-1);return}
   if(e.key===' '&&cursorId){e.preventDefault();toggleDone(cursorId);return}
-  if(e.key==='Enter'&&cursorId){openId=openId===cursorId?null:cursorId;render();return}
+  if(e.key==='Enter'&&cursorId){e.preventDefault();openId=openId===cursorId?null:cursorId;render();return}
   if((e.key==='Backspace'||e.key==='Delete')&&(openId||cursorId)){e.preventDefault();removeTask(openId||cursorId,true);return}
-  if(e.key==='t'||e.key==='T'){goDay(todayStr());render()}
+  if(e.key==='t'||e.key==='T'){goDay(todayStr());miniMonth=sel.slice(0,7);render()}
   if(e.key==='n'||e.key==='N'){e.preventDefault();if(!state.layout.board){openQuickAdd();return}view='day';render();const q=$('#qa');if(q)q.focus();else openQuickAdd()}
   if(e.key==='1')view='day',render();if(e.key==='2')view='week',render();if(e.key==='3')view='month',render();if(e.key==='4')view='notes',render();
   if(e.key==='[')togglePane('cal');if(e.key===']')togglePane('tl');if(e.key==='\\')togglePane('board');
@@ -741,8 +822,10 @@ document.addEventListener('dragover',e=>{if(!dragId)return;const day=e.target.cl
 document.addEventListener('drop',e=>{if(!dragId)return;e.preventDefault();const row=e.target.closest('.task');const day=e.target.closest('[data-date],[data-dropdate]');const hr=e.target.closest('.hours');
   const list=e.target.closest('#list');
   // the hour grid and the anytime bank sit inside the timeline's date wrapper, so they are checked first
-  if(hr){const y=e.clientY-hr.getBoundingClientRect().top;const mins=Math.round(((y/S().hh*60)-dragOff)/15)*15;upd(dragId,{time:Math.max(0,Math.min(23*60+45,mins))});toast('Scheduled '+fmtTime(get(dragId).time),()=>{undo();render()})}
-  else if(e.target.closest('.anytime')){const t=get(dragId);if(t&&t.time!=null){upd(dragId,{time:null});toast('Back to anytime',()=>{undo();render()})}}
+  // A task dragged in from another day (a Week column) also moves to the day the timeline shows, in the same undo step.
+  const tlDay=e.target.closest('.tl')?.dataset.date||sel,dragged=get(dragId),other=dragged&&dragged.date!==tlDay?{date:tlDay,order:nextOrder(tlDay)}:null;
+  if(hr){const y=e.clientY-hr.getBoundingClientRect().top;const mins=Math.round(((y/S().hh*60)-dragOff)/15)*15;upd(dragId,{time:Math.max(0,Math.min(23*60+45,mins)),...(other||{})});toast('Scheduled '+fmtTime(get(dragId).time)+(other?' on '+dayLabel(tlDay):''),()=>{undo();render()})}
+  else if(e.target.closest('.anytime')){const p={...(dragged&&dragged.time!=null?{time:null}:{}),...(other||{})};if(dragged&&Object.keys(p).length){upd(dragId,p);toast(other?'Moved to '+dayLabel(tlDay)+', anytime':'Back to anytime',()=>{undo();render()})}}
   else if((row&&row.dataset.id!==dragId)||(list&&!row)){const tgt=dropTarget(row,e.clientY);if(tgt.blocked)toast('Timed tasks keep their time order. Drop it on the timeline to change the time, or clear the time first.');else if(!(row&&row.dataset.id===dragId))reorder(dragId,tgt.beforeId)}
   else if(day&&!row)moveTo(dragId,day.dataset.date||day.dataset.dropdate);
   dragId=null;dragOff=0;autoScrollStop();render()});
@@ -863,6 +946,7 @@ function renderOnboarding(){const host=document.querySelector('.ob-host:not(.out
   const sy=Sync.st(),connected=sy.mode!=='off',D=window.SundialDesktop;
   const pick=(k,title,sub)=>`<button class="ob-card" data-sync="${k}" aria-pressed="${obSync===k}"><b>${title}</b><small>${sub}</small></button>`;
   const done=connected?(sy.keyOk?'Done':'Finish setup later'):(obSync==='local'?'Start':'Skip for now');
+  const putBack=keepFields(host);
   host.innerHTML=`<h2>Where do your days live?</h2><div class="ob-step">${obLabel(2,'Optional')}</div><p>Sundial is complete on this ${DEV()} alone. Sync is there when you want the same days on another device.</p>
     <div class="ob-cards three">
       ${pick('local',D?'Just this PC':'Just this browser',D?'Everything stays on this machine. Switch on sync any time in Settings → Data & sync.':'Everything stays in this browser on this device. Clearing site data for '+esc(location.host)+' deletes your days unless sync is on. Switch on sync any time in Settings → Data & sync.')}
@@ -871,12 +955,12 @@ function renderOnboarding(){const host=document.querySelector('.ob-host:not(.out
     </div>
     ${obSync!=='local'||connected?`<div class="ob-sync">${syncRows(S(),optRow,true)}</div>`:''}
     <div class="ob-foot">${obKeysStep||obWelcome?'<button class="btn" data-run="obBack">Back</button>':''}<span class="spacer"></span><button class="btn primary" data-run="obDone">${done}</button></div>`;
-  bindFinBox();
+  putBack();bindFinBox();
 }
 function finishOnboarding(style){const st=S();if(HOTKEY_STYLES[style]){st.quick.hotkey=HOTKEY_STYLES[style].quick;st.voice.hotkey=HOTKEY_STYLES[style].voice}st.onboarded=true;save();syncHotkeys();closeScrim();
   // web: the Start click is a user gesture, the right moment to ask the browser to keep the data and to allow notifications
   if(!window.SundialDesktop){askPersist();askNotify()}
-  const sy=Sync.st();if(sy.mode==='off')syncSetup.mode='hosted';if(sy.mode!=='off'&&!sy.keyOk)setTimeout(()=>toast('Sync is signed in, but this '+DEV()+' is not approved yet',()=>{sheetTab='data';settings()},'Open'),900);else if(obKeysStep)toast('Quick add: '+st.quick.hotkey)}
+  const sy=Sync.st();if(sy.mode==='off')syncSetup.mode='hosted';if(sy.mode!=='off'&&!sy.keyOk)setTimeout(()=>toast('Sync is signed in, but this '+DEV()+' is not approved yet',()=>openSettings('data'),'Open'),900);else if(obKeysStep)toast('Quick add: '+st.quick.hotkey)}
 
 // sundial:// links that opened or poked the app. sundial://quick-add opens the floating add bar and sundial://voice toggles the
 // microphone; both are what a Wayland desktop shortcut runs through xdg-open, and the shell shows the window first.
@@ -964,7 +1048,9 @@ function syncRows(st,opt,bare){const s=Sync.st();const D=window.SundialDesktop;l
       h+=opt('Start over or leave','Erases the synced copy for every PC and signs them all out. Nothing on any PC is deleted.','<button class="btn" data-run="syncResetStart">Erase synced copy…</button>')}}
   return h}
 // One line of status that the sync listener can refresh without redrawing the whole tab.
-function syncStatusText(s){const D=window.SundialDesktop;return `${s.lastError?esc(s.lastError):(s.lastSync?'Last synced '+new Date(s.lastSync).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'Not synced yet')} · ${Sync.pending()} waiting${Sync.isRunning()?' · syncing…':''}${Sync.rejected()?' · '+Sync.rejected()+' too large to sync':''}${D?'':' · key kept in this browser'}`}
+function rejectedText(s){const rj=Object.values(s.rejected||{});if(!rj.length)return '';const n=r=>rj.filter(x=>x===r).length,size=n('size'),fut=n('future'),quota=n('quota'),rest=rj.length-size-fut-quota;
+  return [size?size+' too large to sync':'',fut?fut+' not synced: this device\'s clock is ahead':'',quota?quota+' not synced: sync storage is full':'',rest?rest+' not accepted by the server':''].filter(Boolean).map(x=>' · '+x).join('')}
+function syncStatusText(s){const D=window.SundialDesktop;return `${s.lastError?esc(s.lastError):(s.lastSync?'Last synced '+new Date(s.lastSync).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'Not synced yet')} · ${Sync.pending()} waiting${Sync.isRunning()?' · syncing…':''}${rejectedText(s)}${D?'':' · key kept in this browser'}`}
 // Everything the sync setup remembers between screens; cleared whenever an account is entered or left.
 function syncFlowReset(){Object.assign(syncSetup,{existing:null,checking:false,pairError:null,pairStarting:false,setupError:null,settingUp:false,useCode:false,showRecovery:false,revealRecovery:false,recoveryShown:null,recovery:null,triedStored:false,outArmed:false,migEmail:'',migSent:false,migError:null,firstHere:false})}
 // The secret that unlocks the synced copy on another PC. Shown once right after setup, and on request later.
@@ -1045,16 +1131,18 @@ async function checkUpdates(manual){const D=window.SundialDesktop;if(!D)return;i
   try{const u=await D.updateCheck();if(u&&u.version){updateInfo=u;updateBanner(u);if($('.sheet-host'))renderSheet()}else if(manual)toast('You have the latest version')}
   catch(e){if(manual)toast('Update check failed: '+(e.message||e))}}
 // A package install (rpm, deb) cannot replace itself: the banner and the Settings row offer a Download link to the release page instead.
-function updateBanner(u){const st=S(),pkg=plat.install==='package';
-  if(cornerToasts()){window.SundialDesktop.toastShow({kind:'update',label:'Update ready',title:'Sundial '+u.version,meta:(u.notes||'').split('\n')[0].slice(0,80)||'Downloaded in the background. Restart whenever you like.',corner:st.toasts.corner,secs:45,sticky:false,actions:[{id:'later',label:'Later'},{id:'install',label:'Restart now',primary:true}]}).catch(()=>{});return}
+// pkg: this install cannot replace itself (an rpm or deb, or the shell said downloadOnly): the button opens the releases page
+const updatePkg=u=>plat.install==='package'||!!(u&&u.downloadOnly);
+function updateBanner(u){const st=S(),pkg=updatePkg(u);
+  if(cornerToasts()){window.SundialDesktop.toastShow({kind:'update',label:'Update available',title:'Sundial '+u.version,meta:(u.notes||'').split('\n')[0].slice(0,80)||'Sundial downloads it and restarts. Your days are saved first.',corner:st.toasts.corner,secs:45,sticky:false,actions:[{id:'later',label:'Later'},{id:'install',label:'Update and restart',primary:true}]}).catch(()=>{});return}
   const host=bannerHost();if(host.querySelector('.banner.update'))return;const el=document.createElement('div');el.className='banner update start';
-  el.innerHTML=`<div class="ic">↻</div><div class="tx"><span class="k">${pkg?'Update available':'Update ready'}</span><b>Sundial ${esc(u.version)}</b><small>${esc((u.notes||'').split('\n')[0].slice(0,90))||(pkg?'Download the new rpm or deb and install it over this one.':'Downloaded in the background. Restart whenever you like.')}</small></div><div class="bt"><button data-b="later">Later</button><button class="ok" data-b="go">${pkg?'Download':'Restart now'}</button></div>`;
+  el.innerHTML=`<div class="ic">↻</div><div class="tx"><span class="k">Update available</span><b>Sundial ${esc(u.version)}</b><small>${esc((u.notes||'').split('\n')[0].slice(0,90))||(pkg?'Download the new rpm or deb and install it over this one.':'Sundial downloads it and restarts. Your days are saved first.')}</small></div><div class="bt"><button data-b="later">Later</button><button class="ok" data-b="go">${pkg?'Download':'Update and restart'}</button></div>`;
   el.querySelector('[data-b="later"]').onclick=()=>dismissBanner(el);el.querySelector('[data-b="go"]').onclick=()=>{if(pkg){openExternal(RELEASES_URL);dismissBanner(el)}else installUpdate(el)};host.appendChild(el)}
 let installing=false;
-async function installUpdate(el,btn){const D=window.SundialDesktop;if(!D||installing||plat.install==='package')return;installing=true;const b=btn||el?.querySelector('[data-b="go"]');if(b){b.textContent='Installing…';b.disabled=true}
+async function installUpdate(el,btn){const D=window.SundialDesktop;if(!D||installing)return;if(updatePkg(updateInfo)){openExternal(RELEASES_URL);return}installing=true;const b=btn||el?.querySelector('[data-b="go"]');if(b){b.textContent='Installing…';b.disabled=true}
   updateProgress({pct:0});
   try{await D.flush();await D.updateInstall()}
-  catch(e){installing=false;const msg=e.message||String(e);updateProgress({error:msg});if(b){b.textContent='Restart now';b.disabled=false}}}
+  catch(e){installing=false;const msg=e.message||String(e);updateProgress({error:msg});if(b){b.textContent='Update and restart';b.disabled=false}}}
 // One banner that follows the download, then the installer, and stays put if anything goes wrong.
 function updateProgress(p){const host=bannerHost();let el=host.querySelector('.banner.progress');
   if(!el){el=document.createElement('div');el.className='banner progress start';el.innerHTML='<div class="ic">↻</div><div class="tx"><span class="k">Updating</span><b></b><small></small></div><div class="bt"></div>';host.appendChild(el)}
@@ -1068,13 +1156,13 @@ function syncHotkeys(){const D=window.SundialDesktop;if(!D)return;
   // Wayland has no system-wide shortcuts for apps. Register nothing: the keydown handler keeps the combos working while Sundial is focused, and Settings shows the desktop-shortcut recipe.
   if(wayland()){globalHotkeys=false;D.setHotkeys({quick:null,voice:null}).catch(()=>{});return}
   D.setHotkeys({quick:S().quick.hotkey,voice:S().voice.enabled?S().voice.hotkey:null}).then(failed=>{globalHotkeys=!(failed&&failed.length);if(failed&&failed.length)toast('Hotkey taken by another app: '+failed.join(', '))}).catch(()=>{globalHotkeys=false})}
-function refreshAiKey(){const D=window.SundialDesktop;if(D)D.secret.get('ai:'+S().ai.provider).then(v=>{aiKeySaved=!!v;return refreshSecretKind()}).then(()=>{if(sheetTab==='ai')renderSheet()}).catch(()=>{});else aiKeySaved=!!S().ai.keyInBrowser}
+function refreshAiKey(){const D=window.SundialDesktop;if(D)D.secret.get('ai:'+S().ai.provider).then(v=>{aiKeySaved=!!v;return refreshSecretKind()}).then(()=>{if(sheetTab==='ai')renderSheet()}).catch(()=>{});else aiKeySaved=!!(S().ai.keysInBrowser||{})[S().ai.provider]}
 // The desktop's General rows. Linux changes the wording: no "Windows", a Download button instead of Restart on an rpm/deb (they cannot
 // replace themselves), and a Quit note when the desktop shows no tray. With the Windows defaults in plat the output is today's, unchanged.
-function desktopGeneralRows(){const linux=isLinux(),pkg=plat.install==='package',tray=plat.tray!==false;
+function desktopGeneralRows(){const linux=isLinux(),pkg=updatePkg(updateInfo),tray=plat.tray!==false;
   const updSub=pkg?`Sundial ${esc(appVersion||'')}. Checks on launch and every six hours. A package install cannot replace itself, so a Download button appears here when a new version is out.${updateInfo?' <b>'+esc(updateInfo.version)+' is out.</b>':''}`
-    :`Sundial ${esc(appVersion||'')}. Checks on launch and every six hours, downloads in the background, and asks before restarting.${updateInfo?' <b>'+esc(updateInfo.version)+' is ready.</b>':''}`;
-  const updBtn=updateInfo?(pkg?'<button class="btn" data-run="updateDownload">Download</button>':'<button class="btn" data-run="updateInstall">Restart to update</button>'):'<button class="btn" data-run="updateCheck">Check now</button>';
+    :`Sundial ${esc(appVersion||'')}. Checks on launch and every six hours, and asks before it downloads and restarts.${updateInfo?' <b>'+esc(updateInfo.version)+' is out.</b>':''}`;
+  const updBtn=updateInfo?(pkg?'<button class="btn" data-run="updateDownload">Download</button>':'<button class="btn" data-run="updateInstall">Update and restart</button>'):'<button class="btn" data-run="updateCheck">Check now</button>';
   return `<div class="opt"><div>Updates<small>${updSub}</small></div><div class="ctl"><button class="tog" role="switch" data-tog="updates.auto" aria-checked="${!!S().updates.auto}"></button>${updBtn}</div></div>`
   +`<div class="opt"><div>${linux?'Start with the system':'Start with Windows'}<small>${tray?(linux?'Launches hidden in the tray at login.':'Launches hidden in the tray at sign-in.'):'Launches at login.'}</small></div><div class="ctl"><button class="tog" role="switch" data-autostart="1" aria-checked="${autostartOn}"></button></div></div>`
   +(tray?`<div class="opt"><div>Closing the window<small>Hides Sundial to the tray so reminders keep firing. Quit is in the tray icon menu.</small></div><div class="ctl"><span class="soon">Tray</span></div></div>`
@@ -1108,25 +1196,57 @@ async function aiRefine(task,raw){
   const p0=parse(raw,'1970-01-05');const had={date:p0.date!=='1970-01-05',color:!!p0.color};
   aiBusy++;const box=$('#parse');if(box)box.insertAdjacentHTML('beforeend','<span class="chip ghost" id="aiChip">AI…</span>');
   try{const ai=await AI.parse(raw,task.date);const t=get(task.id);if(!t)return;const r=AI.refinePatch(t,ai,had);
-    if(r){upd(t.id,r.patch);if(r.patch.date&&r.patch.date!==sel)goDay(r.patch.date);render();toast('AI: '+r.summary,()=>{undo();render()})}}
+    // the answer arrives seconds later: it must not redraw under a field being typed in, or pull the view to another day then
+    if(r){upd(t.id,r.patch);const a=document.activeElement,busy=!!a&&a.id!=='qa'&&typingElsewhere();if(r.patch.date&&r.patch.date!==sel&&!busy)goDay(r.patch.date);renderWhenIdle();toast('AI: '+r.summary,()=>{undo();render()})}}
   catch(e){toast('AI parsing: '+(e.message||e))}
   finally{aiBusy--;$('#aiChip')?.remove()}
 }
 
 // ---------- scheduler ----------
-let lastMinute=-1;
+let lastMinute=-1,lastTick=0,lastToday=todayStr();
+// Midnight (or waking up on a later day): the app follows to the new today when it was showing the old one, and redraws
+// either way so "Today" and "Yesterday" are right. While someone is typing, dragging or in a dialog it waits for the next check.
+function dayRollover(){const td=todayStr();if(td===lastToday)return;
+  const a=document.activeElement;if($('.scrim:not(.out)')||dragId||(a&&a.id!=='qa'&&typingElsewhere()))return;
+  const follow=sel===lastToday;lastToday=td;if(follow){openId=null;goDay(td)}render()}
 function tick(){
-  const now=Date.now();
-  for(const ev of dueEvents(now))notify(ev,false);
+  const now=Date.now();dayRollover();
+  // since the last check, so what came due while the PC slept still shows up, marked as missed
+  for(const ev of dueEvents(now,lastTick))notify(ev,false);lastTick=now;
   const m=nowMin();if(m!==lastMinute){lastMinute=m;updateLogo();
     const nowEl=document.querySelector('.hours .now');if(nowEl&&sel===todayStr()){nowEl.style.top=(m/60*S().hh)+'px';nowEl.querySelector('i').textContent='☉ '+fmtTime(m)}
-    if(view==='day'&&sel===todayStr()&&!openId&&!Voice.isActive()){const strip=$('.now-strip');const fresh=nowStrip();if(strip&&fresh&&strip.outerHTML!==fresh)strip.outerHTML=fresh;else if((!strip)!==(!fresh))render()}}
+    if(state.layout.cal)renderUpnext();
+    if(state.layout.tl&&sel===todayStr()&&!dragId&&!rzState)document.querySelectorAll('.hours .blk').forEach(b=>{const x=get(b.dataset.id);b.classList.toggle('live',!!x&&!x.done&&x.time!=null&&m>=x.time&&m<x.time+(x.dur||30))});
+    if(view==='day'&&sel===todayStr()&&!Voice.isActive()){const strip=$('.now-strip');const fresh=nowStrip();if(strip&&fresh&&strip.outerHTML!==fresh)strip.outerHTML=fresh;else if((!strip)!==(!fresh)&&!openId)renderWhenIdle()}}
+}
+// Desktop start: read the data file, and only then let anything be written (D.ready()).
+//  - no file yet: this is the first run, the state built at load is saved.
+//  - a readable file: it replaces the state, unless the last session ended with a write that never reached the file
+//    (D.unsaved()): then this app's own copy is the newer one and is written out instead.
+//  - a file that is not a Sundial file (cut short by a power cut, a slip in a hand edit): it is never written over. The
+//    shell keeps it under another name, and the app goes on from its own last copy, or from the newest daily backup when
+//    it has none, and says so. If the file cannot even be read or set aside, nothing is written at all.
+async function loadDataFile(D){
+  const stuck=why=>stickyNote('datafile','Sundial could not open its data file',why+' Nothing is being saved, so the file stays as it is. Quit Sundial, check the file (Settings → Data & sync → Show folder), then start it again.');
+  D.onSaveError=e=>stickyNote('nosave','Sundial could not save','The data file could not be written ('+String(e&&e.message||e).slice(0,120)+'). Your changes are kept in the app and it tries again every few seconds. Check that the disk is not full and the file is not open in another program.');
+  D.onSaveOk=()=>{const n=document.querySelector('.banner.nosave');if(n)dismissBanner(n);toast('Saved again')};
+  let raw;try{raw=await D.load()}catch(e){console.error('load failed',e);stuck('The file could not be read ('+String(e&&e.message||e).slice(0,120)+').');return}
+  if(!raw){D.ready();save();return}
+  const ownCopy=bootSource==='storage';
+  if(D.unsaved()&&ownCopy){D.ready();save();return}
+  try{hydrate(raw);D.ready();return}catch(e){console.error('data file unreadable',e)}
+  let from='its own last copy';
+  if(!ownCopy){from='';try{const bak=D.newestBackup?await D.newestBackup():null;if(bak){hydrate(bak);from='the newest daily backup'}}catch(e){console.error('backup unreadable',e)}}
+  let kept=null;try{kept=D.setAside?await D.setAside():null}catch(e){console.error('set aside failed',e)}
+  if(!kept){stuck('The file is damaged and could not be moved out of the way.');return}
+  D.ready();save();
+  stickyNote('datafile','Your data file was damaged','Sundial kept the damaged file as '+kept+' and '+(from?'went on from '+from+'.':'found nothing to restore, so it started fresh.')+' Daily backups are in the backups folder next to it (Settings → Data & sync → Show folder).');
 }
 async function init(){
   const D=window.SundialDesktop;
   // platform first: render() and syncHotkeys() below read plat. A shell without the command keeps the Windows defaults.
   if(D){if(D.platform){try{const p=await D.platform();if(p&&p.os)plat=Object.assign(plat,p)}catch(_){}}
-    try{const raw=await D.load();if(raw)hydrate(raw);else save()}catch(e){console.error('load failed',e)}
+    await loadDataFile(D);
     D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});D.on('sundial://deep-link',e=>deepLink(e.payload));D.on('sundial://hidden',()=>{if(S().trayNoticeShown)return;S().trayNoticeShown=true;save();
       if(isLinux())D.notify('Sundial is still running','It is in the system tray (under the panel arrow if you do not see it). Reminders keep working. Quit from the tray icon menu.').catch(()=>{});
       else D.toastShow({kind:'info',label:'Still running',title:'Sundial is in the tray',meta:'Reminders keep working. Quit from the tray icon menu.',corner:S().toasts.corner,secs:8,sticky:false,actions:[{id:'ok',label:'OK',primary:true}]}).catch(()=>{})});D.on('sundial://update-progress',e=>updateProgress(e.payload||{}));syncHotkeys();
@@ -1141,15 +1261,16 @@ async function init(){
     if(document.hidden)await show;else show.catch(()=>{})});
   Sync.on((ev,arg)=>{
     if(ev==='start'||ev==='ok'||ev==='error'){const sm=document.querySelector('[data-run="syncNow"]')?.closest('.opt')?.querySelector('small');if(sm)sm.innerHTML=syncStatusText(Sync.st());return}
-    if(ev==='signedout'||ev==='lostkey'){syncFlowReset();toast(arg||Sync.st().lastError||'Signed out of sync',()=>{sheetTab='data';settings()},'Open')}
-    if(ev==='pair'){pairBanners();finishBanners();if(isLinux()&&document.hidden)for(const p of Sync.pendingPairs()){if(!pairNotified.has(p.id)){pairNotified.add(p.id);D.notify('A PC wants to join your sync','Open Sundial to approve or refuse it.').catch(()=>{})}}}if(ev==='pairdone')toast((arg?'"'+arg+'"':'The other '+DEV())+' is in.');if(ev==='pairready'){if(!$('.sheet-host')&&!$('.ob-host:not(.out)'))toast('Sundial needs one check before this PC can sync.',()=>{sheetTab='data';settings()},'Open')}if(ev==='paired'){syncFlowReset();toast('This PC is in. Syncing.')}
+    if(ev==='signedout'||ev==='lostkey'){syncFlowReset();toast(arg||Sync.st().lastError||'Signed out of sync',()=>openSettings('data'),'Open')}
+    if(ev==='pair'){pairBanners();finishBanners();if(isLinux()&&document.hidden)for(const p of Sync.pendingPairs()){if(!pairNotified.has(p.id)){pairNotified.add(p.id);D.notify('A PC wants to join your sync','Open Sundial to approve or refuse it.').catch(()=>{})}}}if(ev==='pairdone')toast((arg?'"'+arg+'"':'The other '+DEV())+' is in.');if(ev==='pairready'){if(!$('.sheet-host')&&!$('.ob-host:not(.out)'))toast('Sundial needs one check before this PC can sync.',()=>openSettings('data'),'Open')}if(ev==='paired'){syncFlowReset();toast('This PC is in. Syncing.')}
     if(ev==='pairwithdrawn')stickyNote('withdrawn','A request to add a PC was withdrawn',`"${arg||'A PC'}" asked to join your sync and pulled out before you answered. If that was not you, open Settings → Data & sync and erase the synced copy.`);
-    if(ev==='pairwarn')stickyNote('pairwarn','Something keeps asking to add a PC','Five requests in an hour, which is more than adding PCs normally takes. Sundial is holding the rest. If it is you, dismiss this to continue; if it is not you, leave it and consider erasing the synced copy.',()=>Sync.liftPairCap());if(ev==='pairfail'){syncSetup.pairError=arg||'Approval did not go through.';toast(syncSetup.pairError,()=>{sheetTab='data';settings()},'Open')}
+    if(ev==='pairwarn')stickyNote('pairwarn','Something keeps asking to add a PC','Five requests in an hour, which is more than adding PCs normally takes. Sundial is holding the rest. If it is you, dismiss this to continue; if it is not you, leave it and consider erasing the synced copy.',()=>Sync.liftPairCap());if(ev==='pairfail'){syncSetup.pairError=arg||'Approval did not go through.';toast(syncSetup.pairError,()=>openSettings('data'),'Open')}
     if($('.sheet-host')&&sheetTab==='data')renderSheet();else if($('.ob-host:not(.out)')&&obStep===2)renderOnboarding()});Sync.start();
   if(D&&D.deepLinkPending)D.deepLinkPending().then(u=>{if(u)deepLink(u)}).catch(()=>{});
   addEventListener('beforeunload',()=>{if(Sync.isPairing())Sync.cancelPairing()});
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden)updateLogo()});
-  setTimeout(()=>{const s=Sync.st();if(s.mode!=='off'&&!s.keyOk&&!Sync.hasKey())toast('Sync is signed in, but this '+DEV()+' is not approved yet',()=>{sheetTab='data';settings()},'Open')},2500);
+  // back in view (or awake again): catch up at once on the date, on what came due meanwhile, and on the clock
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden){updateLogo();tick()}});
+  setTimeout(()=>{const s=Sync.st();if(s.mode!=='off'&&!s.keyOk&&!Sync.hasKey())toast('Sync is signed in, but this '+DEV()+' is not approved yet',()=>openSettings('data'),'Open')},2500);
   if(!S().onboarded)setTimeout(onboarding,500);
   // first gesture: unlock audio and, in a browser that is past onboarding, ask it to keep the data (new users are asked when onboarding ends)
   const unlock=()=>{SFX.unlock();if(!D&&S().onboarded)askPersist()};
@@ -1173,8 +1294,9 @@ function webInit(){
   if(location.protocol==='https:'&&'serviceWorker'in navigator){const reg=()=>navigator.serviceWorker.register('sw.js').then(r=>{r.addEventListener('updatefound',()=>{const w=r.installing;if(!w)return;w.addEventListener('statechange',()=>{if(w.state==='installed'&&navigator.serviceWorker.controller)toast('Sundial updated. Reload when convenient.',()=>location.reload(),'Reload')})})}).catch(()=>{});
     if(document.readyState==='complete')reg();else addEventListener('load',reg)}
   // two tabs (a browser tab and the installed window) share one localStorage: take the other tab's write instead of overwriting it
-  addEventListener('storage',e=>{if(e.key!==KEY||!e.newValue||e.newValue===JSON.stringify(state))return;try{hydrate(e.newValue)}catch(err){return}applyTheme();applyDensity();applyLayout();render()});
+  // (the undo steps taken here describe a task list the other tab has since replaced, so they go)
+  addEventListener('storage',e=>{if(e.key!==KEY||!e.newValue||e.newValue===JSON.stringify(state))return;try{hydrate(e.newValue)}catch(err){return}dropUndo();applyTheme();applyDensity();applyLayout();renderWhenIdle()});
   // https://app.sundial.services/?code=482913 from the sign-in email: the same path as the desktop's sundial://signin link
-  try{const u=new URL(location.href);const code=(u.searchParams.get('code')||'').replace(/\D/g,'');if(code.length===6){history.replaceState(null,'',u.pathname);setTimeout(()=>deepLink('sundial://signin?code='+code),600)}}catch(_){}
+  try{const u=new URL(location.href);const code=(u.searchParams.get('code')||'').replace(/\D/g,'');if(code.length===6){setTimeout(()=>deepLink('sundial://signin?code='+code),600);try{window.history.replaceState(null,'',u.pathname)}catch(_){}}}catch(_){}
 }
 init();
