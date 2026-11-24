@@ -8,29 +8,50 @@
 //!                      otherwise printed to the log (development).
 
 use axum::{
-    extract::{ConnectInfo, DefaultBodyLimit, Query, State},
+    body::HttpBody,
+    extract::{ConnectInfo, DefaultBodyLimit, Query, Request, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use rand::{distributions::Alphanumeric, Rng};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
+    pin::Pin,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    timeout::TimeoutLayer,
+};
 
 const PROTOCOL: i64 = 1;
 const PAGE: i64 = 500;
 // The longest a /v1/sync request may ask to be held while nothing is new. Kept under the 30 seconds clients allow a request.
 const MAX_WAIT_SECS: u64 = 25;
+/// The most a request body may hold. Everything but /v1/sync carries a few short fields, so only /v1/sync gets room
+/// for documents, and only for a token the server knows (see known_token).
+const SMALL_BODY: usize = 4096;
+const SYNC_BODY: usize = 8 * 1024 * 1024;
+/// How long a request may take from the moment its headers are in until its answer starts. A body that stalls is
+/// dropped then, with whatever of it was read. It has to stay well above MAX_WAIT_SECS: a held /v1/sync request is
+/// meant to take that long.
+const REQUEST_SECS: u64 = 60;
+/// A /v1/sync body above this size is read under a permit, and there are BIG_UPLOADS permits. A body is held in
+/// memory from its first byte until the request is answered, and anyone with a sign-in can send 8 MB slowly on
+/// many connections at once: the permits bound that at BIG_UPLOADS x 8 MB whatever the number of connections.
+/// Ordinary syncs are far below BIG_BODY and never wait for a permit.
+const BIG_BODY: usize = 256 * 1024;
+const BIG_UPLOADS: usize = 6;
+const _: () = assert!(REQUEST_SECS >= MAX_WAIT_SECS + 30);
 // last_seen is for the device list, where ten minutes is exact enough: an idle check then writes nothing at all.
 const SEEN_EVERY_MS: i64 = 10 * 60 * 1000;
 // About 2 MB of ciphertext per page: 500 rows at the 64 KB document limit would be 44 MB in one response.
@@ -40,8 +61,10 @@ const FUTURE_MS: i64 = 24 * 3600 * 1000;
 const CODE_TTL_MS: i64 = 10 * 60 * 1000;
 /// Ciphertext one account may hold in total (base64 characters, which is what travels and what is stored).
 const QUOTA_BYTES: i64 = 50 * 1024 * 1024;
-/// Wrong sign-in codes that lock an address, and for how long.
-const LOCK_FAILS: i64 = 10;
+/// Wrong sign-in codes that lock an address, and for how long: NET_FAILS from one client network lock that network
+/// out of the address, LOCK_FAILS from everywhere together lock the address for everyone.
+const NET_FAILS: u32 = 10;
+const LOCK_FAILS: i64 = 50;
 const LOCK_MS: i64 = 24 * 3600 * 1000;
 const HOUR: Duration = Duration::from_secs(3600);
 const DAY: Duration = Duration::from_secs(24 * 3600);
@@ -63,6 +86,11 @@ struct App {
     http: reqwest::Client,
     /// Requests that are waiting for an account to change (`wait` on /v1/sync): account -> the bell a write rings.
     waiters: Arc<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>>,
+    /// The hashes of the tokens in SUNDIAL_TOKENS. The list is only read at startup, so erasing a static account
+    /// has to put these back itself.
+    static_tokens: Arc<Vec<String>>,
+    /// Permits for reading a big /v1/sync body (see BIG_BODY).
+    uploads: Arc<tokio::sync::Semaphore>,
 }
 
 fn now_ms() -> i64 {
@@ -142,7 +170,7 @@ fn has_column(db: &Connection, table: &str, col: &str) -> rusqlite::Result<bool>
 }
 
 fn open_db(path: &str, hosted: bool, tokens: &[String]) -> rusqlite::Result<Connection> {
-    let db = Connection::open(path)?;
+    let mut db = Connection::open(path)?;
     let _ = db.pragma_update(None, "journal_mode", "WAL");
     db.pragma_update(None, "synchronous", "NORMAL")?;
     db.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -153,21 +181,65 @@ fn open_db(path: &str, hosted: bool, tokens: &[String]) -> rusqlite::Result<Conn
     }
     // Static tokens are accepted in both modes (the operator's own devices, a household on a self-hosted box).
     let _ = hosted;
+    let tx = db.transaction()?;
+    let removed = seed_tokens(&tx, tokens)?;
+    tx.commit()?;
+    if removed > 0 {
+        tracing::info!("{removed} static token(s) no longer in SUNDIAL_TOKENS: they stop working, their accounts and documents stay");
+    }
+    Ok(db)
+}
+
+/// Makes SUNDIAL_TOKENS and the database agree: every listed token opens its own account, and a static token that is
+/// no longer listed opens nothing. Returns how many tokens were taken away.
+fn seed_tokens(db: &Connection, tokens: &[String]) -> rusqlite::Result<usize> {
+    let mut hashes: Vec<String> = Vec::new();
     for t in tokens {
-        let acct = format!("acct_{}", &t.chars().take(8).collect::<String>());
         let h = token_hash(t);
+        // a row written by an older version holds the token itself: rewrite it to the hash
+        db.execute("UPDATE OR REPLACE tokens SET token=?1, hashed=1 WHERE token=?2 AND hashed=0", params![h, t])?;
+        let acct = static_account(db, t, &h)?;
         db.execute(
             "INSERT OR IGNORE INTO accounts(id,email,salt,created_at) VALUES(?1,NULL,?2,?3)",
             params![acct, rand_b64(32), now_ms()],
         )?;
-        // a row written by an older version holds the token itself: rewrite it to the hash
-        db.execute("UPDATE OR REPLACE tokens SET token=?1, hashed=1 WHERE token=?2 AND hashed=0", params![h, t])?;
         db.execute(
             "INSERT OR IGNORE INTO tokens(token,account,created_at,hashed) VALUES(?1,?2,?3,1)",
             params![h, acct, now_ms()],
         )?;
+        hashes.push(h);
     }
-    Ok(db)
+    // Taking a token off the list is how an operator revokes it. Only the token row goes: the account and its
+    // documents stay, so listing the token again gives them back. Tokens from email sign-in belong to accounts with
+    // an email and are not touched. This runs after the loop above on purpose: a new token must never find the
+    // account of a token that is being removed in the same start looking unused.
+    let mut gone = String::from("DELETE FROM tokens WHERE account IN (SELECT id FROM accounts WHERE email IS NULL)");
+    if !hashes.is_empty() {
+        gone.push_str(&format!(" AND token NOT IN ({})", vec!["?"; hashes.len()].join(",")));
+    }
+    db.execute(&gone, params_from_iter(hashes.iter()))
+}
+
+/// The account a static token opens. A token the database knows keeps its account, so an install from before 0.1.14
+/// keeps its ids. A new token gets an id made from its hash. Older versions used the token's first 8 characters,
+/// which put two tokens that start alike into one account and kept a piece of the secret in the database.
+fn static_account(db: &Connection, token: &str, hash: &str) -> rusqlite::Result<String> {
+    let known: Option<String> = db
+        .query_row("SELECT account FROM tokens WHERE token=?1 AND hashed=1", params![hash], |r| r.get(0))
+        .optional()?;
+    if let Some(acct) = known {
+        return Ok(acct);
+    }
+    // A token that was taken off the list and is listed again gets its account back. With an id made from the hash
+    // that happens by itself. An old-style account is handed back only while no token opens it: otherwise a second
+    // token with the same first 8 characters would be let into an account that is in use.
+    let old = format!("acct_{}", token.chars().take(8).collect::<String>());
+    let orphan: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?1 AND email IS NULL) AND NOT EXISTS(SELECT 1 FROM tokens WHERE account=?1)",
+        params![old],
+        |r| r.get(0),
+    )?;
+    Ok(if orphan { old } else { format!("acct_{}", &hash[..16]) })
 }
 
 fn bearer(headers: &HeaderMap) -> Option<String> {
@@ -230,7 +302,29 @@ fn salt_for(db: &Connection, account: &str) -> rusqlite::Result<String> {
     db.query_row("SELECT salt FROM accounts WHERE id=?1", params![account], |r| r.get(0))
 }
 
-/// Simple fixed-window rate limit: `max` hits per `window` for a key. Refused hits count too.
+/// The network a client address belongs to: the /24 of an IPv4 address, the /48 of an IPv6 one (what one line
+/// usually gets). Wrong sign-in codes are counted per network, so a neighbouring address is not a fresh start.
+fn client_net(ip: &str) -> String {
+    let v4 = |a: std::net::Ipv4Addr| {
+        let o = a.octets();
+        format!("{}.{}.{}.0/24", o[0], o[1], o[2])
+    };
+    match ip.parse::<IpAddr>() {
+        Ok(IpAddr::V4(a)) => v4(a),
+        Ok(IpAddr::V6(a)) => match a.to_ipv4_mapped() {
+            Some(a) => v4(a),
+            None => {
+                let s = a.segments();
+                format!("{:x}:{:x}:{:x}::/48", s[0], s[1], s[2])
+            }
+        },
+        // not an address (a proxy that passes something else along): it counts as itself
+        Err(_) => ip.to_string(),
+    }
+}
+
+/// Simple fixed-window rate limit: `max` hits per `window` for a key. A refused hit is not counted, so a hit that
+/// is given back (unallow) makes room for exactly one more.
 fn allow(app: &App, key: &str, max: u32, window: Duration) -> bool {
     let mut m = app.limits.lock().unwrap();
     let now = Instant::now();
@@ -241,8 +335,23 @@ fn allow(app: &App, key: &str, max: u32, window: Duration) -> bool {
     if now.duration_since(e.0) > e.2 {
         *e = (now, 0, window);
     }
+    if e.1 >= max {
+        return false;
+    }
     e.1 += 1;
-    e.1 <= max
+    true
+}
+
+/// Gives one hit back: what it was counted for did not happen.
+fn unallow(app: &App, key: &str) {
+    if let Some(e) = app.limits.lock().unwrap().get_mut(key) {
+        e.1 = e.1.saturating_sub(1);
+    }
+}
+
+/// Whether a key has used up `max` in its current window. Counts nothing.
+fn over(app: &App, key: &str, max: u32) -> bool {
+    app.limits.lock().unwrap().get(key).map_or(false, |e| e.1 >= max && e.0.elapsed() <= e.2)
 }
 
 async fn health(State(app): State<App>) -> (StatusCode, Json<Value>) {
@@ -276,16 +385,18 @@ async fn auth_request(
     if !email.contains('@') || email.len() > 254 {
         return Ok(StatusCode::NO_CONTENT); // never reveal anything about addresses
     }
-    // Abuse limits: per address, per client, and a global cap that stays under the email provider's daily quota.
+    // Abuse limits: per client, per address, and a global cap that stays under the email provider's daily quota.
+    // The client's own limits come first, so a client that is over them is refused before it can use up somebody
+    // else's address. "code-try" is the one count that is never given back: it bounds how often one client can
+    // make the server call the email provider while sending fails.
     let ip = client_ip(&headers, &addr);
-    let refused = if !allow(&app, &format!("code:{email}"), 5, HOUR) {
-        Some("address")
-    } else if !allow(&app, &format!("code-ip-h:{ip}"), 5, HOUR) {
+    let (ip_hour, ip_day, address) = (format!("code-ip-h:{ip}"), format!("code-ip-d:{ip}"), format!("code:{email}"));
+    let refused = if !allow(&app, &format!("code-try:{ip}"), 30, HOUR) {
+        Some("ip/tries")
+    } else if !allow(&app, &ip_hour, 5, HOUR) {
         Some("ip/hour")
-    } else if !allow(&app, &format!("code-ip-d:{ip}"), 20, DAY) {
+    } else if !allow(&app, &ip_day, 20, DAY) {
         Some("ip/day")
-    } else if !allow(&app, "code-global", 80, DAY) {
-        Some("global/day")
     } else {
         None
     };
@@ -293,19 +404,36 @@ async fn auth_request(
         tracing::warn!("sign-in code request refused: {which} limit");
         return Err(mail_limited());
     }
+    let address_ok = allow(&app, &address, 5, HOUR);
+    let global_ok = address_ok && allow(&app, "code-global", 80, DAY);
     let code = {
         let db = app.db.lock().unwrap();
-        let live: Option<(String, i64)> = db
-            .query_row("SELECT code,expires FROM codes WHERE email=?1", params![email], |r| Ok((r.get(0)?, r.get(1)?)))
+        let live: Option<String> = db
+            .query_row("SELECT code FROM codes WHERE email=?1 AND expires>?2", params![email, now_ms()], |r| r.get(0))
             .optional()
             .map_err(internal)?;
+        if !address_ok {
+            // This address has had its emails for the hour. While the code in them still works it gets its ten
+            // minutes again and the request is answered as sent, so asking for someone's address five times does
+            // not keep them from signing in with the code they already hold.
+            if live.is_some() {
+                db.execute("UPDATE codes SET expires=?1 WHERE email=?2", params![now_ms() + CODE_TTL_MS, email]).map_err(internal)?;
+                return Ok(StatusCode::NO_CONTENT);
+            }
+            tracing::warn!("sign-in code request refused: address limit");
+            return Err(mail_limited());
+        }
+        if !global_ok {
+            tracing::warn!("sign-in code request refused: global/day limit");
+            return Err(mail_limited());
+        }
         match live {
             // the code is still valid: send it again, so the first email keeps working too
-            Some((c, expires)) if expires > now_ms() => {
+            Some(c) => {
                 db.execute("UPDATE codes SET expires=?1 WHERE email=?2", params![now_ms() + CODE_TTL_MS, email]).map_err(internal)?;
                 c
             }
-            _ => {
+            None => {
                 let c = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32));
                 db.execute(
                     "INSERT OR REPLACE INTO codes(email,code,expires,tries) VALUES(?1,?2,?3,0)",
@@ -317,6 +445,11 @@ async fn auth_request(
         }
     };
     if !send_code(&app, &email, &code).await {
+        // Nothing went out, so nothing is used up: an outage at the email provider must not lock out the person
+        // who keeps trying, or eat the day's allowance.
+        for key in [ip_hour.as_str(), ip_day.as_str(), address.as_str(), "code-global"] {
+            unallow(&app, key);
+        }
         return Err(mail_unavailable());
     }
     Ok(StatusCode::NO_CONTENT)
@@ -381,36 +514,40 @@ struct VerifyReq {
 }
 
 /// Checks a sign-in code for an address: 429 while the address is locked, 401 for a wrong, missing or expired code.
-/// Ten failures lock the address for 24 hours, whatever happens to the code rows in between. A correct code is used
-/// up and clears the failure count.
-fn check_code(db: &Connection, email: &str, typed: &str) -> Result<(), ApiError> {
+///
+/// Wrong codes are counted per client network (in memory): NET_FAILS from one network lock that network out of the
+/// address for 24 hours. Someone typing junk codes for an address they know therefore locks out their own network,
+/// not the owner signing in from elsewhere. LOCK_FAILS wrong codes from all networks together (in the database)
+/// lock the address for everyone for 24 hours, which is what bounds guessing from many networks at once.
+/// Only a wrong code for a code that still works is counted: with no code, or an expired one, there is nothing to
+/// guess. A correct code is used up and clears the counts.
+fn check_code(app: &App, db: &Connection, email: &str, typed: &str, ip: &str) -> Result<(), ApiError> {
     let now = now_ms();
+    let net = format!("code-fail:{} {email}", client_net(ip));
     db.execute("DELETE FROM auth_fails WHERE since < ?1", params![now - LOCK_MS]).map_err(internal)?;
     let fails: Option<(i64, i64)> = db
         .query_row("SELECT fails,since FROM auth_fails WHERE email=?1", params![email], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()
         .map_err(internal)?;
+    if over(app, &net, NET_FAILS) {
+        return Err(locked());
+    }
     if let Some((f, since)) = fails {
         if f >= LOCK_FAILS && now - since < LOCK_MS {
             return Err(locked());
         }
     }
-    let row: Option<(String, i64)> = db
-        .query_row("SELECT code,expires FROM codes WHERE email=?1", params![email], |r| Ok((r.get(0)?, r.get(1)?)))
+    let code: Option<String> = db
+        .query_row("SELECT code FROM codes WHERE email=?1 AND expires>=?2", params![email, now], |r| r.get(0))
         .optional()
         .map_err(internal)?;
-    let typed: String = typed.chars().filter(|c| c.is_ascii_digit()).collect();
-    let ok = match &row {
-        Some((code, expires)) if *expires >= now => {
-            use subtle::ConstantTimeEq;
-            bool::from(code.as_bytes().ct_eq(typed.as_bytes()))
-        }
-        _ => false,
+    let Some(code) = code else {
+        return Err(wrong_code());
     };
-    if !ok {
-        if row.is_none() {
-            return Err(wrong_code());
-        }
+    let typed: String = typed.chars().filter(|c| c.is_ascii_digit()).collect();
+    use subtle::ConstantTimeEq;
+    if !bool::from(code.as_bytes().ct_eq(typed.as_bytes())) {
+        allow(app, &net, NET_FAILS, DAY);
         let (f, since) = match fails {
             Some((f, since)) if now - since < LOCK_MS => (f + 1, since),
             _ => (1, now),
@@ -423,6 +560,7 @@ fn check_code(db: &Connection, email: &str, typed: &str) -> Result<(), ApiError>
     }
     db.execute("DELETE FROM codes WHERE email=?1", params![email]).map_err(internal)?;
     db.execute("DELETE FROM auth_fails WHERE email=?1", params![email]).map_err(internal)?;
+    app.limits.lock().unwrap().remove(&net);
     Ok(())
 }
 
@@ -444,7 +582,7 @@ async fn auth_verify(
         return Err(locked());
     }
     let db = app.db.lock().unwrap();
-    check_code(&db, &email, &body.code)?;
+    check_code(&app, &db, &email, &body.code, &ip)?;
     let account: String = match db
         .query_row("SELECT id FROM accounts WHERE email=?1", params![email], |r| r.get(0))
         .optional()
@@ -479,11 +617,14 @@ async fn auth_verify(
 }
 
 /// Sign-out: forgets the caller's token. 204 whether or not the token was still known, so a repeat is harmless.
+/// A static token is left alone: it is the operator's, it is only written at startup, and forgetting it here would
+/// shut out every device that uses it until the server is restarted.
 async fn logout(State(app): State<App>, headers: HeaderMap) -> Result<StatusCode, ApiError> {
     let token = bearer(&headers).ok_or_else(unauthorized)?;
     let db = app.db.lock().unwrap();
     db.execute(
-        "DELETE FROM tokens WHERE (token=?1 AND hashed=1) OR (token=?2 AND hashed=0)",
+        "DELETE FROM tokens WHERE ((token=?1 AND hashed=1) OR (token=?2 AND hashed=0))
+           AND account NOT IN (SELECT id FROM accounts WHERE email IS NULL)",
         params![token_hash(&token), token],
     )
     .map_err(internal)?;
@@ -591,9 +732,11 @@ fn wake(app: &App, acct: &str) {
     }
 }
 
-/// Deletes the account, every document and every token. A hosted account (one with an email) also needs a fresh
-/// sign-in code for that address in the body, {"code":"123456"}, so a leaked token alone cannot wipe a synced copy.
-/// The body is read as text: self-hosted clients send none.
+/// Deletes the account, every document and every token, all or nothing. A hosted account (one with an email) also
+/// needs a fresh sign-in code for that address in the body, {"code":"123456"}, so a leaked token alone cannot wipe a
+/// synced copy. The body is read as text: self-hosted clients send none.
+/// An account opened by static tokens comes straight back empty, with a new salt and the same tokens: the server
+/// only reads SUNDIAL_TOKENS when it starts, so without this the token would answer 401 until the next restart.
 async fn delete_account(
     State(app): State<App>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -602,14 +745,15 @@ async fn delete_account(
 ) -> Result<StatusCode, ApiError> {
     let token = bearer(&headers).ok_or_else(unauthorized)?;
     let ip = client_ip(&headers, &addr);
-    let db = app.db.lock().unwrap();
+    let mut db = app.db.lock().unwrap();
     let acct = account_for(&db, &token).map_err(internal)?.ok_or_else(unauthorized)?;
-    let email: Option<Option<String>> = db
+    let row: Option<Option<String>> = db
         .query_row("SELECT email FROM accounts WHERE id=?1", params![acct], |r| r.get(0))
         .optional()
         .map_err(internal)?;
+    let is_static = matches!(row, Some(None));
     if app.hosted {
-        if let Some(email) = email.flatten() {
+        if let Some(email) = row.flatten() {
             let code = match serde_json::from_str::<Value>(&body) {
                 Ok(v) => match &v["code"] {
                     Value::String(s) => s.clone(),
@@ -624,12 +768,37 @@ async fn delete_account(
             if !allow(&app, &format!("verify-ip:{ip}"), 30, HOUR) {
                 return Err(locked());
             }
-            check_code(&db, &email, &code)?;
+            check_code(&app, &db, &email, &code, &ip)?;
         }
     }
-    db.execute("DELETE FROM docs WHERE account=?1", params![acct]).map_err(internal)?;
-    db.execute("DELETE FROM tokens WHERE account=?1", params![acct]).map_err(internal)?;
-    db.execute("DELETE FROM accounts WHERE id=?1", params![acct]).map_err(internal)?;
+    let tx = db.transaction().map_err(internal)?;
+    // the listed static tokens that open this account, read before the rows go
+    let mut keep: Vec<String> = Vec::new();
+    if is_static {
+        let mut st = tx.prepare("SELECT token FROM tokens WHERE account=?1 AND hashed=1").map_err(internal)?;
+        let rows = st.query_map(params![acct], |r| r.get::<_, String>(0)).map_err(internal)?;
+        for h in rows {
+            let h = h.map_err(internal)?;
+            if app.static_tokens.contains(&h) {
+                keep.push(h);
+            }
+        }
+    }
+    tx.execute("DELETE FROM docs WHERE account=?1", params![acct]).map_err(internal)?;
+    tx.execute("DELETE FROM tokens WHERE account=?1", params![acct]).map_err(internal)?;
+    tx.execute("DELETE FROM accounts WHERE id=?1", params![acct]).map_err(internal)?;
+    if !keep.is_empty() {
+        let now = now_ms();
+        tx.execute("INSERT INTO accounts(id,email,salt,created_at) VALUES(?1,NULL,?2,?3)", params![acct, rand_b64(32), now]).map_err(internal)?;
+        for h in &keep {
+            tx.execute("INSERT INTO tokens(token,account,created_at,hashed) VALUES(?1,?2,?3,1)", params![h, acct, now]).map_err(internal)?;
+        }
+    }
+    tx.commit().map_err(internal)?;
+    drop(db);
+    // Requests the account's other devices have waiting end now: they find the token gone, or, with a static token,
+    // an empty account at cursor 0, instead of learning it up to 25 seconds later.
+    wake(&app, &acct);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -660,11 +829,68 @@ struct SyncReq {
     /// documents are pushed; capped at MAX_WAIT_SECS. The response's `wait: true` tells a client the server knows it.
     #[serde(default)]
     wait: u64,
+    /// The account salt the device got when it signed in. When it is not this account's salt, the account was erased
+    /// and begun again behind a static token, and the device still holds the old key: nothing is stored (409).
+    #[serde(default)]
+    salt: Option<String>,
 }
 
 // "pair" documents are plaintext ECDH handshake messages between two of the user's PCs (see the protocol doc);
 // the server relays them like any other opaque bytes.
 const KINDS: [&str; 6] = ["task", "note", "labels", "routines", "keycheck", "pair"];
+
+/// Runs in front of /v1/sync, before its body is read: the server keeps megabytes in memory only for a token it
+/// knows. Any other request gets its 401 here. Its body is still read, piece by piece and thrown away, because an
+/// answer sent while a client is in the middle of an upload can get lost on the way, and a device that was signed
+/// out has to see that 401.
+async fn known_token(State(app): State<App>, req: Request, next: Next) -> Response {
+    let known = match bearer(req.headers()) {
+        Some(token) => {
+            let db = app.db.lock().unwrap();
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tokens WHERE (token=?1 AND hashed=1) OR (token=?2 AND hashed=0))",
+                params![token_hash(&token), token],
+                |r| r.get::<_, bool>(0),
+            )
+        }
+        None => Ok(false),
+    };
+    match known {
+        Ok(true) => {
+            // a declared length up to BIG_BODY goes straight on; anything bigger, or of unknown length, takes a permit
+            let declared = req.headers().get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<usize>().ok());
+            if declared.is_some_and(|n| n <= BIG_BODY) {
+                return next.run(req).await;
+            }
+            let permit = match tokio::time::timeout(Duration::from_secs(10), app.uploads.clone().acquire_owned()).await {
+                Ok(Ok(p)) => p,
+                // every permit is busy: the device keeps its changes and tries again at its next sync
+                _ => return ApiError(StatusCode::SERVICE_UNAVAILABLE, "busy, try again in a moment".into()).into_response(),
+            };
+            let (parts, body) = req.into_parts();
+            let bytes = match axum::body::to_bytes(body, SYNC_BODY).await {
+                Ok(b) => b,
+                Err(_) => return ApiError(StatusCode::PAYLOAD_TOO_LARGE, "request body too large".into()).into_response(),
+            };
+            // the whole body is here now: what follows is quick, so the permit goes back before the handler runs
+            drop(permit);
+            next.run(Request::from_parts(parts, axum::body::Body::from(bytes))).await
+        }
+        Ok(false) => {
+            let mut body = req.into_body();
+            let mut left = SYNC_BODY;
+            while let Some(Ok(frame)) = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
+                let n = frame.data_ref().map_or(0, |d| d.len());
+                if n > left {
+                    break;
+                }
+                left -= n;
+            }
+            unauthorized().into_response()
+        }
+        Err(e) => internal(e).into_response(),
+    }
+}
 
 async fn sync(State(app): State<App>, headers: HeaderMap, Json(body): Json<SyncReq>) -> Result<Json<Value>, ApiError> {
     let token = bearer(&headers).ok_or_else(unauthorized)?;
@@ -718,6 +944,12 @@ struct Synced {
 fn sync_once(app: &App, token: &str, body: &SyncReq, count: bool) -> Result<Synced, ApiError> {
     let mut db = app.db.lock().unwrap();
     let acct = account_for(&db, token).map_err(internal)?.ok_or_else(unauthorized)?;
+    if let Some(theirs) = &body.salt {
+        let ours: String = db.query_row("SELECT salt FROM accounts WHERE id=?1", params![acct], |r| r.get(0)).map_err(internal)?;
+        if &ours != theirs {
+            return Err(ApiError(StatusCode::CONFLICT, "account was reset".into()));
+        }
+    }
     // a ceiling per account, so inventing device ids buys nothing (ten devices at their fastest stay far below it)
     if count && !allow(app, &format!("acct:{acct}"), 600, Duration::from_secs(60)) {
         return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "slow down".into()));
@@ -941,6 +1173,7 @@ async fn main() {
     let db_path = std::env::var("SUNDIAL_DB").unwrap_or_else(|_| "sundial-sync.sqlite".into());
     let db = open_db(&db_path, hosted, &tokens).expect("open database");
     let app = App {
+        static_tokens: Arc::new(tokens.iter().map(|t| token_hash(t)).collect()),
         db: Arc::new(Mutex::new(db)),
         hosted,
         limits: Arc::new(Mutex::new(HashMap::new())),
@@ -950,6 +1183,7 @@ async fn main() {
         app_url: std::env::var("SUNDIAL_APP_URL").unwrap_or_else(|_| "https://app.sundial.services".into()).trim_end_matches('/').to_string(),
         http: reqwest::Client::builder().timeout(Duration::from_secs(10)).build().expect("http client"),
         waiters: Arc::new(Mutex::new(HashMap::new())),
+        uploads: Arc::new(tokio::sync::Semaphore::new(BIG_UPLOADS)),
     };
     let mut origins: Vec<HeaderValue> = ORIGINS.into_iter().map(HeaderValue::from_static).collect();
     for o in std::env::var("SUNDIAL_ORIGINS").unwrap_or_default().split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -970,11 +1204,17 @@ async fn main() {
         .route("/v1/auth/verify", post(auth_verify))
         .route("/v1/auth/logout", post(logout))
         .route("/v1/account", get(account).delete(delete_account))
-        .route("/v1/sync", post(sync))
+        // the one route with room for documents; known_token runs first and lets only a known token use it
+        .route(
+            "/v1/sync",
+            post(sync).layer(DefaultBodyLimit::max(SYNC_BODY)).layer(middleware::from_fn_with_state(app.clone(), known_token)),
+        )
         .route("/v1/devices", get(devices))
         .route("/v1/devices/revoke", post(device_revoke))
         .route("/signin", get(signin_page))
-        .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(SMALL_BODY))
+        // inside the CORS layer, so the 408 it answers with can be read by the web app too
+        .layer(TimeoutLayer::new(Duration::from_secs(REQUEST_SECS)))
         .layer(cors)
         .with_state(app);
     let bind: SocketAddr = std::env::var("SUNDIAL_BIND").unwrap_or_else(|_| "127.0.0.1:8768".into()).parse().expect("SUNDIAL_BIND");

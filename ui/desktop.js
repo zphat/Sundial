@@ -54,13 +54,19 @@
     // corner toast window; actions come back through the 'sundial://toast-action' event
     toastShow:payload=>invoke('toast_show',{payload}),
     toastCurrent:()=>invoke('toast_payload'),
-    toastDismiss:()=>invoke('toast_action',{action:'dismiss'}),
+    // seq: the toastSeq of the toast that toastCurrent() returned, so a toast that took its place meanwhile is left alone
+    toastDismiss:seq=>invoke('toast_action',seq==null?{action:'dismiss'}:{action:'dismiss',seq}),
     updateCheck:()=>invoke('update_check'),
     updateInstall:()=>invoke('update_install'),
     // sundial://… link that opened or poked the app (see deepLink in ui.js)
     deepLinkPending:()=>invoke('deep_link_pending'),
     on:(name,cb)=>listen(name,cb),
   };
+  // The shell is about to end the app (Quit in the tray menu, an update's installer, the close button where there is
+  // no tray): write out what is still waiting, then say so. The shell goes on by itself after a moment if this never
+  // answers, so nothing here can keep the app from closing.
+  listen('sundial://flush',()=>{try{if(typeof flushSave==='function')flushSave()}catch(_){}
+    Promise.resolve().then(flush).catch(()=>{}).then(()=>invoke('quit_ready')).catch(()=>{})});
   window.addEventListener('beforeunload',flush);
   document.addEventListener('visibilitychange',()=>{if(document.hidden)flush()});
 })();

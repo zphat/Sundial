@@ -99,9 +99,11 @@ and run everything from inside it.
        cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak-$(date +%F)
        diff /etc/caddy/Caddyfile Caddyfile
 
-   Copy the live sync site block, and any global options block (`{ email ... }`, `trusted_proxies` and
-   the like), into the new file verbatim in place of the sync block it has. Keep `89-145-167-185.sslip.io`
-   only if the live file names it; otherwise Caddy requests a public certificate for a name nobody uses.
+   Copy the live sync site block into the new file in place of the sync block it has, and keep the new
+   file's `request_body` lines in it. If the live file has a global options block (`{ email ... }`,
+   `trusted_proxies` and the like), put its lines into the block at the top of the new file: Caddy
+   allows only one. Keep `89-145-167-185.sslip.io` only if the live file names it; otherwise Caddy
+   requests a public certificate for a name nobody uses.
    Then replace that block's `log { ... }` with `import privlog /var/log/caddy/access.log`, so the sync log
    keeps its file name (and its 14-day rolling) and drops the same fields as the two new logs. Then:
 

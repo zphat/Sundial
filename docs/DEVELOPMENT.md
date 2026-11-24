@@ -16,7 +16,7 @@ Serve `ui/` over http; opening the file directly doesn't work because the script
 
 ## Building the Windows app
 
-Nothing compiles on the development machine: it has git and WebView2, but no Rust, no C++ Build Tools and no Node. GitHub Actions builds every push to `main` (`build.yml`, job `windows`). The installer is in that run's Artifacts as `Sundial-windows-installer`, and compiler errors are repeated as annotations so they can be read without the log viewer.
+Release builds come from CI, not from the development machine: it has git, WebView2 and a Rust GNU toolchain (enough for `cargo check` and for the test build described under "Testing a real build"), but no C++ Build Tools and no Node. GitHub Actions builds every push to `main` (`build.yml`, job `windows`). The installer is in that run's Artifacts as `Sundial-windows-installer`, and compiler errors are repeated as annotations so they can be read without the log viewer.
 
 To build locally you need Rust (rustup: https://win.rustup.rs/x86_64), the Microsoft C++ Build Tools with the "Desktop development with C++" workload (https://aka.ms/vs/17/release/vs_BuildTools.exe), Node 20 and WebView2. Then `npm install` and `npm run tauri build`; the installer appears in `src-tauri/target/release/bundle/nsis/`.
 
@@ -42,6 +42,19 @@ Updater limits on Linux: the AppImage replaces itself in place. It needs write p
 
 `%APPDATA%\app.sundial.desktop\sundial.json`, which is Tauri's `app_data_dir()` for the identifier `app.sundial.desktop`. `save_db` in `lib.rs` writes a temp file and renames it, then on the first save of each UTC day copies the file to `backups\sundial-YYYY-MM-DD.json` and prunes that folder to the newest 30. `desktop.js` coalesces writes (250 ms). The sync key and API keys go to Windows Credential Manager under the service name `Sundial`.
 
+On quit (tray menu, an update's installer, the close button where there is no tray) the shell first asks the page to write out what is still waiting: it emits `sundial://flush`, the page saves and answers with the `quit_ready` command, and the shell goes on after that or after 0.7 seconds, whichever comes first.
+
+## Testing a real build
+
+The browser preview cannot show what only the shell does: the Content-Security-Policy, the IPC, the corner notification window, start-up from a data file, quit. `tools/selftest/` builds and drives a private copy for that, on Windows, without touching an installed Sundial:
+
+- `tools/selftest/build.sh` copies `src-tauri/` and `ui/` to `.selftest/` (ignored by git) and builds a debug binary with the `tauri/custom-protocol` feature, so assets are embedded and served as in a release. `TAURI_CONFIG` gives the copy its own identifier (`app.sundial.desktop.selftest`: its own data folder, WebView2 profile and single-instance lock), its own link scheme (`sundial-selftest://`, so `sundial://` stays with the installed app) and a hidden main window. `SUNDIAL_KEYRING_SERVICE` gives it its own keyring service name; `lib.rs` reads that at compile time and uses `Sundial` when it is not set.
+- `tools/selftest/run.sh` starts it in the tray with WebView2's debug port open (`PORT`, 9333 by default).
+- `tools/selftest/cdp.js` (deno) runs a JavaScript file inside one of its pages and prints the result with every console message and policy violation. `check-policy.js` is the first such file: what the policy must block and what the app needs to keep working.
+- `dev_quit` is a command that exists in debug builds only and runs the same quit as the tray menu, so the save-before-quit handshake can be tested: `await window.__TAURI__.core.invoke('dev_quit')`.
+
+A corner notification shown by a test appears on the real screen for a few seconds. Nothing here makes a sound unless the test calls the page's own alert code.
+
 ## Releases and the updater
 
 1. Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` to the same number. CI commits the matching `Cargo.lock` after the next build on `main`.
@@ -51,7 +64,8 @@ Updater limits on Linux: the AppImage replaces itself in place. It needs write p
 
 Rules that keep installed copies working:
 
-- Releases are regular releases, never pre-releases or drafts. The updater reads https://github.com/zphat/Sundial/releases/latest/download/latest.json, and GitHub leaves pre-releases out of `/latest`.
+- Releases are never drafts. `build.yml` creates each one as a pre-release, attaches everything, and turns the flag off in the last step of `attach-assets`, after checking that every file is there and that `latest.json` names this version for Windows and Linux. GitHub leaves pre-releases out of `/latest`, which is what the updater (https://github.com/zphat/Sundial/releases/latest/download/latest.json), the download links and the VPS read, so nobody is offered a half-built release. A release still marked pre-release after a red build is unfinished: re-run the failed jobs, or delete it.
+- A tag must be `v` plus the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`; the `check` job stops a tag build when they differ.
 - Don't delete a release anyone was sent a link to, and never publish a release without `latest.json` (the server and web tarballs are attached only after the Windows and Linux jobs for that reason).
 - The app checks for updates 4 seconds after launch and every 6 hours, verifies the download against the public key in `tauri.conf.json` and installs it in passive mode. Every release means a restart prompt for everyone, so batch changes.
 
@@ -72,8 +86,8 @@ In the browser the whole state, including the sync key, the recovery code, the s
 CI, in `build.yml`:
 
 - `check` runs `node --check` on every `ui/*.js`, then parses the scripts `index.html` loads concatenated into one function body, in `<script>` order (the list is read from `index.html`, so it cannot drift). Classic scripts share one global scope, and a top-level `let` or `const` declared in two files throws "already been declared" at load and blanks the app in both runtimes; the per-file check cannot see that. It also parses `ui/manifest.webmanifest`. Every other job waits for it, so a syntax error in these no-build files cannot reach the auto-updater or the web. Third-party actions are pinned to commit SHAs; the comment next to each names the version.
-- `web` copies `ui/` minus `toast.html` into `sundial-web.tar.gz`, replacing `content="dev"` in the `sundial-version` meta of `index.html` and `__VERSION__` in `sw.js` with the version from `package.json`. It fails if the meta tag is missing. The service worker's cache is named `sundial-<version>`, so each release drops the previous cache on activate.
-- `attach-assets` (tags only) puts the server tarball and the web bundle on the release after the Windows and Linux jobs have published `latest.json`.
+- `web` copies `ui/` minus `toast.html` and `toast.js` (the corner notification, desktop only) into `sundial-web.tar.gz`, replacing `content="dev"` in the `sundial-version` meta of `index.html` and `__VERSION__` in `sw.js` with the version from `package.json`. It fails if the meta tag is missing. The service worker's cache is named `sundial-<version>`, so each release drops the previous cache on activate.
+- `attach-assets` (tags only) puts the server tarball and the web bundle on the release after the Windows and Linux jobs have published `latest.json`, then makes the release public (see "Releases and the updater").
 
 On the VPS (files in `server/ops/web/`):
 

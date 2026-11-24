@@ -35,7 +35,7 @@ There's no payment during the beta, so there are no card details to store.
 
 ## What we can and cannot see
 
-Your data is encrypted on your PC with AES-256-GCM. The key is made on your PC from a recovery code the app invents (or a passphrase you typed, in older versions) with PBKDF2. The recovery code and the key are never sent. When you approve a second PC from the first, the key travels inside an end-to-end handshake between the two PCs; the server relays bytes it cannot open. We can't read your tasks, notes, label names or routines, and we can't reset or recover your recovery code. If you lose it and have no PC left that is signed in, nobody can open the synced copy; the copy on each of your PCs keeps working.
+Your data is encrypted on your PC with AES-256-GCM. The key is made on your PC from a recovery code the app invents (or a passphrase you typed, in older versions) with PBKDF2. The recovery code and the key are never sent. When you approve a second PC from the first, the key travels inside an end-to-end handshake between the two PCs; the server relays bytes it cannot open. We can't read your tasks, notes, label names or routines, and we can't reset or recover your recovery code. From version 0.1.46 we also can't delete them on your PCs or put an old version of one back: deletions and edit times are signed with your key, and your PCs ignore anything that is not. If you lose it and have no PC left that is signed in, nobody can open the synced copy; the copy on each of your PCs keeps working.
 
 We can see your email address, the names of your PCs, when each one last synced, how many encrypted items you have, which days have a note, and the masked IP addresses in the logs described below.
 

@@ -56,9 +56,10 @@ class Store:
             self.db.execute("ALTER TABLE tokens ADD COLUMN hashed INTEGER NOT NULL DEFAULT 0")
         # every configured token is its own account (so a household can share one server); accepted in both modes
         for t in tokens:
-            acct = "acct_" + t[:8]
-            self.db.execute("INSERT OR IGNORE INTO accounts(id,email,salt,created_at) VALUES(?,?,?,?)", (acct, None, b64rand(32), now_ms()))
             self.db.execute("UPDATE OR REPLACE tokens SET token=?, hashed=1 WHERE token=? AND hashed=0", (thash(t), t))  # pre-0.1.3 row
+            row = self.db.execute("SELECT account FROM tokens WHERE token=? AND hashed=1", (thash(t),)).fetchone()
+            acct = row[0] if row else "acct_" + thash(t)[:16]   # a known token keeps its account; the id holds none of the token
+            self.db.execute("INSERT OR IGNORE INTO accounts(id,email,salt,created_at) VALUES(?,?,?,?)", (acct, None, b64rand(32), now_ms()))
             self.db.execute("INSERT OR IGNORE INTO tokens(token,account,created_at,hashed) VALUES(?,?,?,1)", (thash(t), acct, now_ms()))
         self.db.commit()
 
@@ -71,8 +72,9 @@ class Store:
         if row: self.db.execute("UPDATE tokens SET last_seen=? WHERE token=?", (now_ms(), h)); self.db.commit()
         return row[0] if row else None
 
-    def logout(self, token):
-        self.db.execute("DELETE FROM tokens WHERE (token=? AND hashed=1) OR (token=? AND hashed=0)", (thash(token), token)); self.db.commit()
+    def logout(self, token):   # a static token (its account has no email) is the operator's and stays
+        self.db.execute("DELETE FROM tokens WHERE ((token=? AND hashed=1) OR (token=? AND hashed=0)) AND account NOT IN (SELECT id FROM accounts WHERE email IS NULL)",
+                        (thash(token), token)); self.db.commit()
 
     def salt(self, account):
         return self.db.execute("SELECT salt FROM accounts WHERE id=?", (account,)).fetchone()[0]
@@ -165,8 +167,14 @@ class Store:
         return {"protocol": PROTOCOL, "cursor": new_cursor, "docs": out, "more": more, "epoch": epoch, "rejected": rejected}
 
     def delete_account(self, account):
+        listed = {thash(t) for t in self.tokens}
+        keep = [] if self.email_of(account) else [r[0] for r in self.db.execute("SELECT token FROM tokens WHERE account=? AND hashed=1", (account,)) if r[0] in listed]
         self.db.execute("DELETE FROM docs WHERE account=?", (account,)); self.db.execute("DELETE FROM tokens WHERE account=?", (account,))
-        self.db.execute("DELETE FROM accounts WHERE id=?", (account,)); self.db.commit()
+        self.db.execute("DELETE FROM accounts WHERE id=?", (account,))
+        if keep:   # static tokens are only read at startup: their account comes straight back empty, with a new salt
+            self.db.execute("INSERT INTO accounts(id,email,salt,created_at) VALUES(?,?,?,?)", (account, None, b64rand(32), now_ms()))
+            for h in keep: self.db.execute("INSERT INTO tokens(token,account,created_at,hashed) VALUES(?,?,?,1)", (h, account, now_ms()))
+        self.db.commit()   # one transaction: sqlite3 opened it at the first DELETE
 
 class Handler(BaseHTTPRequestHandler):
     store: Store = None
@@ -242,6 +250,8 @@ class Handler(BaseHTTPRequestHandler):
                     a = self._auth()
                     if not a: return self._json(401, {"error": "unauthorized"})
                     if int(body.get("protocol", 0)) != PROTOCOL: return self._json(400, {"error": "unsupported protocol"})
+                    # the device names the account it set up (its salt); after an erase behind a static token it is another one
+                    if body.get("salt") and body.get("salt") != self.store.salt(a): return self._json(409, {"error": "account was reset"})
                     return self._json(200, self.store.sync(a, str(body.get("device_id", "")), body.get("cursor", 0), body.get("docs") or []))
             except ApiErr as e: return self._json(e.code, {"error": e.msg})
         self._json(404, {"error": "not found"})

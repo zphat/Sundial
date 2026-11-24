@@ -4,7 +4,28 @@
 #   caddy validate --config /etc/caddy/Caddyfile
 #   systemctl reload caddy
 #
-# Snippets come first; Caddy requires them before the first site block.
+# The global options block is first: Caddy allows one, and only at the very top. The snippets follow;
+# Caddy requires them before the first site block.
+
+# Limits on the request side, for all three sites. Left alone, Caddy gives a client a minute to send its
+# headers and sets no fixed limit for the body, and every such connection holds memory on a box that has
+# little.
+#   read_header  the request line and headers must be in within 15 seconds
+#   read_body    the whole request, body included, must be in within 2 minutes; the biggest one the apps
+#                send is a sync push of about 2 MB
+# The answer side is left alone on purpose: /v1/sync holds a request for up to 25 seconds before it
+# answers (long poll), so never add a "write" timeout here. One trap: on an HTTP/1.1 connection the
+# read_body clock can keep running while the answer is being prepared, and a request still open when it
+# runs out is dropped (always before Caddy 2.11.7, later only for a request without a body). 2 minutes is
+# far above the 25 seconds; keep it that way.
+{
+	servers {
+		timeouts {
+			read_header 15s
+			read_body 2m
+		}
+	}
+}
 
 # Headers every site sends. The sync block sends exactly these three and nothing else.
 (common_headers) {
@@ -64,6 +85,11 @@
 sync.sundial.services {
 	encode zstd gzip
 	import common_headers
+	# The server's own limit for a request body is 8 MiB (the apps push about 2 MB at a time). The same
+	# number here means Caddy never passes on more than that, whatever the server behind it does.
+	request_body {
+		max_size 8MiB
+	}
 	reverse_proxy 127.0.0.1:8768
 	import privlog /var/log/caddy/access.log
 }

@@ -1,6 +1,7 @@
 /* Sundial Sync client (protocol v1, see docs/SYNC-PROTOCOL.md).
    Documents are encrypted here with AES-256-GCM under an account key the server never sees; the server only ever
-   stores ciphertext. Last writer wins per document by updated_at; tombstones carry deletions.
+   stores ciphertext. Last writer wins per document by updated_at; tombstones carry deletions. The key also vouches
+   for every deletion and, from a fixed day on, for every stamp (see "stamps and deletions are authenticated" below).
    The account key comes from a secret the user holds: a recovery code the app invents on the first PC (or a
    passphrase they typed in older versions). A new PC gets the key either from that secret, or from an existing PC
    that approves it: a commit-then-reveal ECDH handshake relayed through the server as plaintext "pair" documents,
@@ -21,8 +22,8 @@ const Sync=(()=>{
   // slowUntil: after a 429 every pairing loop here runs at the slow cadence and the regular tick sits out until then.
   // kcCache: the account's keycheck document for the current sign-in (write-once at one id, so a copy stays true).
   let pairing=null,approvalTimer=null,slowUntil=0,kcCache=null;const pairReqs={};const pairSeen={};const ownPairIds={};
-  const fresh=()=>({mode:'off',server:'',token:'',accountId:'',email:'',salt:'',cursor:0,dirty:{},lastSync:0,lastError:'',keyOk:false,epoch:0,rejected:{}});
-  const st=()=>{if(!state.sync)state.sync=fresh();if(!state.sync.dirty)state.sync.dirty={};if(!state.sync.rejected)state.sync.rejected={};return state.sync};
+  const fresh=()=>({mode:'off',server:'',token:'',accountId:'',email:'',salt:'',cursor:0,dirty:{},lastSync:0,lastError:'',keyOk:false,epoch:0,rejected:{},fmt:2,oldSeen:0,badSeen:0,bulk:{}});
+  const st=()=>{if(!state.sync)state.sync=fresh();if(!state.sync.dirty)state.sync.dirty={};if(!state.sync.rejected)state.sync.rejected={};if(!state.sync.bulk)state.sync.bulk={};return state.sync};
   const te=new TextEncoder(),td=new TextDecoder();
   const b64=u8=>{let s='';for(const b of u8)s+=String.fromCharCode(b);return btoa(s)};
   const unb64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
@@ -53,18 +54,62 @@ const Sync=(()=>{
   // A plain sign-out keeps the recovery code on this PC, so signing back in here needs nothing; only leaving the
   // account for good (deletion, or the account being reset elsewhere) forgets it.
   async function forgetKey(all){key=null;await secretDel('sync:key');if(all)await secretDel('sync:recovery')}
-  async function encWith(k,kind,id,obj){const nonce=crypto.getRandomValues(new Uint8Array(12));const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv:nonce,additionalData:aad(kind,id)},k,te.encode(JSON.stringify(obj)));return {nonce:b64(nonce),ct:b64(new Uint8Array(ct))}}
-  async function decWith(k,kind,id,nonceB,ctB){const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(nonceB),additionalData:aad(kind,id)},k,unb64(ctB));return JSON.parse(td.decode(pt))}
-  const enc=(kind,id,obj)=>encWith(key,kind,id,obj);
+  // ad: other additional data than the plain 'kind:id' (documents stamped FLIP or later, see below)
+  async function encWith(k,kind,id,obj,ad){const nonce=crypto.getRandomValues(new Uint8Array(12));const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv:nonce,additionalData:ad||aad(kind,id)},k,te.encode(JSON.stringify(obj)));return {nonce:b64(nonce),ct:b64(new Uint8Array(ct))}}
+  async function decWith(k,kind,id,nonceB,ctB,ad){const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(nonceB),additionalData:ad||aad(kind,id)},k,unb64(ctB));return JSON.parse(td.decode(pt))}
   const dec=(kind,id,n,c)=>decWith(key,kind,id,n,c);
   // Does this key open the account? The keycheck document was written by whoever set the account up.
   async function keyOpens(k,kc){const s=st();if(!kc)return false;try{const v=await decWith(k,'keycheck','keycheck',kc.nonce,kc.ct);return !!(v&&v.ok&&v.account===s.accountId)}catch(e){return false}}
+
+  // ----- stamps and deletions are authenticated (0.1.46) -----
+  // Before, a document's stamp and a deletion were plain fields beside the ciphertext. Whoever could write to the
+  // account without the key (a copied device token, the server itself) could delete documents on every device, or
+  // serve an old version again under a newer stamp. Now the key vouches for both:
+  //  - A deletion carries a seal in its "nonce" field: 12 random bytes and the 16-byte AES-GCM tag of an empty message
+  //    whose additional data is 'gone:kind:id:updated_at'. Every server version stores and returns that field as sent.
+  //  - A live document stamped FLIP or later is encrypted with additional data 'v2:kind:id:updated_at', so it only
+  //    opens under the stamp it was written with. Earlier stamps keep 'kind:id': versions before 0.1.46 read nothing
+  //    else, and until FLIP they must keep syncing with this one. A task also carries its stamp inside the ciphertext
+  //    (updatedAt), which is checked whatever the form.
+  //  - From FLIP on, a deletion without a seal is refused, and so is an old-form document that claims a stamp of
+  //    FLIP or later (only a version that should have updated by then writes those; the status line says so).
+  // FLIP is a fixed day, eight weeks after 0.1.46, the same for every device.
+  const FLIP=Date.UTC(2027,0,18);
+  const aadAt=(kind,id,ts)=>te.encode('v2:'+kind+':'+id+':'+ts);
+  const goneAad=(kind,id,ts)=>te.encode('gone:'+kind+':'+id+':'+ts);
+  const sealDoc=d=>encWith(key,d.kind,d.id,d.body,d.updated_at>=FLIP?aadAt(d.kind,d.id,d.updated_at):undefined);
+  async function sealGone(kind,id,ts){const iv=crypto.getRandomValues(new Uint8Array(12));
+    return b64(cat(iv,new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:goneAad(kind,id,ts)},key,new Uint8Array(0)))))}
+  // 'ok': sealed by a device that holds the key. 'bad': a seal that does not verify. 'none': no seal at all.
+  async function goneSeal(d){let raw;try{raw=unb64(d.nonce||'')}catch(e){return 'none'}if(raw.length!==28)return 'none';
+    try{await crypto.subtle.decrypt({name:'AES-GCM',iv:raw.slice(0,12),additionalData:goneAad(d.kind,d.id,d.updated_at)},key,raw.slice(12));return 'ok'}catch(e){return 'bad'}}
+  // a device on a version from before 0.1.46 wrote something after FLIP: this one cannot accept it, and says so in Settings
+  const noteOld=()=>{st().oldSeen=Date.now()};
+  // something arrived that fails its check (a deletion nobody with the key sealed, a copy under the wrong stamp, a document that does not open)
+  const noteBad=()=>{st().badSeen=Date.now()};
+  // Opens a live document under the form its stamp calls for. Throws when it does not open.
+  async function openDoc(d){
+    if(d.updated_at<FLIP)return dec(d.kind,d.id,d.nonce,d.ct);
+    try{return await decWith(key,d.kind,d.id,d.nonce,d.ct,aadAt(d.kind,d.id,d.updated_at))}
+    catch(e){let old=false;try{await dec(d.kind,d.id,d.nonce,d.ct);old=true}catch(_){}if(old){noteOld();refusedDoc=d;return null}throw e}}
+  // Once, on the first start of 0.1.46 or later with an account: the deletions this device holds are sent again with
+  // their seal, and anything stamped FLIP or later goes again in the new form (same stamps both, so nothing changes
+  // for a device that has them). Everything is then read again from the start, because an older version skips a
+  // document it cannot read and never asks for it again. Approval requests seen before are not replayed: pairFloor
+  // marks where this device had read to, and is dropped once the pull has reached the end.
+  function upgradeOnce(){const s=st();if(s.fmt===2)return;s.fmt=2;if(s.mode==='off')return;
+    s.pairFloor={acct:s.accountId,seq:s.cursor||0};s.cursor=0;
+    for(const id in state.tombstones)if(!get(id))markBulk(s,'task:'+id);
+    for(const d in state.notesTs)if(state.notesTs[d]>0&&(!state.notes[d]||state.notesTs[d]>=FLIP))markBulk(s,'note:'+d);
+    for(const t of state.tasks)if(!t.example&&(t.updatedAt||0)>=FLIP)markBulk(s,'task:'+t.id);
+    if(state.labelsTs>=FLIP)markBulk(s,'labels');if(state.routinesTs>=FLIP)markBulk(s,'routines')}
 
   // ----- http -----
   // Errors carry the HTTP status and a message a person can act on; raw server words never reach the screen.
   function friendly(status,serverMsg,ctx){
     if(status===0)return 'Cannot reach the sync server. Check your connection and try again.';
     if(status===401)return ctx==='code'?'That code did not work. Codes last 10 minutes and work once. Send a new one.':ctx==='sync'?'Signed out of sync. Sign in again to resume.':'Not signed in.';
+    if(status===409)return 'The synced copy on the server was reset. Try again.';
     if(status===429)return ctx==='code'?'Too many attempts. Wait a while, then send a new code.':'The server asked us to slow down. It will retry in a minute.';
     if(status===404&&ctx==='code')return 'Email sign-in is not switched on for this server yet.';
     if(status===503)return serverMsg||'The server could not send the email right now. Try again in a few minutes.';
@@ -89,9 +134,20 @@ const Sync=(()=>{
     if(!j||typeof j!=='object')j={};
     if(!r.ok){const err=new Error(friendly(r.status,j.error,ctx));err.status=r.status;throw err}return j}
   // wait: seconds the server may hold the request while nothing is new (only sent when there is nothing to push)
-  const pull=(cursor,docs,wait)=>api('/v1/sync',{protocol:PROTO,device_id:state.device,cursor:cursor||0,docs:docs||[],...(wait?{wait}:{})},'POST',undefined,'sync',undefined,
+  // salt: which account this device believes it is talking to. After "Erase synced copy" on a server with a fixed token
+  // the token still works but the account behind it is a new one (new salt, no documents); a server from 0.1.14 on
+  // then answers 409 and stores nothing, so nothing encrypted under the old key lands in the new account.
+  const pullOnce=(cursor,docs,wait)=>api('/v1/sync',{protocol:PROTO,device_id:state.device,cursor:cursor||0,docs:docs||[],...(st().salt?{salt:st().salt}:{}),...(wait?{wait}:{})},'POST',undefined,'sync',undefined,
       wait?{timeout:(wait+12)*1000,abortable:ac=>{listenAbort=ac}}:undefined)
     .then(res=>{if(!res||typeof res.cursor!=='number'||!Array.isArray(res.docs)){const e=new Error('The sync server sent an answer Sundial does not understand. Nothing was changed; it will retry.');e.status=0;throw e}return res});
+  // 409: the account behind the token was erased and begun again. resalt takes the new account's salt and starts
+  // reading from its beginning; false when the salt could not be fetched (the server stored nothing, so asking again
+  // later is safe). A device that holds no key has nothing encrypted under the old one to send, so pull simply
+  // carries on in the new account (signing in, asking for approval, entering the recovery code). A device that
+  // holds a key must drop it first: syncNow does that.
+  async function resalt(){const s=st();try{const a=await api('/v1/account',null,'GET');if(!a||typeof a.salt!=='string'||!a.salt)return false;s.salt=a.salt}catch(e){return false}
+    s.cursor=0;delete s.pairFloor;kcCache=null;save();return true}
+  const pull=(cursor,docs,wait)=>pullOnce(cursor,docs,wait).catch(async e=>{if(e&&e.status===409&&!key&&await resalt())return pullOnce(0,docs,wait);throw e});
   // The keycheck cannot be tombstoned or change kind (the server rejects exists/id/kind), so one found under this
   // server, account and token is cached for the sign-in: a new sign-in or a deleted account means a new token and a
   // miss. Only a found document is cached, never a null.
@@ -101,35 +157,51 @@ const Sync=(()=>{
 
   // ----- dirty tracking (called from data.js / ui.js on every local change) -----
   // Each mark carries a generation number, so an edit made while a request is in flight stays dirty afterwards.
-  // (Nothing on the apply path calls this, so there is no "applying" guard: one would drop the user's own edits made
+  // (Applying a document never calls this, except overtake for one this device has to send again, so there is no "applying" guard: one would drop the user's own edits made
   // while pulled documents are being decrypted.)
   // (sent 0.6 s after the last change when the server pushes news to the other devices at once, 2 s otherwise)
-  function markDirty(id){const s=st();s.dirty[id]=++gen;delete s.rejected[id];if(s.mode!=='off'&&key)schedule(canWait?600:2000)}
+  function markDirty(id){const s=st();s.dirty[id]=++gen;delete s.bulk[id];delete s.rejected[id];if(s.mode!=='off'&&key)schedule(canWait?600:2000)}
   // Only things this device actually has: untouched defaults (labels never renamed, no routines, no note) must never
   // travel, or a brand-new second PC would overwrite the first one's.
-  function markAllDirty(){const s=st();for(const t of state.tasks){if(!t.example)s.dirty['task:'+t.id]=++gen}for(const id in state.tombstones)s.dirty['task:'+id]=++gen;
-    for(const d in state.notes)if(state.notesTs[d]>0)s.dirty['note:'+d]=++gen;if(state.labelsTs>0)s.dirty.labels=++gen;if(state.routinesTs>0)s.dirty.routines=++gen}
+  // A bulk mark sends a document again as it is (everything after a sign-in, an import, an upgrade), not because it
+  // was changed here. Such a document never overtakes the server's copy (see overtake): what this device holds may
+  // simply be the older version. A mark made by a real edit that is still waiting stays a real one.
+  const markBulk=(s,did)=>{if(s.dirty[did]==null||s.bulk[did])s.bulk[did]=1;s.dirty[did]=++gen};
+  const didOf=d=>d.kind==='task'?'task:'+d.id:d.kind==='note'?'note:'+d.id:d.kind;
+  function markAllDirty(){const s=st();for(const t of state.tasks){if(!t.example)markBulk(s,'task:'+t.id)}for(const id in state.tombstones)markBulk(s,'task:'+id);
+    for(const d in state.notes)if(state.notesTs[d]>0)markBulk(s,'note:'+d);if(state.labelsTs>0)markBulk(s,'labels');if(state.routinesTs>0)markBulk(s,'routines')}
 
   // ----- documents -----
   function buildDoc(did){
     if(did.startsWith('task:')){const id=did.slice(5);const t=get(id);if(t&&t.example)return null;if(t)return {kind:'task',id,updated_at:t.updatedAt||t.createdAt||0,deleted:false,body:t};const ts=state.tombstones[id];return ts?{kind:'task',id,updated_at:ts,deleted:true,body:null}:null}
-    if(did.startsWith('note:')){const d=did.slice(5);const has=!!state.notes[d];const ts=state.notesTs[d]||0;if(!ts)return null;return {kind:'note',id:d,updated_at:ts,deleted:!has,body:has?{html:state.notes[d]}:null}}
+    if(did.startsWith('note:')){const d=did.slice(5);const has=!!state.notes[d];const ts=state.notesTs[d]||0;if(!ts)return null;return {kind:'note',id:d,updated_at:ts,deleted:!has,body:has?{html:state.notes[d],u:ts}:null}}
     if(did==='labels'){if(!state.labelsTs)return null;return {kind:'labels',id:'labels',updated_at:state.labelsTs,deleted:false,body:state.labels}}
     if(did==='routines'){if(!state.routinesTs)return null;return {kind:'routines',id:'routines',updated_at:state.routinesTs,deleted:false,body:state.routines}}
     return null;
   }
   async function applyDoc(d){
-    if(d.kind==='pair'){notePair(d);return false}
+    if(!d||typeof d.id!=='string'||typeof d.kind!=='string'||typeof d.updated_at!=='number'||!isFinite(d.updated_at))return false;   // not a document
+    if(d.kind==='pair'){const pf=st().pairFloor;if(pf&&pf.acct===st().accountId&&typeof d.seq==='number'&&d.seq<=pf.seq)return false;notePair(d);return false}
     if(d.kind==='keycheck'){if(d.deleted||d.id!=='keycheck')return false;   // the key lives at one id and is never withdrawn
       // another PC replaced the account's key under us (two first-time setups at once, or a reset): stop writing with the wrong key
       if(!(await keyOpens(key,d))){await lostKey('Another PC set this account up with a different key. Approve this PC from it, or enter its recovery code.')}
       return false}
-    const body=d.deleted?null:await dec(d.kind,d.id,d.nonce,d.ct);
+    if(d.kind!=='task'&&d.kind!=='note'&&d.kind!=='labels'&&d.kind!=='routines')return false;
+    let body=null;
+    if(d.deleted){if(d.kind!=='task'&&d.kind!=='note')return false;   // labels and routines are never deleted
+      const seal=await goneSeal(d);
+      if(seal==='bad'){console.warn('sync: a deletion not sealed with this account\'s key, ignored',d.kind,d.id);noteBad();refusedDoc=d;return false}
+      if(seal==='none'){if(d.updated_at>=FLIP){noteOld();refusedDoc=d;return false}if(Date.now()>=FLIP)return false;legacyGone=d}}   // unsealed: only from before FLIP, and only until FLIP
+    else{body=await openDoc(d);if(body==null)return false;
+      // a note written by 0.1.46 or later names its stamp inside (u), as a task does with updatedAt
+      if(d.kind==='note'&&typeof body.u==='number'&&body.u!==d.updated_at){console.warn('sync: a note under a stamp it was not written with, ignored',d.id);noteBad();refusedDoc=d;return false}}
     // What another device wrote is held to the same shapes as an import (cleanTask, cleanNote): it goes into markup.
     // Every task changed here is noted for undo (noteRemote), so a later Ctrl+Z leaves it alone.
     if(d.kind==='task'){const loc=get(d.id);const tomb=state.tombstones[d.id]||0;
       if(d.deleted){if(loc){if((loc.updatedAt||0)>d.updated_at)return false;state.tasks=state.tasks.filter(t=>t.id!==d.id);state.tombstones[d.id]=d.updated_at;noteRemote(d.id);return true}if(tomb<d.updated_at){state.tombstones[d.id]=d.updated_at;return true}return false}
       if(tomb>d.updated_at)return false;
+      // the task's own stamp travels inside the ciphertext: under any other stamp this is an older version served as new
+      if(typeof body.updatedAt==='number'&&body.updatedAt>0&&body.updatedAt!==d.updated_at){console.warn('sync: a task under a stamp it was not written with, ignored',d.id);noteBad();refusedDoc=d;return false}
       const t=cleanTask(body);if(!t||t.id!==d.id)return false;
       if(!loc){state.tasks.push(t);delete state.tombstones[d.id];noteRemote(d.id);return true}
       if((loc.updatedAt||0)<d.updated_at){for(const k in loc)delete loc[k];Object.assign(loc,t);noteRemote(d.id);return true}
@@ -141,6 +213,19 @@ const Sync=(()=>{
       state.routinesTs=d.updated_at;return true}
     return false;
   }
+  // The copy the server holds of a document this device just sent is one it cannot accept (a forged deletion, an older
+  // version under a newer stamp, something it cannot read), and that copy carries the higher stamp: the server keeps
+  // it, and every later edit made here would lose to it without a word. So the local copy is stamped just above it
+  // and sent again. Last writer wins, and this device wrote last. Only for a document that was changed here and just
+  // sent: a refused copy of something this device is not changing is left alone, and so is one that only went out
+  // as part of a bulk re-send (markBulk), where the copy held here may be the older one. A stamp more than a day
+  // ahead is not followed: no honest server would take the result, and the document would never sync again.
+  let refusedDoc=null,legacyGone=null;
+  function overtake(d){if(d.updated_at>Date.now()+(skew||0)+864e5)return;const up=prev=>stamp(Math.max(prev||0,d.updated_at));
+    if(d.kind==='task'){const t=get(d.id);if(t)t.updatedAt=up(t.updatedAt);else if(state.tombstones[d.id])state.tombstones[d.id]=up(state.tombstones[d.id]);else return;markDirty('task:'+d.id)}
+    else if(d.kind==='note'){if(!state.notesTs[d.id])return;state.notesTs[d.id]=up(state.notesTs[d.id]);markDirty('note:'+d.id)}
+    else if(d.kind==='labels'){if(!state.labelsTs)return;state.labelsTs=up(state.labelsTs);markDirty('labels')}
+    else if(d.kind==='routines'){if(!state.routinesTs)return;state.routinesTs=up(state.routinesTs);markDirty('routines')}}
   async function lostKey(msg){const s=st();await forgetKey(false);s.keyOk=false;s.lastError=msg;save();emit('lostkey',msg)}
 
   // ----- the sync itself -----
@@ -152,7 +237,7 @@ const Sync=(()=>{
     const began=Date.now();let ok=false,news=false,after=null;
     try{
       const snapshot={...s.dirty};const docs=[];
-      for(const did in snapshot){const d=buildDoc(did);if(!d){delete s.dirty[did];continue}const e=d.deleted?{nonce:'',ct:''}:await enc(d.kind,d.id,d.body);docs.push({id:d.id,kind:d.kind,updated_at:d.updated_at,deleted:d.deleted,nonce:e.nonce,ct:e.ct})}
+      for(const did in snapshot){const d=buildDoc(did);if(!d){delete s.dirty[did];delete s.bulk[did];continue}const e=d.deleted?{nonce:await sealGone(d.kind,d.id,d.updated_at),ct:''}:await sealDoc(d);docs.push({id:d.id,kind:d.kind,updated_at:d.updated_at,deleted:d.deleted,nonce:e.nonce,ct:e.ct})}
       // One request carries about 2 MB of documents at most (the server takes 8), so a long spell offline still syncs.
       const batches=[];{let cur=[],size=0;for(const d of docs){const n=d.ct.length+300;if(cur.length&&(size+n>2e6||cur.length>=300)){batches.push(cur);cur=[];size=0}cur.push(d);size+=n}if(cur.length)batches.push(cur)}
       let cursor=s.cursor||0,more=true,bi=0,changed=false;
@@ -161,17 +246,23 @@ const Sync=(()=>{
         // the server's clock against this one, from a request that was answered at once (a held one says nothing about latency)
         if(typeof res.now==='number'&&!listening)skew=res.now-(t0+Date.now())/2;
         if(bi<batches.length){for(const r of res.rejected||[]){const did=(r.kind==='task'?'task:':r.kind==='note'?'note:':'')+r.id;s.rejected[did]=r.reason||'rejected'}}
-        bi++;
+        const sent=new Set((batches[bi]||[]).map(x=>x.kind+':'+x.id));bi++;
         // The server was restored from a backup: forget our place in its history and offer everything again.
-        if(res.epoch&&s.epoch&&res.epoch!==s.epoch){s.epoch=res.epoch;s.cursor=0;kcCache=null;markAllDirty();save();running=false;return await syncNow()}
+        if(res.epoch&&s.epoch&&res.epoch!==s.epoch){s.epoch=res.epoch;s.cursor=0;delete s.pairFloor;kcCache=null;markAllDirty();save();running=false;return await syncNow()}
         if(res.epoch)s.epoch=res.epoch;
-        for(const d of res.docs){try{if(await applyDoc(d))changed=true}catch(e){console.warn('sync: could not apply',d.kind,d.id,e.message||e)}}
+        for(const d of res.docs){refusedDoc=null;legacyGone=null;
+          // a deletion from a version before 0.1.46 that was taken (legacyGone) goes back with a seal, under the same
+          // stamp, so a device that first meets it after FLIP can still believe it
+          try{if(await applyDoc(d)){changed=true;if(legacyGone===d)markBulk(s,didOf(d))}}catch(e){console.warn('sync: could not apply',d.kind,d.id,e.message||e);if(key&&d.kind!=='pair'&&d.kind!=='keycheck'){noteBad();refusedDoc=d}}
+          if(!key)return false;   // the key went on the way (the account's keycheck is another key's): nothing more is judged or sent with it
+          if(refusedDoc===d&&sent.has(d.kind+':'+d.id)&&!s.bulk[didOf(d)])overtake(d)}
         if(!key)return false;
         cursor=res.cursor;more=!!res.more}
-      for(const did in snapshot)if(s.dirty[did]===snapshot[did])delete s.dirty[did];
+      for(const did in snapshot)if(s.dirty[did]===snapshot[did]){delete s.dirty[did];delete s.bulk[did]}
       // A check that found nothing changes nothing worth writing: the state is saved when something moved, and
       // otherwise every five minutes so the "last synced" time on disk is never far behind.
       news=changed||cursor!==(s.cursor||0)||docs.length>0;const moved=news||!!s.lastError;
+      if(s.pairFloor){delete s.pairFloor;s.oldSeen=0}   // the full re-read after an upgrade is done: nothing older is coming again, and what it met in the old form was this device's own
       s.cursor=cursor;s.lastSync=Date.now();s.lastError='';if(moved||Date.now()-lastSaved>300000){save();lastSaved=Date.now()}
       // not under a field someone is typing in: the redraw waits until they leave it (renderWhenIdle in ui.js)
       if(changed){if(typeof renderWhenIdle==='function')renderWhenIdle();else if(typeof render==='function')render()}
@@ -179,6 +270,11 @@ const Sync=(()=>{
     }catch(e){
       if(listening&&listenCancelled)return false;   // let go on purpose: something here needs sending
       if(e.status===401){await signOutLocal('This '+(window.SundialDesktop?'PC':'device')+' was signed out of sync: from another device, or because the account was reset or removed. Your days are still here. Sign in again to resume.',false);emit('signedout');return false}
+      // 409: the synced copy was erased and begun again (see pull). The key held here opens nothing in it: take the new
+      // account's salt, forget the key and ask for approval or the recovery code, as on any device without the key.
+      if(e.status===409){const dev=window.SundialDesktop?'PC':'device';
+        if(await resalt()){await lostKey('The synced copy was erased and started again from another '+dev+'. Your days are still here. Approve this '+dev+' from that one, or enter its recovery code.');return false}
+        s.lastError='The synced copy on the server was reset. Sundial will look again in a moment.';save();after='error';return false}
       slowOn(e);s.lastError=e.message||String(e);save();after='error';return false}
     finally{const was=listening;running=false;listening=false;listenAbort=null;
       // told only now, so whoever redraws the status line no longer sees a sync in flight
@@ -494,7 +590,7 @@ const Sync=(()=>{
   const KEYRING_MSG='Could not read the sync key from the system keyring. Unlock it; Sundial keeps trying.';
   // At launch a key that cannot be read is never deleted: the read is tried again (every 5 s at first, then every 30 s),
   // and only a store that plainly has no entry leads to the "approve this PC again" prompt.
-  function start(){st();ensureMachine();let tries=0;
+  function start(){upgradeOnce();ensureMachine();let tries=0;
     const go=()=>readKey().then(r=>{const s=st();if(s.mode==='off')return;
       if(r.ok){if(s.lastError===KEYRING_MSG){s.lastError='';save()}schedule(1500);startTicking();if(tries)emit('ok');return}
       if(!s.keyOk)return;

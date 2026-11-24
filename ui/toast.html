@@ -45,32 +45,6 @@ button.primary:hover{color:var(--on-accent);filter:brightness(1.05)}
 </head>
 <body>
 <div class="card" id="card" hidden></div>
-<script>
-(async()=>{
-  const T=window.__TAURI__;if(!T||!T.core)return;
-  const invoke=T.core.invoke;
-  const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  let p=null;try{p=await invoke('toast_payload')}catch(e){}
-  if(!p){try{await invoke('toast_action',{action:'timeout'})}catch(e){}return}
-  const card=document.getElementById('card');
-  const corner=p.corner||'bottom-left';
-  card.className='card '+(p.kind||'remind')+(corner.endsWith('right')?' right':' left');
-  const icon=p.kind==='update'?'↻':p.kind==='start'?'☉':p.kind==='pair'?'⇄':'◔';
-  const acts=(p.actions||[{id:'ok',label:'OK',primary:true}]);
-  card.innerHTML=`<div class="stripe"></div><div class="ic">${icon}</div><div class="tx"><span class="k">${esc(p.label||'')}</span><b title="${esc(p.title)}">${esc(p.title)}</b>${p.meta?`<small>${esc(p.meta)}</small>`:''}</div>
-    <div class="bt">${acts.map(a=>`<button data-a="${esc(a.id)}" class="${a.primary?'primary':''}">${esc(a.label)}</button>`).join('')}</div>
-    <button class="x" data-a="dismiss" title="Dismiss">×</button>${p.sticky?'':`<div class="bar" style="--secs:${Math.max(3,+p.secs||30)}s"></div>`}<span class="brandmark">SUNDIAL</span>`;
-  card.hidden=false;
-  let done=false;
-  const finish=async(action)=>{if(done)return;done=true;card.classList.add('out');setTimeout(()=>invoke('toast_action',{action}).catch(()=>{}),200)};
-  card.addEventListener('click',e=>{const b=e.target.closest('[data-a]');if(b)finish(b.dataset.a)});
-  const bar=card.querySelector('.bar');
-  if(bar){bar.addEventListener('animationend',()=>finish('timeout'));
-    // belt and braces: if the animation never ends (hidden window), still go away
-    const secs=Math.max(3,+p.secs||30);const arm=ms=>setTimeout(()=>{if(done)return;if(card.matches(':hover'))arm(1000);else finish('timeout')},ms);arm(secs*1000+1500)}
-  document.addEventListener('contextmenu',e=>e.preventDefault());
-  document.addEventListener('keydown',e=>{if(e.key==='Escape')finish('dismiss')});
-})();
-</script>
+<script src="toast.js"></script>
 </body>
 </html>

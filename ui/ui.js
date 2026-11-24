@@ -296,8 +296,15 @@ function renderSide(){
   h+=`<div class="anytime ${any.length?'':'empty'}" data-bank="1">${any.length?`<div class="chips">${any.map(x=>`<span class="chip" data-id="${x.id}" data-act="open" draggable="true" title="${esc(x.title)} · drag onto an hour to give it a time"><span class="swatch" style="--sw:var(--c-${x.color})"></span><span class="t">${esc(x.title)}</span></span>`).join('')}</div>`:(timed.length?'<span class="hint">Anytime tasks sit here. Drop a block back to clear its time.</span>':'')}</div>`;
   h+=`<div class="hours" style="--rows:${rows};--hh:${hh}px">`;
   for(let i=0;i<rows;i++)h+=`<div class="h" data-hour="${H0+i}" style="top:${i*hh}px"><span>${fmtTime((H0+i)*60)}</span></div>`;
-  for(const x of timed){const top=(x.time-H0*60)/60*hh;const hgt=Math.max(22,(x.dur||30)/60*hh-3);if(top<0||top>rows*hh)continue;const live=today&&!x.done&&m>=x.time&&m<x.time+(x.dur||30);
-    h+=`<div class="blk ${x.done?'done':''} ${live?'live':''} ${x.id===openId?'editing':''} ${anim.enter===x.id?'enter':''}" data-id="${x.id}" data-act="open" draggable="true" title="${esc(x.title)} · ${fmtTime(x.time)}${x.dur?' · '+fmtDur(x.dur):''}" style="--sw:var(--c-${x.color});top:${top}px;height:${hgt}px">${esc(x.title)}${hgt>30?`<small>${fmtTime(x.time)}${x.dur?' · '+fmtDur(x.dur):''}</small>`:''}<span class="rz" data-rz="${x.id}" title="Drag to change how long it takes"></span></div>`}
+  // Blocks that overlap in time sit side by side. Each takes the first free lane of its group (a run of blocks that
+  // touch each other), and a group's blocks share the width. A block counts as at least 18px long here, the height of
+  // its title line: a task that starts a few minutes after a short one would otherwise be drawn over its name. Blocks
+  // that merely follow each other (9:00 for 30 min, then 9:30) keep the full width.
+  const lanes=new Map();{const least=18/hh*60,evs=timed.map(x=>({id:x.id,s:x.time,e:x.time+Math.max(x.dur||30,least)})).sort((a,b)=>a.s-b.s||b.e-a.e);
+    let group=[],ends=[],until=-1;const close=()=>{for(const g of group)lanes.set(g.id,[g.l,ends.length]);group=[];ends=[];until=-1};
+    for(const ev of evs){if(group.length&&ev.s>=until)close();let l=ends.findIndex(e=>e<=ev.s);if(l<0){l=ends.length;ends.push(ev.e)}else ends[l]=ev.e;ev.l=l;group.push(ev);until=Math.max(until,ev.e)}close()}
+  for(const x of timed){const top=(x.time-H0*60)/60*hh;const hgt=Math.max(22,(x.dur||30)/60*hh-3);if(top<0||top>rows*hh)continue;const live=today&&!x.done&&m>=x.time&&m<x.time+(x.dur||30);const ln=lanes.get(x.id),side2=ln&&ln[1]>1?`--lane:${ln[0]};--lanes:${ln[1]};--lgap:2px;`:'';
+    h+=`<div class="blk ${x.done?'done':''} ${live?'live':''} ${x.id===openId?'editing':''} ${anim.enter===x.id?'enter':''}" data-id="${x.id}" data-act="open" draggable="true" title="${esc(x.title)} · ${fmtTime(x.time)}${x.dur?' · '+fmtDur(x.dur):''}" style="--sw:var(--c-${x.color});${side2}top:${top}px;height:${hgt}px">${esc(x.title)}${hgt>30?`<small>${fmtTime(x.time)}${x.dur?' · '+fmtDur(x.dur):''}</small>`:''}<span class="rz" data-rz="${x.id}" title="Drag to change how long it takes"></span></div>`}
   if(today&&m>=H0*60&&m<=H1*60)h+=`<div class="now" style="top:${(m-H0*60)/60*hh}px"><i>☉ ${fmtTime(m)}</i></div>`;
   const prev=side.querySelector('.tl');const keep=prev&&prev.dataset.date===sel&&prev.dataset.hh===String(hh)?prev.scrollTop:null;
   side.innerHTML=h+'</div></div>';
@@ -308,6 +315,10 @@ function renderSide(){
 
 // ---------- overlays ----------
 let toastT=null;
+// For a toast's Undo button: takes back the change the toast is about, and only that one. When something else was
+// done in between, the button says so instead of undoing the wrong thing.
+const NOT_LAST='Something else changed since. Ctrl+Z steps back one change at a time.';
+const undoThis=()=>{const mark=undoMark();return ()=>{if(undoTo(mark))render();else toast(NOT_LAST)}};
 function toast(msg,undoFn,label){
   document.querySelectorAll('.toast').forEach(x=>x.remove());clearTimeout(toastT);
   const el=document.createElement('div');el.className='toast';el.innerHTML=`<span>${esc(msg)}</span>${undoFn?'<button>'+esc(label||'Undo')+'</button>':''}`;
@@ -388,6 +399,8 @@ function notify(ev,demo){
 }
 // what the user pressed on a corner toast
 function onToastAction(ev){const a=ev.action,p=ev.payload||{};const t=p.id?get(p.id):null;
+  // lost: the shell could not put this one on screen (its window did not open). It is said here instead, so it is not dropped without a word.
+  if(ev.lost&&p.title)toast((p.label?p.label+': ':'')+p.title);
   if(a==='continue'||a==='dismiss'||a==='timeout'||a==='ok'){if(p.kind==='start')SFX.stopRepeat();return}
   if(a==='snooze'){SFX.stopRepeat();if(t)snooze(t);return}
   if(a==='open'){if(t){view='day';goDay(t.date);openId=t.id;render();revealTask(t.id)}return}
@@ -530,7 +543,13 @@ async function toggleVoice(){
 function resetMicUi(){const m=$('#mic');if(m)m.classList.remove('live');const w=$('#qaWrap');if(w)w.classList.remove('listening');SFX.play('ui.voice.off')}
 function voiceEnded(){resetMicUi();
   const q=$('#qa');if(q&&q.value.trim()&&S().voice.autoAdd&&voiceHeard){const raw=q.value;const n=addTask(raw,sel);if(n){q.value='';previewParse();SFX.play('ui.add');if(n.date!==sel)goDay(n.date);render();toast('Added “'+n.title.slice(0,30)+'”');aiRefine(n,raw)}}else if(q)q.focus();voiceHeard=false}
-const comboOf=e=>{if(['Control','Shift','Alt','Meta'].includes(e.key))return null;const p=[];if(e.ctrlKey)p.push('Ctrl');if(e.altKey)p.push('Alt');if(e.shiftKey)p.push('Shift');if(e.metaKey)p.push('Meta');p.push(e.key===' '?'Space':e.key.length===1?e.key.toUpperCase():e.key);return p.join('+')};
+// The key is named by where it sits (e.code), not by what it types: Ctrl+Shift+1 is "1", not "!", and a Greek or
+// Cyrillic layout still gives the Latin letter. The system-wide registration can only take keys named that way.
+// Named keys (F5, Pause, ArrowUp) and anything without a code keep e.key, as before.
+const CODE_KEYS={Space:'Space',Slash:'/',Comma:',',Period:'.',Semicolon:';',Quote:"'",BracketLeft:'[',BracketRight:']',Backslash:'\\',Minus:'-',Equal:'=',Backquote:'`'};
+const keyOf=e=>{const c=e.code||'';let m;if((m=/^Digit(\d)$/.exec(c)))return m[1];if((m=/^Key([A-Z])$/.exec(c)))return m[1];if(CODE_KEYS[c])return CODE_KEYS[c];if(/^Numpad\w+$/.test(c)&&c!=='NumpadEnter')return c;
+  return e.key===' '?'Space':e.key.length===1?e.key.toUpperCase():e.key};
+const comboOf=e=>{if(['Control','Shift','Alt','Meta'].includes(e.key))return null;const p=[];if(e.ctrlKey)p.push('Ctrl');if(e.altKey)p.push('Alt');if(e.shiftKey)p.push('Shift');if(e.metaKey)p.push('Meta');p.push(keyOf(e));return p.join('+')};
 
 // ---------- events ----------
 function revealTask(id){setTimeout(()=>{const el=document.querySelector('.task[data-id="'+id+'"]');if(!el)return;el.scrollIntoView({block:'center',behavior:reduced()?'auto':'smooth'});el.classList.remove('flash');void el.offsetWidth;el.classList.add('flash')},40)}
@@ -571,7 +590,7 @@ document.addEventListener('click',e=>{
   if(b.id==='searchBtn'){openSearch();return}
   if(b.id==='quickBtn'){openQuickAdd();return}
   if(b.dataset.act==='routines'){const r=b.getBoundingClientRect();routinesMenu(r.left,r.bottom+4);return}
-  if(b.dataset.rtApply){const n=applyRoutine(b.dataset.rtApply,b.dataset.to);closeMenu();SFX.play('ui.add');render();renderSheet();toast(n+' added to '+dayLabel(b.dataset.to),()=>{undo();render()});return}
+  if(b.dataset.rtApply){const n=applyRoutine(b.dataset.rtApply,b.dataset.to);closeMenu();SFX.play('ui.add');render();renderSheet();toast(n+' added to '+dayLabel(b.dataset.to),undoThis());return}
   if(b.dataset.rtDel){const keep=routinesCopy();deleteRoutine(b.dataset.rtDel);renderSheet();render();toast('Routine deleted',()=>{putRoutines(keep);renderSheet();render()});return}
   if(b.dataset.rtManage){closeMenu();openSettings('routines');return}
   if(b.id==='mic'){toggleVoice();return}
@@ -595,31 +614,31 @@ document.addEventListener('click',e=>{
   if(b.dataset.syncmode){syncSetup.mode=b.dataset.syncmode;syncRefresh();return}
   if(b.dataset.run){runSetting(b.dataset.run,b);return}
   const idSrc=e.target.closest('[data-id],[data-drawer]');const id=b.dataset.id||(idSrc&&(idSrc.dataset.id||idSrc.dataset.drawer))||(inMenu&&inMenu.dataset.id)||openId;
-  if(b.dataset.setcolor){const tid=b.dataset.id||id;if(tid){upd(tid,{color:b.dataset.setcolor});closeMenu();render();toast('Now '+state.labels[b.dataset.setcolor],()=>{undo();render()})}return}
+  if(b.dataset.setcolor){const tid=b.dataset.id||id;if(tid){upd(tid,{color:b.dataset.setcolor});closeMenu();render();toast('Now '+state.labels[b.dataset.setcolor],undoThis())}return}
   if(b.id==='edNotify'&&openId){const on=!get(openId).notify;upd(openId,{notify:on});if(on)askNotify();render();return}
   const act=b.dataset.act;
   if(act==='clearDone'){const gone=clearDone(sel);render();toast(gone.length+' done tasks cleared',()=>{gone.forEach(restoreTask);render()});return}
-  if(act==='carry'){const n=carryAll(sel);render();toast(n+' brought to today',()=>{undo();render()});return}
+  if(act==='carry'){const n=carryAll(sel);render();toast(n+' brought to today',undoThis());return}
   if(act==='carryDismiss'){state.carryDismissed=sel;save();render();return}
   // (the timeline's own wrapper carries the day for drops; a click on its empty space is not a "go to this day")
   if(!act){if(b.dataset.date&&!b.classList.contains('tl')){goDay(b.dataset.date);if(b.dataset.goto)view=b.dataset.goto;openId=null;render()}return}
   if(!id)return;closeMenu();
   if(act==='done'){toggleDone(id);return}
-  if(act==='color'){const x=get(id);const i=COLORS.findIndex(c=>c[0]===x.color);const nc=COLORS[(i+1)%COLORS.length][0];upd(id,{color:nc});render();toast('Now '+state.labels[nc],()=>{undo();render()});return}
+  if(act==='color'){const x=get(id);const i=COLORS.findIndex(c=>c[0]===x.color);const nc=COLORS[(i+1)%COLORS.length][0];upd(id,{color:nc});render();toast('Now '+state.labels[nc],undoThis());return}
   if(act==='open'){const x=get(id);if(!x)return;if(openId===id){closeDrawer();return}openId=id;cursorId=id;if(view!=='day')view='day';if(x.date!==sel)goDay(x.date);
     if(!state.layout.board){state.layout.board=true;save();applyLayout()}
     render();revealTask(id);return}
   // tomorrow means tomorrow for a task from today or before; a task already ahead moves one day on
-  if(act==='tomorrow'){const x=get(id);if(!x)return;const td=todayStr();moveTo(id,addDays(x.date<td?td:x.date,1));render();toast('Moved to '+relDay(x.date).toLowerCase()+(x.date>addDays(td,1)?' '+fromYmd(x.date).getDate():''),()=>{undo();render()});return}
-  if(act==='nextweek'){moveTo(id,addDays(get(id).date,7));render();toast('Moved a week out, to '+dayLabel(get(id).date),()=>{undo();render()});return}
-  if(act==='dup'){const c=duplicate(id);if(c)anim.enter=c.id;render();toast('Duplicated',()=>{undo();render()});return}
+  if(act==='tomorrow'){const x=get(id);if(!x)return;const td=todayStr();moveTo(id,addDays(x.date<td?td:x.date,1));render();toast('Moved to '+relDay(x.date).toLowerCase()+(x.date>addDays(td,1)?' '+fromYmd(x.date).getDate():''),undoThis());return}
+  if(act==='nextweek'){moveTo(id,addDays(get(id).date,7));render();toast('Moved a week out, to '+dayLabel(get(id).date),undoThis());return}
+  if(act==='dup'){const c=duplicate(id);if(c)anim.enter=c.id;render();toast('Duplicated',undoThis());return}
   if(act==='notify'){upd(id,{notify:!get(id).notify});render();return}
   if(act==='delete'){removeTask(id,true);return}
   if(act==='close'){closeDrawer();return}
 });
 function runSetting(k,b){
   const s=$('.sheet-host');
-  if(k==='clearEx'){const r=clearExamples();render();const what=[r.tasks?r.tasks+' example tasks':'',r.notes?'the example note':''].filter(Boolean).join(' and ');toast(what?what+' removed':'No examples left',(r.tasks||r.notes)?()=>{if(r.tasks)undo();restoreExampleNotes(r.removedNotes);render()}:null)}
+  if(k==='clearEx'){const r=clearExamples();render();const what=[r.tasks?r.tasks+' example tasks':'',r.notes?'the example note':''].filter(Boolean).join(' and ');const mark=undoMark();toast(what?what+' removed':'No examples left',(r.tasks||r.notes)?()=>{if(r.tasks&&!undoTo(mark)){toast(NOT_LAST);return}restoreExampleNotes(r.removedNotes);render()}:null)}
   if(k==='prevRemind'){previewNotify('remind')}
   if(k==='prevStart'){previewNotify('start')}
   if(k==='icsDay')copy(icsFor(dayTasks(sel)),'.ics for '+relDay(sel).toLowerCase());
@@ -835,10 +854,10 @@ document.addEventListener('drop',e=>{if(!dragId)return;e.preventDefault();const 
   // the hour grid and the anytime bank sit inside the timeline's date wrapper, so they are checked first
   // A task dragged in from another day (a Week column) also moves to the day the timeline shows, in the same undo step.
   const tlDay=e.target.closest('.tl')?.dataset.date||sel,dragged=get(dragId),other=dragged&&dragged.date!==tlDay?{date:tlDay,order:nextOrder(tlDay)}:null;
-  if(hr){const y=e.clientY-hr.getBoundingClientRect().top;const mins=Math.round(((y/S().hh*60)-dragOff)/15)*15;upd(dragId,{time:Math.max(0,Math.min(23*60+45,mins)),...(other||{})});toast('Scheduled '+fmtTime(get(dragId).time)+(other?' on '+dayLabel(tlDay):''),()=>{undo();render()})}
-  else if(e.target.closest('.anytime')){const p={...(dragged&&dragged.time!=null?{time:null}:{}),...(other||{})};if(dragged&&Object.keys(p).length){upd(dragId,p);toast(other?'Moved to '+dayLabel(tlDay)+', anytime':'Back to anytime',()=>{undo();render()})}}
+  if(hr){const y=e.clientY-hr.getBoundingClientRect().top;const mins=Math.round(((y/S().hh*60)-dragOff)/15)*15;upd(dragId,{time:Math.max(0,Math.min(23*60+45,mins)),...(other||{})});toast('Scheduled '+fmtTime(get(dragId).time)+(other?' on '+dayLabel(tlDay):''),undoThis())}
+  else if(e.target.closest('.anytime')){const p={...(dragged&&dragged.time!=null?{time:null}:{}),...(other||{})};if(dragged&&Object.keys(p).length){upd(dragId,p);toast(other?'Moved to '+dayLabel(tlDay)+', anytime':'Back to anytime',undoThis())}}
   else if((row&&row.dataset.id!==dragId)||(list&&!row)){const tgt=dropTarget(row,e.clientY);if(tgt.blocked)toast('Timed tasks keep their time order. Drop it on the timeline to change the time, or clear the time first.');else if(!(row&&row.dataset.id===dragId))reorder(dragId,tgt.beforeId)}
-  else if(day&&!row){const to=day.dataset.date||day.dataset.dropdate,was=dragged&&dragged.date;moveTo(dragId,to);if(was&&was!==to)toast('Moved to '+dayLabel(to),()=>{undo();render()})}
+  else if(day&&!row){const to=day.dataset.date||day.dataset.dropdate,was=dragged&&dragged.date;moveTo(dragId,to);if(was&&was!==to)toast('Moved to '+dayLabel(to),undoThis())}
   dragId=null;dragOff=0;autoScrollStop();render()});
 
 // ---- scrolling while a task is being dragged ----
@@ -892,7 +911,7 @@ document.addEventListener('pointerdown',e=>{const h=e.target.closest('.rz');if(!
 document.addEventListener('pointermove',e=>{if(!rzState)return;const r=rzState;const d=Math.max(15,Math.round((r.dur0+(e.clientY-r.y0)/r.hh*60)/15)*15);if(d===r.dur)return;r.dur=d;
   r.blk.style.height=Math.max(22,d/60*r.hh-3)+'px';let sm=r.blk.querySelector('small');if(!sm){sm=document.createElement('small');r.blk.insertBefore(sm,r.blk.querySelector('.rz'))}sm.textContent=fmtTime(r.time)+' · '+fmtDur(d)});
 function endResize(apply){if(!rzState)return;const r=rzState;rzState=null;r.blk.classList.remove('resizing');r.blk.draggable=true;
-  if(apply&&r.dur!==r.dur0){const t=get(r.id);upd(r.id,{dur:r.dur});toast(fmtDur(r.dur)+' for '+(t?t.title:'task'),()=>{undo();render()})}
+  if(apply&&r.dur!==r.dur0){const t=get(r.id);upd(r.id,{dur:r.dur});toast(fmtDur(r.dur)+' for '+(t?t.title:'task'),undoThis())}
   suppressClick=true;setTimeout(()=>{suppressClick=false},0);render()}
 document.addEventListener('pointerup',()=>endResize(true));
 document.addEventListener('pointercancel',()=>endResize(false));
@@ -1080,7 +1099,11 @@ function loadSyncExtras(force){const s=Sync.st();if(s.mode==='off'||!s.keyOk||sy
 // One line of status that the sync listener can refresh without redrawing the whole tab.
 function rejectedText(s){const rj=Object.values(s.rejected||{});if(!rj.length)return '';const n=r=>rj.filter(x=>x===r).length,size=n('size'),fut=n('future'),quota=n('quota'),rest=rj.length-size-fut-quota;
   return [size?size+' too large to sync':'',fut?fut+' not synced: this device\'s clock is ahead':'',quota?quota+' not synced: sync storage is full':'',rest?rest+' not accepted by the server':''].filter(Boolean).map(x=>' · '+x).join('')}
-function syncStatusText(s){const D=window.SundialDesktop;return `${s.lastError?esc(s.lastError):(s.lastSync?'Last synced '+new Date(s.lastSync).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'Not synced yet')} · ${Sync.pending()} waiting${Sync.isRunning()?' · syncing…':''}${rejectedText(s)}${D?'':' · key kept in this browser'}`}
+function syncStatusText(s){const D=window.SundialDesktop;return `${s.lastError?esc(s.lastError):(s.lastSync?'Last synced '+new Date(s.lastSync).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'Not synced yet')} · ${Sync.pending()} waiting${Sync.isRunning()?' · syncing…':''}${rejectedText(s)}${oldText(s)}${D?'':' · key kept in this browser'}`}
+// In the last three days another device, still on a version from before 0.1.46, wrote changes this one does not accept (noteOld in sync.js)
+const oldText=s=>(s.oldSeen&&Date.now()-s.oldSeen<3*864e5?' · another device runs an old Sundial, so its changes do not arrive here: update Sundial there':'')
+  // and something that failed its check was ignored (noteBad): a deletion or a copy that no device holding the key made
+  +(s.badSeen&&Date.now()-s.badSeen<3*864e5?' · the server sent something that did not check out, and it was ignored':'');
 // Everything the sync setup remembers between screens; cleared whenever an account is entered or left.
 function syncFlowReset(){Object.assign(syncExtras,{usage:undefined,devices:undefined,at:0,armed:null});Object.assign(syncSetup,{existing:null,checking:false,pairError:null,pairStarting:false,setupError:null,settingUp:false,useCode:false,showRecovery:false,revealRecovery:false,recoveryShown:null,recovery:null,triedStored:false,outArmed:false,migEmail:'',migSent:false,migError:null,firstHere:false})}
 // The secret that unlocks the synced copy on another PC. Shown once right after setup, and on request later.
@@ -1124,7 +1147,7 @@ function pairBanners(){const host=bannerHost();const pend=Sync.pendingPairs();
   host.querySelectorAll('.banner.pair[data-state="ask"]').forEach(el=>{if(!pend.some(p=>p.id===el.dataset.pair))dismissBanner(el)});
   for(const p of pend){if(host.querySelector(`.banner.pair[data-pair="${CSS.escape(p.id)}"]`))continue;const el=pairBanner(p.id,p.name);host.appendChild(el);pairState(el,'ask');setTimeout(pairBanners,Math.max(1000,p.ts+15*60*1000-Date.now()+500))}
   // a corner toast for a request that has since gone must not stay clickable
-  if(window.SundialDesktop&&window.SundialDesktop.toastCurrent)window.SundialDesktop.toastCurrent().then(cur=>{if(cur&&cur.kind==='pair'&&!pend.some(p=>p.id===cur.pair))window.SundialDesktop.toastDismiss()}).catch(()=>{})}
+  if(window.SundialDesktop&&window.SundialDesktop.toastCurrent)window.SundialDesktop.toastCurrent().then(cur=>{if(cur&&cur.kind==='pair'&&!pend.some(p=>p.id===cur.pair))window.SundialDesktop.toastDismiss(cur.toastSeq)}).catch(()=>{})}
 // Desktop with the window hidden: the finish code goes to the corner toast as before, or to a desktop notification on Linux. Visible, the banner itself shows it, so no second toast.
 function approvedNote(fin){const D=window.SundialDesktop;if(!D||!document.hidden)return;
   if(isLinux()){D.notify('Sundial: finish code '+fin,'Type it on the other PC to finish. Open Sundial to see it again.').catch(()=>{});return}
@@ -1185,7 +1208,7 @@ function updateProgress(p){const host=bannerHost();let el=host.querySelector('.b
 function syncHotkeys(){const D=window.SundialDesktop;if(!D)return;
   // Wayland has no system-wide shortcuts for apps. Register nothing: the keydown handler keeps the combos working while Sundial is focused, and Settings shows the desktop-shortcut recipe.
   if(wayland()){globalHotkeys=false;D.setHotkeys({quick:null,voice:null}).catch(()=>{});return}
-  D.setHotkeys({quick:S().quick.hotkey,voice:S().voice.enabled?S().voice.hotkey:null}).then(failed=>{globalHotkeys=!(failed&&failed.length);if(failed&&failed.length)toast('Hotkey taken by another app: '+failed.join(', '))}).catch(()=>{globalHotkeys=false})}
+  D.setHotkeys({quick:S().quick.hotkey,voice:S().voice.enabled?S().voice.hotkey:null}).then(failed=>{globalHotkeys=!(failed&&failed.length);if(failed&&failed.length)toast('Could not register '+failed.join('; '))}).catch(()=>{globalHotkeys=false})}
 function refreshAiKey(){const D=window.SundialDesktop;if(D)D.secret.get('ai:'+S().ai.provider).then(v=>{aiKeySaved=!!v;return refreshSecretKind()}).then(()=>{if(sheetTab==='ai')renderSheet()}).catch(()=>{});else aiKeySaved=!!(S().ai.keysInBrowser||{})[S().ai.provider]}
 // Restore a backup: the list of daily copies under "Your data", each with a two-click Restore.
 const backupUi={list:null,armed:null};
@@ -1234,7 +1257,7 @@ async function aiRefine(task,raw){
   aiBusy++;const box=$('#parse');if(box)box.insertAdjacentHTML('beforeend','<span class="chip ghost" id="aiChip">AI…</span>');
   try{const ai=await AI.parse(raw,task.date);const t=get(task.id);if(!t)return;const r=AI.refinePatch(t,ai,had);
     // the answer arrives seconds later: it must not redraw under a field being typed in, or pull the view to another day then
-    if(r){upd(t.id,r.patch);const a=document.activeElement,busy=!!a&&a.id!=='qa'&&typingElsewhere();if(r.patch.date&&r.patch.date!==sel&&!busy)goDay(r.patch.date);renderWhenIdle();toast('AI: '+r.summary,()=>{undo();render()})}}
+    if(r){upd(t.id,r.patch);const a=document.activeElement,busy=!!a&&a.id!=='qa'&&typingElsewhere();if(r.patch.date&&r.patch.date!==sel&&!busy)goDay(r.patch.date);renderWhenIdle();toast('AI: '+r.summary,undoThis())}}
   catch(e){toast('AI parsing: '+(e.message||e))}
   finally{aiBusy--;$('#aiChip')?.remove()}
 }
@@ -1284,7 +1307,7 @@ async function init(){
   // platform first: render() and syncHotkeys() below read plat. A shell without the command keeps the Windows defaults.
   if(D){if(D.platform){try{const p=await D.platform();if(p&&p.os)plat=Object.assign(plat,p)}catch(_){}}
     await loadDataFile(D);
-    D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});D.on('sundial://deep-link',e=>deepLink(e.payload));D.on('sundial://hidden',()=>{if(S().trayNoticeShown)return;S().trayNoticeShown=true;save();
+    D.on('sundial://quick-add',()=>openQuickAdd());D.on('sundial://voice',()=>{if(S().voice.enabled)toggleVoice()});D.on('sundial://toast-action',e=>{try{onToastAction(e.payload||{})}catch(err){console.error(err)}});D.on('sundial://deep-link',e=>{deepLink(e.payload);if(D.deepLinkPending)D.deepLinkPending().catch(()=>{})});D.on('sundial://hidden',()=>{if(S().trayNoticeShown)return;S().trayNoticeShown=true;save();
       if(isLinux())D.notify('Sundial is still running','It is in the system tray (under the panel arrow if you do not see it). Reminders keep working. Quit from the tray icon menu.').catch(()=>{});
       else D.toastShow({kind:'info',label:'Still running',title:'Sundial is in the tray',meta:'Reminders keep working. Quit from the tray icon menu.',corner:S().toasts.corner,secs:8,sticky:false,actions:[{id:'ok',label:'OK',primary:true}]}).catch(()=>{})});D.on('sundial://update-progress',e=>updateProgress(e.payload||{}));syncHotkeys();
     D.appVersion().then(v=>{appVersion=v}).catch(()=>{});setTimeout(()=>checkUpdates(false),4000);setInterval(()=>checkUpdates(false),6*3600*1000)}

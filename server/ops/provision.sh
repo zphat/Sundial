@@ -24,6 +24,10 @@ SYNC_STAGE=/opt/sundial/bin/.sundial-sync.new
 SYNC_ENV=/etc/sundial/sync.env
 SYNC_DB=/var/lib/sundial/sundial-sync.sqlite
 SYNC_UNIT=/etc/systemd/system/sundial-sync.service
+# Exists while a restart is owed: from just before the unit file is written until the server has been
+# restarted under it (step 6). In /run, because a reboot restarts the server anyway and takes the note
+# with it.
+SYNC_RESTART_DUE=/run/sundial-sync.restart-due
 UA="sundial-provision (+https://sundial.services)"
 HOSTS=(sundial.services app.sundial.services sync.sundial.services)
 
@@ -318,6 +322,14 @@ printf '%s\n' "$SYNC_TAG" >/opt/sundial/VERSION
 
 # ---------------------------------------------------------------------------------------------------
 step "6/10 sundial-sync: the systemd unit"
+# A changed unit only counts from the next restart. If a run stops before it gets there, the rerun finds the
+# unit file already in place; this note is how it still knows a restart is owed. It is written before the
+# unit, so no stop between the two can lose it, and taken back below when the unit turns out unchanged.
+RESTART_WAS_DUE=0
+if [ -e "$SYNC_RESTART_DUE" ]; then
+	RESTART_WAS_DUE=1
+fi
+: >"$SYNC_RESTART_DUE"
 put 644 "$SYNC_UNIT" <<'EOF'
 # Written by server/ops/provision.sh (Sundial). Edit the copy in provision.sh, not this file.
 [Unit]
@@ -354,6 +366,17 @@ StateDirectory=sundial
 StateDirectoryMode=0700
 UMask=0077
 
+# Memory. The box has under 512 MB of RAM and the server normally uses 10 to 30 MB. If it ever runs away,
+# it is the process that gets killed (Restart=always brings it back 3 seconds later), not Caddy or sshd.
+# The figure includes the page cache of the database file, but the kernel takes that part back first, so
+# only memory the server really holds gets it killed.
+MemoryMax=300M
+# Without this the cap would not end a runaway: at MemoryMax the kernel moves the server's memory to swap
+# before it kills anything, and with 1 GiB of swap the whole box would crawl for minutes first.
+# No MemoryHigh: that one slows a service down instead of ending it, and a server that hangs is worse
+# here than one that is back in 3 seconds.
+MemorySwapMax=0
+
 # Hardening. The server needs its listen socket, outbound HTTPS to Resend, DNS and /var/lib/sundial.
 NoNewPrivileges=yes
 CapabilityBoundingSet=
@@ -386,6 +409,9 @@ SystemCallErrorNumber=EPERM
 WantedBy=multi-user.target
 EOF
 UNIT_CHANGED=$CHANGED
+if [ "$UNIT_CHANGED" = 0 ] && [ "$RESTART_WAS_DUE" = 0 ]; then
+	rm -f "$SYNC_RESTART_DUE"
+fi
 if [ -d /etc/systemd/system/sundial-sync.service.d ]; then
 	warn "found /etc/systemd/system/sundial-sync.service.d; the unit has Restart=always itself, check the drop-in undoes nothing"
 fi
@@ -419,6 +445,8 @@ if [ ! -f "$SYNC_ENV" ] || [ ! -f "$SYNC_DB" ]; then
 	[ -f "$SYNC_ENV" ] || say "not started: $SYNC_ENV is not here yet"
 	[ -f "$SYNC_DB" ] || say "not started: there is no database at $SYNC_DB yet"
 	TODO+=("copy from the old box (MIGRATE.md step 5): /etc/sundial/sync.env as root:root 0600, and a sqlite3 .backup copy of the database (made with sundial-sync stopped) as $SYNC_DB, sundial:sundial 0600; then: systemctl start sundial-sync")
+	# Nothing runs, so nothing runs under an old unit: whoever starts the server gets the new one.
+	systemctl is-active --quiet sundial-sync || rm -f "$SYNC_RESTART_DUE"
 else
 	chown root:root "$SYNC_ENV"
 	chmod 600 "$SYNC_ENV"
@@ -426,8 +454,17 @@ else
 	# The copied database (and any -wal/-shm beside it) must belong to sundial, or the server cannot write.
 	chown sundial:sundial "$SYNC_DB"*
 	chmod 600 "$SYNC_DB"*
-	if [ "$UNIT_CHANGED" = 1 ] || [ "$BIN_CHANGED" = 1 ]; then
+	# Restart or not is decided from what is running, not only from what this run changed. A run that
+	# replaced the binary or the unit and then stopped is followed by one that finds nothing left to change,
+	# and the old process would stay up while /opt/sundial/VERSION names the new tag.
+	# /proc/<pid>/exe is the file the server was started from. Once that file has been replaced it reads
+	# "<path> (deleted)", so anything but the exact path means an old binary. With no server running the
+	# pid is 0 and the link is empty: that also takes the restart branch, where it is a plain start.
+	sync_pid=$(systemctl show -p MainPID --value sundial-sync.service 2>/dev/null || true)
+	sync_exe=$(readlink "/proc/${sync_pid:-0}/exe" 2>/dev/null || true)
+	if [ "$UNIT_CHANGED" = 1 ] || [ "$BIN_CHANGED" = 1 ] || [ "$sync_exe" != "$SYNC_BIN" ] || [ -e "$SYNC_RESTART_DUE" ]; then
 		systemctl restart sundial-sync
+		rm -f "$SYNC_RESTART_DUE"
 	else
 		systemctl start sundial-sync
 	fi
@@ -469,7 +506,6 @@ for f in access app root; do
 		install -m 600 -o caddy -g caddy /dev/null "/var/log/caddy/$f.log"
 	fi
 done
-CADDY_CHANGED=0
 if cmp -s "$WEB/Caddyfile" /etc/caddy/Caddyfile; then
 	say "/etc/caddy/Caddyfile is already this one"
 else
@@ -485,15 +521,17 @@ else
 		cp -p /etc/caddy/Caddyfile /etc/caddy/Caddyfile.prev
 	fi
 	mv -f /etc/caddy/Caddyfile.new /etc/caddy/Caddyfile
-	CADDY_CHANGED=1
 	say "installed /etc/caddy/Caddyfile (the one before it is Caddyfile.prev)"
 fi
 chown caddy:caddy /var/log/caddy/*.log
 systemctl enable caddy >/dev/null 2>&1
-if [ "$CADDY_CHANGED" = 1 ]; then
-	systemctl reload-or-restart caddy \
-		|| die "caddy did not take the new config (journalctl -u caddy -n 30 --no-pager); the previous file is /etc/caddy/Caddyfile.prev"
-elif ! systemctl is-active --quiet caddy; then
+# Reload on every run, not only when this run installed the file. A run that installed the Caddyfile and
+# then stopped is followed by one that finds it already in place, and Caddy would keep serving the config
+# from before. Reloading the config Caddy already runs changes nothing and drops no request.
+if systemctl is-active --quiet caddy; then
+	systemctl reload caddy \
+		|| die "caddy did not take /etc/caddy/Caddyfile and still serves the config it had (journalctl -u caddy -n 30 --no-pager); the file before this one is /etc/caddy/Caddyfile.prev"
+else
 	systemctl restart caddy
 fi
 systemctl is-active --quiet caddy || die "caddy is not running (journalctl -u caddy -n 30 --no-pager)"
@@ -537,7 +575,7 @@ put 755 /usr/local/bin/sundial-backup <<'EOF'
 #!/bin/bash
 # sundial-backup: a consistent copy of the Sundial sync database, made nightly by /etc/cron.d/sundial-backup.
 # Written by server/ops/provision.sh. Copies go to /var/backups/sundial as sundial-sync-<UTC time>.sqlite.gz.
-# Copies more than 7 days old are deleted, but only after a good new copy exists.
+# Copies more than 30 days old are deleted, but only after a good new copy exists.
 #
 # Restore one:
 #   systemctl stop sundial-sync
@@ -550,7 +588,7 @@ put 755 /usr/local/bin/sundial-backup <<'EOF'
 set -euo pipefail
 DB=/var/lib/sundial/sundial-sync.sqlite
 DIR=/var/backups/sundial
-KEEP_DAYS=7
+KEEP_DAYS=30
 log() { echo "$(date -u +%FT%TZ) sundial-backup: $*"; }
 cd /
 exec 9>/run/sundial-backup.lock
@@ -593,20 +631,20 @@ if [ "$check" != ok ]; then
 fi
 as_sundial gzip -n "$OUT.tmp"
 mv -f "$OUT.tmp.gz" "$OUT.gz"
-# Keep 7 days: delete copies more than 6 full days old, which leaves today's and the six before it.
+# Keep 30 days: delete copies more than 29 full days old, which leaves today's and the 29 before it.
 find "$DIR" -maxdepth 1 -type f -name 'sundial-sync-*.sqlite.gz' -mtime +$((KEEP_DAYS - 1)) -delete
 kept=$(find "$DIR" -maxdepth 1 -type f -name 'sundial-sync-*.sqlite.gz' | wc -l)
 log "ok: $(basename "$OUT.gz") ($(stat -c %s "$OUT.gz") bytes), $kept copies kept"
 EOF
 put 644 /etc/cron.d/sundial-backup <<'EOF'
-# Nightly copy of the Sundial sync database, 7 days kept. Written by server/ops/provision.sh.
+# Nightly copy of the Sundial sync database, 30 days kept. Written by server/ops/provision.sh.
 # 03:30 box time (UTC). server/ops/backup-offsite.sh, if it is ever installed, runs at 03:45, after this.
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 30 3 * * * root /usr/local/bin/sundial-backup >>/var/log/sundial-backup.log 2>&1
 EOF
 systemctl enable --now cron >/dev/null 2>&1
-say "sundial-backup runs at 03:30 into /var/backups/sundial, 7 days kept (log: /var/log/sundial-backup.log)"
+say "sundial-backup runs at 03:30 into /var/backups/sundial, 30 days kept (log: /var/log/sundial-backup.log)"
 say "off-site copies (backup-offsite.sh) are not installed; see MIGRATE.md, Later"
 
 # ---------------------------------------------------------------------------------------------------

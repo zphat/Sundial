@@ -8,3 +8,6 @@ src-tauri/gen/schemas/
 *.log
 .DS_Store
 Thumbs.db
+
+# the private test build of the desktop app (tools/selftest)
+.selftest/

@@ -56,6 +56,10 @@ function cleanTask(t){
 // The change log is only ever exported, so a long note is not copied into it in full.
 function slimPatch(p){if(!p||typeof p!=='object'||Array.isArray(p))return p??null;const o={};for(const k in p){const v=p[k];o[k]=typeof v==='string'&&v.length>160?v.slice(0,160)+'…':v}return o}
 function slimOp(o){if(o&&typeof o==='object')o.patch=slimPatch(o.patch)}
+// A recorded hotkey names the key, not the character Shift makes of it: "Ctrl+Shift+!" is "Ctrl+Shift+1". Versions before
+// 0.1.46 stored the character, which never registered system-wide; fixCombo turns a saved one into the key.
+const SHIFTED={'!':'1','@':'2','#':'3','$':'4','%':'5','^':'6','&':'7','*':'8','(':'9',')':'0','_':'-','+':'=','{':'[','}':']','|':'\\',':':';','"':"'",'<':',','>':'.','?':'/','~':'`'};
+function fixCombo(c){const m=/^((?:[A-Za-z]+\+)*)(.+)$/.exec(String(c||''));return m&&/Shift\+/.test(m[1])&&SHIFTED[m[2]]?m[1]+SHIFTED[m[2]]:c}
 // In a browser localStorage is the only store, so a failed write (quota, blocked site data) is reported once through
 // onSaveFailed, which ui.js defines. The desktop still writes through its own bridge regardless.
 let saveFailed=false,saveT=null;
@@ -87,6 +91,7 @@ function bootState(rawJson){
     s.settings.sounds.remind=({ticks:'tick2',glass:'glass2',single:'glass1'})[s.settings.sounds.remind]||s.settings.sounds.remind;
     s.settings.sounds.start=({marimba:'chord',marimba3:'chord'})[s.settings.sounds.start]||s.settings.sounds.start;
     if(!Array.isArray(s.routines))s.routines=[];
+    for(const k of ['quick','voice']){const o=s.settings[k];if(o&&typeof o.hotkey==='string')o.hotkey=fixCombo(o.hotkey)}
     // the browser's AI key used to be one field for every provider; it belongs to the provider it was saved under
     {if(!s.settings.ai||typeof s.settings.ai!=='object')s.settings.ai=JSON.parse(JSON.stringify(DEFAULT_SETTINGS.ai));const a=s.settings.ai;if(!a.keysInBrowser||typeof a.keysInBrowser!=='object')a.keysInBrowser={};if(a.keyInBrowser){if(!a.keysInBrowser[a.provider])a.keysInBrowser[a.provider]=a.keyInBrowser}delete a.keyInBrowser}
     // the maps the rest of the app indexes into are always plain objects, whatever the saved copy held
@@ -224,6 +229,10 @@ function swapTasks(entry,kind){const before=state.tasks,bm=new Map(before.map(t=
   state.tasks=after;op(kind,null,{tasks:after.length})}
 function undo(){if(!undoStack.length)return false;redoStack.push(snapshot());swapTasks(undoStack.pop(),'undo');save();return true}
 function redo(){if(!redoStack.length)return false;undoStack.push(snapshot());swapTasks(redoStack.pop(),'redo');save();return true}
+// What a toast's Undo button holds on to: the step its own action pushed. undoTo steps back only while that step is
+// still the newest one, so the button never takes back something done after the toast appeared.
+const undoMark=()=>undoStack[undoStack.length-1]||null;
+function undoTo(mark){return !!mark&&undoStack[undoStack.length-1]===mark&&undo()}
 // Change log, one entry per mutation, newest LOG_MAX kept. Nothing reads it but the export; sync works from dirty marks.
 function op(kind,ref,patch,silent){const log=state.oplog,last=log[log.length-1],now=Date.now();
   // a field being typed in arrives as one silent edit per key: keep the newest, not a copy for every keystroke
@@ -252,7 +261,7 @@ function deleteTask(id){const t=get(id);if(!t)return null;pushUndo();state.tasks
 function restoreTask(copy){if(!copy||get(copy.id))return;pushUndo();const dead=state.tombstones[copy.id]||0;delete state.tombstones[copy.id];copy.updatedAt=stamp(Math.max(dead,copy.updatedAt||0));state.tasks.push(copy);op('add',copy.id,{...copy});save()}
 function moveTo(id,date){const t=get(id);if(!t||t.date===date)return;upd(id,{date,order:nextOrder(date)})}
 function reorder(id,beforeId){const t=get(id);if(!t)return;pushUndo();const list=dayTasks(t.date).filter(x=>x.id!==id);const i=beforeId?list.findIndex(x=>x.id===beforeId):list.length;list.splice(i<0?list.length:i,0,t);list.forEach((x,k)=>{x.order=k+1;x.updatedAt=stamp(x.updatedAt)});op('reorder',t.date,list.map(x=>x.id));save()}
-function duplicate(id){const t=get(id);if(!t)return null;pushUndo();const c={...t,id:uid(),done:false,createdAt:Date.now(),updatedAt:Date.now(),order:t.order+0.5,spawned:false,example:false};delete c.snoozeUntil;state.tasks.push(c);op('add',c.id,{...c});save();return c}
+function duplicate(id){const t=get(id);if(!t)return null;pushUndo();const c={...t,id:uid(),done:false,createdAt:Date.now(),updatedAt:Date.now(),order:t.order+0.5,spawned:false,example:false};delete c.snoozeUntil;delete c.seriesId;state.tasks.push(c);op('add',c.id,{...c});save();return c}
 // anchor: the day of the month a monthly repeat was set on, so the 31st comes back after a short month
 function nextDate(date,repeat,anchor){
   if(repeat==='daily')return addDays(date,1);
@@ -269,7 +278,11 @@ function completeTask(id,done){
   if(done&&t.repeat&&!t.spawned){const anchor=t.repeat==='monthly'?(t.anchorDay||fromYmd(t.date).getDate()):0,today=todayStr();let nd=nextDate(t.date,t.repeat,anchor);
     // an overdue repeat lands on its next day from today on, not on a day already gone
     for(let i=0;nd&&nd<today&&i<4000;i++)nd=nextDate(nd,t.repeat,anchor);
-    if(nd){spawned={...t,id:uid(),date:nd,done:false,spawned:false,order:nextOrder(nd),createdAt:Date.now(),updatedAt:Date.now(),seriesId:t.seriesId||t.id,example:false};delete spawned.snoozeUntil;if(anchor)spawned.anchorDay=anchor;
+    // The next one gets an id every device would pick (the series and its day), so a repeat ticked on two devices before
+    // they sync is one task afterwards, not two. An id already in use here gets a fresh one; an id deleted before is
+    // stamped later than its tombstone, as in restoreTask.
+    if(nd){const series=t.seriesId||t.id,nid=series+'@'+nd,id=nid.length<=120&&ID_RE.test(nid)&&!get(nid)?nid:uid(),dead=state.tombstones[id]||0;delete state.tombstones[id];
+      spawned={...t,id,date:nd,done:false,spawned:false,order:nextOrder(nd),createdAt:Date.now(),updatedAt:stamp(dead),seriesId:series,example:false};delete spawned.snoozeUntil;if(anchor)spawned.anchorDay=anchor;
       t.spawned=true;state.tasks.push(spawned);op('add',spawned.id,{...spawned})}}
   save();return spawned;
 }

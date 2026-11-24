@@ -5,6 +5,13 @@
 # ui/*.js can never ship through the auto-updater. The linux job waits for the windows job: both rewrite
 # latest.json on the release through tauri-action (download, add own platform keys, upload again, no
 # locking), so they must never run at the same time.
+#
+# A release is filled while hidden and shown last. The windows job creates it as a pre-release, and GitHub's
+# /releases/latest skips pre-releases, so the app updater (latest.json), the fixed download links, the VPS
+# web updater and provision.sh keep getting the previous version while the jobs attach their files. The last
+# step of attach-assets turns the pre-release flag off. If any job fails, the release stays a pre-release
+# and nothing public has moved; re-running the failed jobs finishes it. Not a draft: GitHub refuses to
+# publish a draft whose tag commit has workflow files that differ from the default branch.
 name: build
 
 on:
@@ -66,6 +73,31 @@ jobs:
           else
             echo "no ui/manifest.webmanifest, skipped"
           fi
+      # The release is named after the tag, but the installers, latest.json and the web bundle carry the version
+      # written in these three files. A tag that disagrees would publish one version under another's name, so it
+      # stops here, before anything is built or released.
+      - name: The tag must match the app version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$GITHUB_REF_NAME" <<'PY'
+          import json, sys, tomllib
+          tag = sys.argv[1]
+          found = {}
+          for path in ("package.json", "src-tauri/tauri.conf.json"):
+              with open(path, encoding="utf-8") as f:
+                  found[path] = json.load(f).get("version")
+          with open("src-tauri/Cargo.toml", "rb") as f:
+              found["src-tauri/Cargo.toml"] = tomllib.load(f).get("package", {}).get("version")
+          for path, version in found.items():
+              print(f"{path}: {version}")
+          wrong = [f"{path} says {version}" for path, version in found.items() if f"v{version}" != tag]
+          if wrong:
+              print(f"::error::tag {tag} is not v + the app version: {'; '.join(wrong)}. Nothing was built or released.")
+              sys.exit(1)
+          print(f"tag {tag} matches all three")
+          PY
 
   windows:
     needs: check
@@ -165,8 +197,10 @@ jobs:
             - **Any other Linux** (Arch, CachyOS, Bazzite, SteamOS desktop mode, Fedora Atomic): `chmod +x Sundial.AppImage && ./Sundial.AppImage`
 
             Updates install on their own on Windows and from the AppImage, which replaces itself in place and restarts. The rpm and deb builds show a Download button that opens this page; install the new file over the old one. The other files here are for the updater and the sync server.
-          # Must stay a regular release: GitHub's /releases/latest (the updater endpoint) skips pre-releases.
-          prerelease: false
+          # Created hidden: GitHub's /releases/latest (the updater endpoint, the download links, the VPS) skips
+          # pre-releases, so the previous version stays the public one until attach-assets shows this one.
+          # Only used when this step creates the release; one that exists is never rewritten.
+          prerelease: true
 
       # A second copy of the installer under a fixed name, so one link always serves the newest build:
       # https://github.com/zphat/Sundial/releases/latest/download/Sundial-Setup.exe
@@ -179,6 +213,9 @@ jobs:
           Copy-Item $exe.FullName Sundial-Setup.exe
           Write-Host "Copied $($exe.Name) to Sundial-Setup.exe"
 
+      # No `prerelease:` on the three action-gh-release steps, on purpose. Left unset, v2.6.2 keeps the flag the
+      # release already has: hidden during a first build, public when a published tag is built again. `true`
+      # would hide a published release for the length of a rebuild, and the VPS would put the older web app back.
       - name: Attach Sundial-Setup.exe to the release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
@@ -368,8 +405,8 @@ jobs:
             - **Any other Linux** (Arch, CachyOS, Bazzite, SteamOS desktop mode, Fedora Atomic): `chmod +x Sundial.AppImage && ./Sundial.AppImage`
 
             Updates install on their own on Windows and from the AppImage, which replaces itself in place and restarts. The rpm and deb builds show a Download button that opens this page; install the new file over the old one. The other files here are for the updater and the sync server.
-          # Must stay a regular release: GitHub's /releases/latest (the updater endpoint) skips pre-releases.
-          prerelease: false
+          # Same as the windows job. It only matters if this step ever has to create the release itself.
+          prerelease: true
 
       # Second copies under fixed names, so one link always serves the newest build:
       # https://github.com/zphat/Sundial/releases/latest/download/Sundial.AppImage (also Sundial.deb, Sundial.rpm)
@@ -433,8 +470,9 @@ jobs:
       - name: Smoke test (self mode)
         run: |
           SUNDIAL_TOKENS=smoke SUNDIAL_DB=/tmp/smoke.sqlite SUNDIAL_BIND=127.0.0.1:8768 ./server/target/release/sundial-sync &
-          sleep 1
-          curl -fsS http://127.0.0.1:8768/v1/health
+          # The server needs a moment to open its port. Retry the first call for up to 10 seconds instead of
+          # sleeping a fixed second and hoping.
+          curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8768/v1/health
           curl -fsS -H 'Authorization: Bearer smoke' http://127.0.0.1:8768/v1/account
           curl -fsS -H 'Authorization: Bearer smoke' -H 'content-type: application/json' -d '{"protocol":1,"device_id":"ci","cursor":0,"docs":[{"id":"t1","kind":"task","updated_at":1,"deleted":false,"nonce":"AAAA","ct":"AAAA"}]}' http://127.0.0.1:8768/v1/sync
           kill %1
@@ -463,7 +501,7 @@ jobs:
           rm -rf dist-web
           mkdir dist-web
           cp -r ui/. dist-web/
-          rm -f dist-web/toast.html dist-web/sundial.html
+          rm -f dist-web/toast.html dist-web/toast.js dist-web/sundial.html
           if [ -f dist-web/sw.js ]; then
             sed -i "s/__VERSION__/$VER/g" dist-web/sw.js
             grep -qF "$VER" dist-web/sw.js
@@ -483,8 +521,10 @@ jobs:
           path: sundial-web.tar.gz
           if-no-files-found: error
 
-  # Attaches the server and web tarballs only once the Windows and Linux jobs have published their bundles and
-  # latest.json: a release must never exist without latest.json, or every installed copy's update check breaks.
+  # Attaches the server and web tarballs once the Windows and Linux jobs have put their bundles and latest.json
+  # on the release, then shows the release. Until the last step here it is a pre-release, which /releases/latest
+  # skips: a public release must never lack latest.json (every installed copy's update check would break), the
+  # fixed download names or the two tarballs the VPS fetches.
   attach-assets:
     if: github.ref_type == 'tag'
     needs: [windows, linux, sync-server, web]
@@ -504,3 +544,117 @@ jobs:
             sundial-sync-linux-x86_64.tar.gz
             sundial-web.tar.gz
           fail_on_unmatched_files: true
+
+      # The last step of a release: look at what is on it, then turn the pre-release flag off. This job has no
+      # checkout, hence --repo. If this step or anything before it fails, the release stays a pre-release.
+      - name: Show the release (pre-release off, mark it latest)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$GITHUB_REF_NAME
+          repo=$GITHUB_REPOSITORY
+
+          # Everything a public release is asked for by name: latest.json by every installed copy, the fixed
+          # names by the download links, the tarballs by the VPS web updater and provision.sh.
+          have=$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name')
+          missing=()
+          for f in latest.json Sundial-Setup.exe Sundial.AppImage Sundial.deb Sundial.rpm sundial-sync-linux-x86_64.tar.gz sundial-web.tar.gz; do
+            grep -qxF -- "$f" <<<"$have" || missing+=("$f")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::$tag has no ${missing[*]}. It stays a pre-release."
+            exit 1
+          fi
+
+          # latest.json is written by the windows job and then added to by the linux job. Both halves must be in
+          # it and point at this tag, or one platform would never be offered this version.
+          mkdir -p "$RUNNER_TEMP/release-check"
+          gh release download "$tag" --repo "$repo" --pattern latest.json --dir "$RUNNER_TEMP/release-check" --clobber
+          python3 - "$RUNNER_TEMP/release-check/latest.json" "$tag" <<'PY'
+          import json, sys
+          path, tag = sys.argv[1], sys.argv[2]
+          with open(path, encoding="utf-8") as f:
+              data = json.load(f)
+          platforms = data.get("platforms") or {}
+          problems = []
+          if f"v{data.get('version')}" != tag:
+              problems.append(f"its version is {data.get('version')}")
+          for system in ("windows", "linux"):
+              good = [key for key, entry in platforms.items()
+                      if key.startswith(system + "-") and entry.get("signature")
+                      and f"/releases/download/{tag}/" in entry.get("url", "")]
+              if not good:
+                  problems.append(f"no signed {system} entry that points at {tag}")
+          if problems:
+              print(f"::error::latest.json on {tag}: {'; '.join(problems)}. The release stays a pre-release.")
+              sys.exit(1)
+          print("latest.json ok:", ", ".join(sorted(platforms)))
+          PY
+
+          # Mark it latest, unless a higher version already is: building an old tag again must not pull
+          # /releases/latest, and every updater with it, back to that tag.
+          latest=--latest
+          current=$(gh release view --repo "$repo" --json tagName --jq .tagName 2>/dev/null || true)
+          if [ -n "$current" ] && [ "$current" != "$tag" ] && [ "$(printf '%s\n' "$current" "$tag" | sort -V | tail -n 1)" = "$current" ]; then
+            latest=--latest=false
+            echo "::warning::$current is the latest release and is higher than $tag, so $tag is shown but not marked latest"
+          fi
+          gh release edit "$tag" --repo "$repo" --prerelease=false "$latest"
+
+          now=$(gh release view --repo "$repo" --json tagName --jq .tagName 2>/dev/null || echo unknown)
+          {
+            echo "### $tag is released"
+            echo
+            echo "Every file was attached before the release was shown. /releases/latest now names $now."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Runs only when a tag build went wrong, and writes into the run summary what state the release was left in,
+  # so a red run explains itself. A release that did not finish stays a pre-release: nothing public has moved.
+  release-status:
+    if: ${{ always() && github.ref_type == 'tag' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
+    needs: [check, windows, linux, sync-server, web, attach-assets]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Say what state the release is in
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULTS: "check ${{ needs.check.result }}, windows ${{ needs.windows.result }}, linux ${{ needs.linux.result }}, sync-server ${{ needs.sync-server.result }}, web ${{ needs.web.result }}, attach-assets ${{ needs.attach-assets.result }}"
+        run: |
+          set -uo pipefail
+          tag=$GITHUB_REF_NAME
+          repo=$GITHUB_REPOSITORY
+          state=$(gh release view "$tag" --repo "$repo" --json isPrerelease \
+            --jq 'if .isPrerelease then "prerelease" else "public" end' 2>/dev/null || echo none)
+          current=$(gh release view --repo "$repo" --json tagName --jq .tagName 2>/dev/null || echo unknown)
+          {
+            case "$state" in
+              prerelease)
+                echo "### $tag is not released yet"
+                echo
+                echo "Its release exists as a pre-release and holds only the files of the jobs that finished."
+                echo "GitHub's /releases/latest skips pre-releases, so the app updater, the download links, the web app"
+                echo "updater and provision.sh still get $current. Nothing public has changed."
+                echo
+                echo "To finish it: fix the cause, then re-run the failed jobs. The last step of attach-assets shows the release."
+                ;;
+              public)
+                echo "### $tag was already public, and this build of it failed"
+                echo
+                echo "This run did not hide the release, but it may have replaced some of its files."
+                echo "Compare https://github.com/$repo/releases/tag/$tag with a good run, or re-run the failed jobs."
+                ;;
+              *)
+                echo "### $tag was not released"
+                echo
+                echo "No release was found for the tag (the build stopped before one was made, or the lookup failed)."
+                echo "/releases/latest names $current. Fix the cause, then re-run the failed jobs."
+                ;;
+            esac
+            echo
+            echo "Jobs: $RESULTS"
+          } >> "$GITHUB_STEP_SUMMARY"

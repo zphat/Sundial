@@ -36,8 +36,8 @@ ssh root@$OLD 'curl -fsS http://127.0.0.1:8768/v1/health; echo; ls -lh /var/lib/
 ```
 
 The health line shows the running version and `"mode":"hosted"`. The database should be well under
-400 MB. The Micro's disk holds about 450 MB of database with its nightly copies (Capacity, Disk). If it
-is bigger, stop and ask before you go on.
+130 MB. The Micro's 10 GB disk holds about 150 MB of database with its 30 nightly copies (Capacity,
+Disk). If it is bigger, stop and ask before you go on: the Micro then needs a bigger disk.
 
 Compare the old box's Caddyfile with the repo's:
 
@@ -46,14 +46,16 @@ scp root@$OLD:/etc/caddy/Caddyfile /tmp/old-Caddyfile
 diff /tmp/old-Caddyfile server/ops/web/Caddyfile
 ```
 
-Expected: the old file still names `89-145-167-185.sslip.io`, and some comments differ. If the old file
-starts with a global options block (a bare `{ ... }` at the very top, for example with `email`), copy
-that block to the very top of `server/ops/web/Caddyfile` now.
+Expected: the old file still names `89-145-167-185.sslip.io`, and some comments differ. The old file
+may also lack two things the repo's has: the global options block (the bare `{ ... }` at the very top,
+with `servers` and its timeouts) and the `request_body` lines in the sync block. If the old file has a
+global options block of its own (for example with `email`), copy its lines into the repo's block now.
+Caddy allows only one such block, so do not add a second.
 
 The repo's sync block was written from the docs, not copied from the box. If the old sync block has any
-line the repo's lacks (for example `request_body`, `reverse_proxy` options, timeouts or
-`trusted_proxies`), copy it into the sync block of `server/ops/web/Caddyfile` now. Only the sslip.io
-name stays behind.
+line the repo's lacks (for example `reverse_proxy` options or `trusted_proxies`), copy it into the sync
+block of `server/ops/web/Caddyfile` now. If the old block has its own `request_body`, keep the repo's
+and do not add a second. Only the sslip.io name stays behind.
 
 Check that no device still syncs through the sslip.io name. That name always points at the old IP, so
 it stops working when the old box goes. The search covers the rolled logs too:
@@ -476,18 +478,21 @@ These are estimates, not measurements. They assume use like today's: tasks and d
 - Memory. With the idle services off, Ubuntu uses about 150 MB, Caddy 40 to 60 MB and sundial-sync 10
   to 30 MB. That leaves about 250 MB, plus 1 GB of swap for spikes. An open app syncs every 10 seconds
   (once a minute when hidden), and each sync is a small request. A few hundred devices open at the same
-  moment is fine. Memory gets tight somewhere past a thousand.
+  moment is fine. Memory gets tight somewhere past a thousand. sundial-sync itself is capped at 300 MB
+  and gets no swap (`MemoryMax` and `MemorySwapMax` in its unit): if it ever runs away, the kernel ends
+  it and systemd starts it again 3 seconds later, and Caddy and ssh stay up.
 - Disk. About 4 to 5 GB is left after the system, the swap, the journal and the logs. The data is
   encrypted, so gzip shrinks it only a little: each nightly copy is about 0.8 times the database. The
-  database, its 7 copies and the room sundial-backup wants free before the next copy (twice the
-  database plus 512 MB) take about 9 times the database plus 512 MB. So the database can grow to about
-  450 MB before nights start being skipped. The protocol notes put a busy account under 10 MB a year,
-  and most are 1 to 2 MB. One account is capped at 50 MB (docs/SYNC-PROTOCOL.md). That is room for
-  about 225 to 450 accounts, or about 45 heavy ones.
+  database, its 30 copies and the room sundial-backup wants free before the next copy (twice the
+  database plus 512 MB) take about 27 times the database plus 512 MB. So on the 10 GB disk the database
+  can grow to about 150 MB before nights start being skipped. Every 10 GB of disk on top of that is
+  room for about 370 MB more database. The protocol notes put a busy account under 10 MB a year, and
+  most are 1 to 2 MB. One account is capped at 50 MB (docs/SYNC-PROTOCOL.md). On 10 GB that is room for
+  about 75 to 150 accounts, or about 15 heavy ones.
 - Email. The server sends at most 80 sign-in codes a day (Resend's free plan allows 100). That limits
   how many people can sign in on a new device per day, not how many accounts there are.
 
-So the Micro holds a few hundred people. Disk runs out first, memory second.
+So the Micro with its 10 GB disk holds about a hundred people. Disk runs out first, memory second.
 
 Signs it needs the 1 GB size (Tiny):
 
@@ -508,7 +513,7 @@ Signs it needs more disk:
 
 ```bash
 df -h /                                # more than 80% used
-ls -lh /var/lib/sundial                # the database is past 350 MB
+ls -lh /var/lib/sundial                # the database is past 120 MB (on the 10 GB disk)
 tail -n 3 /var/log/sundial-backup.log  # "ERROR: ... free" means a night was skipped
 ```
 
@@ -518,8 +523,8 @@ start it. Ubuntu grows the filesystem at boot.
 ## Later
 
 - Off-site backups. `server/ops/backup-offsite.sh` is not installed. When there is money for object
-  storage, follow the setup in its header. Its comments still say the on-box copies are kept 30 days;
-  this box keeps 7.
-- PRIVACY.md says the on-box backups are kept 30 days. It should say 7 days now.
+  storage, follow the setup in its header. It sends the newest nightly copy from `/var/backups/sundial`
+  and never opens the live database, so it only works while sundial-backup runs. Both keep 30 days, as
+  PRIVACY.md says.
 - web/README.md step 6 (merging the live Caddyfile and keeping the sslip.io name) described the first
   box. provision.sh does that work now.

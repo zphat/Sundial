@@ -1,5 +1,7 @@
 #!/bin/bash
-# Nightly off-site copy of the sync database. Runs after the on-box backup (/var/backups/sundial, 30 days).
+# Nightly off-site copy of the sync database. Runs after the on-box backup (/var/backups/sundial, 30 days)
+# and sends the newest file that backup made. It never opens the live database: a root sqlite3 on the live
+# file could leave root-owned -wal/-shm files beside it, and the server could not open it after that.
 # The copy is encrypted here first, so the bucket provider only ever holds ciphertext of ciphertext.
 #
 # One-time setup on the box (as root):
@@ -23,18 +25,50 @@
 #   chmod 600 /etc/sundial/offsite.env
 #   install -m 755 backup-offsite.sh /usr/local/bin/sundial-backup-offsite
 #   echo '45 3 * * * root /usr/local/bin/sundial-backup-offsite >> /var/log/sundial-backup.log 2>&1' > /etc/cron.d/sundial-offsite
+#   # then run it once by hand; the last line must say "ok": /usr/local/bin/sundial-backup-offsite
 #
-# Restore: rclone copy offsite:$OFFSITE_BUCKET/<file>.enc . && openssl enc -d -aes-256-cbc -pbkdf2 -pass file:/etc/sundial/backup.key -in <file>.enc -out sundial-sync.sqlite
-# After restoring, bump the epoch so every client resyncs: sqlite3 sundial-sync.sqlite "UPDATE meta SET value=value+1 WHERE key='epoch'"
+# An off-site file has the on-box file's name plus .enc, so the two are easy to match.
+#
+# Restore, as root. <file> is the off-site name without .enc; set -a exports the settings, so rclone sees them:
+#   set -a; . /etc/sundial/offsite.env; set +a
+#   rclone copy "offsite:$OFFSITE_BUCKET/<file>.enc" .
+#   openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass file:/etc/sundial/backup.key -in <file>.enc -out <file>
+#   gunzip <file>      # only when <file> ends in .gz; either way there is a .sqlite file now
+# -iter must be the number used to encrypt below. Without it openssl uses its default and says "bad decrypt".
+# After restoring, bump the epoch so every client resyncs: sqlite3 <the .sqlite file> "UPDATE meta SET value=value+1 WHERE key='epoch'"
 set -euo pipefail
+# Exported (set -a): rclone finds its remote in the RCLONE_CONFIG_OFFSITE_* variables of its environment.
+set -a
 . /etc/sundial/offsite.env
-SRC=/var/lib/sundial/sundial-sync.sqlite
+set +a
+DIR=/var/backups/sundial
+KEY=/etc/sundial/backup.key
+MAX_AGE_HOURS=36
+log() { echo "$(date -u +%FT%TZ) off-site backup $*"; }
+# Loud on purpose: an ERROR line in the log and a failed exit, never a quiet skip.
+fail() { log "ERROR: $*" >&2; exit 1; }
+
+# The newest copy the on-box backup finished. Any *.sqlite or *.sqlite.gz counts, because the script that
+# makes them has changed its file names before (its unfinished files end in .tmp or .tmp.gz and do not
+# match). A file changed in the last minute may still be being written, so it is left for the next night.
+SRC=$(find "$DIR" -maxdepth 1 -type f \( -name '*.sqlite' -o -name '*.sqlite.gz' \) -mmin +1 -printf '%T@ %p\n' \
+	| sort -n | tail -n 1 | cut -d' ' -f2-)
+[ -n "$SRC" ] || fail "no finished *.sqlite or *.sqlite.gz in $DIR; nothing sent. Is the nightly backup running?"
+AGE=$(( $(date +%s) - $(stat -c %Y "$SRC") ))
+# One late or skipped night is tolerated (the copy from the night before goes out again). Two are not.
+if [ "$AGE" -gt $((MAX_AGE_HOURS * 3600)) ]; then
+	fail "the newest copy, $(basename "$SRC"), is $((AGE / 3600)) hours old (limit $MAX_AGE_HOURS); nothing sent. The nightly backup has stopped"
+fi
+# The file is taken by its name alone, so look at it before it becomes the off-site copy.
+case "$SRC" in
+	*.gz) gzip -t "$SRC" 2>/dev/null || fail "$(basename "$SRC") is not a whole gzip file; nothing sent" ;;
+	*) [ "$(head -c 15 "$SRC")" = "SQLite format 3" ] || fail "$(basename "$SRC") is not an SQLite database; nothing sent" ;;
+esac
+
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
-STAMP=$(date -u +%Y%m%dT%H%MZ)
-# a consistent snapshot even while the server writes
-sqlite3 "$SRC" ".backup '$WORK/sundial-sync.sqlite'"
-openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass file:/etc/sundial/backup.key -in "$WORK/sundial-sync.sqlite" -out "$WORK/sundial-sync-$STAMP.sqlite.enc"
-rclone copyto "$WORK/sundial-sync-$STAMP.sqlite.enc" "offsite:$OFFSITE_BUCKET/sundial-sync-$STAMP.sqlite.enc" --s3-no-check-bucket
-# keep 30 days off-site
-rclone delete "offsite:$OFFSITE_BUCKET" --min-age 30d --include 'sundial-sync-*.sqlite.enc' || true
-echo "$(date -u +%FT%TZ) off-site backup ok: sundial-sync-$STAMP.sqlite.enc ($(stat -c %s "$WORK/sundial-sync-$STAMP.sqlite.enc") bytes)"
+NAME="$(basename "$SRC").enc"
+openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass "file:$KEY" -in "$SRC" -out "$WORK/$NAME"
+rclone copyto "$WORK/$NAME" "offsite:$OFFSITE_BUCKET/$NAME" --s3-no-check-bucket
+# keep 30 days off-site (reached only after a good upload, so old copies stay while new ones fail)
+rclone delete "offsite:$OFFSITE_BUCKET" --min-age 30d --include '*.sqlite.enc' --include '*.sqlite.gz.enc' || true
+log "ok: $NAME ($(stat -c %s "$WORK/$NAME") bytes), from the on-box copy made $((AGE / 3600)) h ago"

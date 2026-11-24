@@ -30,7 +30,12 @@ use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_deep_link::DeepLinkExt;
 
-const SERVICE: &str = "Sundial";
+// The keyring service the sync key and API keys are stored under. A test build sets SUNDIAL_KEYRING_SERVICE at compile
+// time (tools/selftest/build.sh) so it never reads or writes the secrets of an installed Sundial.
+const SERVICE: &str = match option_env!("SUNDIAL_KEYRING_SERVICE") {
+    Some(s) => s,
+    None => "Sundial",
+};
 const DB_FILE: &str = "sundial.json";
 const BACKUPS_TO_KEEP: usize = 30;
 
@@ -782,8 +787,10 @@ async fn update_install(app: AppHandle, pending: tauri::State<'_, PendingUpdate>
     let mut downloaded: u64 = 0;
     let mut last_pct: i64 = -1;
     let finish_app = app.clone();
-    let result = update
-        .download_and_install(
+    // Download and install are two calls so the page can save in between: on Windows install() ends the process itself
+    // the moment the installer has started, and nothing after it runs.
+    let download = update
+        .download(
             move |chunk, total| {
                 downloaded += chunk as u64;
                 let pct = total.map(|t| if t > 0 { (downloaded * 100 / t) as i64 } else { -1 }).unwrap_or(-1);
@@ -795,13 +802,23 @@ async fn update_install(app: AppHandle, pending: tauri::State<'_, PendingUpdate>
             move || {
                 ulog(&finish_app, "download complete, starting the installer");
                 let _ = finish_app.emit("sundial://update-progress", json!({ "pct": 100, "installing": true }));
-                // From here on nothing may keep the process alive: the installer has to replace the exe.
-                QUITTING.store(true, Ordering::SeqCst);
-                let h = finish_app.clone();
-                let _ = finish_app.run_on_main_thread(move || drop(h.remove_tray_by_id("main")));
             },
         )
         .await;
+    let result = match download {
+        Ok(bytes) => {
+            // This is an async command, so the wait is on a worker thread and the main thread stays free to deliver the
+            // page's save_db and quit_ready.
+            let saved = flush_page(&app);
+            ulog(&app, if saved { "the page saved; running the installer" } else { "the page did not answer in time; running the installer" });
+            // From here on nothing may keep the process alive: the installer has to replace the exe.
+            QUITTING.store(true, Ordering::SeqCst);
+            let h = app.clone();
+            let _ = app.run_on_main_thread(move || drop(h.remove_tray_by_id("main")));
+            update.install(bytes)
+        }
+        Err(e) => Err(e),
+    };
     match result {
         Ok(()) => {
             if cfg!(target_os = "linux") {
@@ -819,9 +836,12 @@ async fn update_install(app: AppHandle, pending: tauri::State<'_, PendingUpdate>
         Err(e) => {
             let msg = e.to_string();
             ulog(&app, &format!("failed: {msg}"));
-            QUITTING.store(false, Ordering::SeqCst);
-            if app.tray_by_id("main").is_none() {
-                let _ = build_tray_handle(&app);
+            // Back to normal, unless the user asked to quit meanwhile: that quit is still on its way and owns both.
+            if !QUIT_PENDING.load(Ordering::SeqCst) {
+                QUITTING.store(false, Ordering::SeqCst);
+                if app.tray_by_id("main").is_none() {
+                    let _ = build_tray_handle(&app);
+                }
             }
             Err(msg)
         }
@@ -830,18 +850,56 @@ async fn update_install(app: AppHandle, pending: tauri::State<'_, PendingUpdate>
 
 // ---------- corner toasts (Steam-style notification window) ----------
 
+/// The toast that holds the slot: the one on screen, or the one whose window is on its way.
+struct ToastSlot {
+    /// Tells this toast from the ones before and after it. The page gets it with the payload and hands it back with the
+    /// user's action, and the window is remembered by it.
+    seq: u64,
+    payload: Value,
+    /// When it took the slot. Until its window exists this is the only sign that one is coming.
+    since: std::time::Instant,
+}
+
 #[derive(Default)]
 pub struct ToastState {
-    current: Option<Value>,
+    current: Option<ToastSlot>,
     queue: std::collections::VecDeque<Value>,
+    seq: u64,
 }
-pub struct Toasts(Mutex<ToastState>);
+
+impl ToastState {
+    /// Puts a payload in the slot and returns its seq.
+    fn take_slot(&mut self, payload: Value) -> u64 {
+        self.seq += 1;
+        self.current = Some(ToastSlot { seq: self.seq, payload, since: std::time::Instant::now() });
+        self.seq
+    }
+
+    /// The slot goes to the next queued payload, or stands empty.
+    fn advance(&mut self) {
+        self.current = None;
+        if let Some(p) = self.queue.pop_front() {
+            self.take_slot(p);
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct Toasts {
+    state: Mutex<ToastState>,
+    /// The seq of the toast whose window is up. Held for as long as that window is being closed or built (toast_sync), so
+    /// one thread at a time does that. Never taken on the main thread, which is the one doing the closing and building.
+    window: Mutex<Option<u64>>,
+}
 
 const TOAST_W: f64 = 384.0;
 const TOAST_H: f64 = 126.0;
+/// How long a toast holds the slot on its word alone, before its window exists. Building one takes well under a second.
+const TOAST_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A frameless, transparent, always-on-top window in a screen corner. Created per notification so it
 /// never takes focus from whatever the user is doing; closed by the page when dismissed or timed out.
+/// Only toast_sync calls this, after it has closed the window of the toast before.
 fn open_toast_window(app: &AppHandle, payload: &Value) -> Result<(), String> {
     let corner = payload["corner"].as_str().unwrap_or("bottom-left");
     let mon = app
@@ -855,9 +913,6 @@ fn open_toast_window(app: &AppHandle, payload: &Value) -> Result<(), String> {
     let taskbar = 52.0; // room for a bottom taskbar; the toast sits just above it
     let x = if corner.ends_with("left") { mp.x + margin } else { mp.x + ms.width - TOAST_W - margin };
     let y = if corner.starts_with("top") { mp.y + margin } else { mp.y + ms.height - TOAST_H - taskbar - margin };
-    if let Some(old) = app.get_webview_window("toast") {
-        let _ = old.destroy();
-    }
     tauri::WebviewWindowBuilder::new(app, "toast", tauri::WebviewUrl::App("toast.html".into()))
         .title("Sundial notification")
         .inner_size(TOAST_W, TOAST_H)
@@ -872,6 +927,94 @@ fn open_toast_window(app: &AppHandle, payload: &Value) -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Destroys the toast window, if there is one, and waits until Tauri has let go of its label: destroy() only posts the
+/// request to the event loop, and a window built while the old label is still registered fails with "label already
+/// exists". True when there was a window. The main thread does the destroying, so this must never run there.
+fn close_toast_window(app: &AppHandle) -> bool {
+    match app.get_webview_window("toast") {
+        Some(w) => {
+            let _ = w.destroy();
+        }
+        None => return false,
+    }
+    // A few milliseconds as a rule. After a second, go on and let the build say what is wrong.
+    for _ in 0..100 {
+        if app.get_webview_window("toast").is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    true
+}
+
+/// A toast left the slot without anyone having seen it: its window could not be opened, or was gone. The main window
+/// hears it as timed out, like a toast nobody clicked, which is what stops a repeating start sound that would otherwise
+/// have no button. `lost` says why.
+fn toast_lost(app: &AppHandle, payload: Value, why: &str) {
+    let _ = app.emit_to("main", "sundial://toast-action", json!({ "action": "timeout", "payload": payload, "lost": why }));
+}
+
+/// Makes the toast window match the slot: closes the window of a toast that has left it, and opens one for the toast
+/// that holds it. Every change to the slot is followed by a call, and calls take turns (the `window` lock), so no two
+/// threads ever build or destroy a toast window at the same time and the last call always sees the final state.
+///
+/// A toast whose window cannot be opened gives the slot to the next queued one. `mine` is the caller's own toast: its
+/// error is returned, so the UI can fall back to its banner; any other toast is reported through toast_lost.
+///
+/// Waits for the main thread to do the work, and a WebView2 window created from the main thread's own call deadlocks on
+/// Windows: only for async commands and plain threads, never a synchronous command or an event handler.
+fn toast_sync(app: &AppHandle, mine: Option<u64>) -> Result<(), String> {
+    let toasts = app.state::<Toasts>();
+    let mut shown = toasts.window.lock().map_err(|e| e.to_string())?;
+    let mut result = Ok(());
+    loop {
+        let want = toasts
+            .state
+            .lock()
+            .map_err(|e| e.to_string())?
+            .current
+            .as_ref()
+            .map(|c| (c.seq, c.payload.clone()));
+        let Some((seq, payload)) = want else {
+            // nothing holds the slot, so no toast window may stay
+            close_toast_window(app);
+            *shown = None;
+            break;
+        };
+        if *shown == Some(seq) {
+            break;
+        }
+        // one toast goes, the next comes after a beat
+        if close_toast_window(app) {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        *shown = None;
+        match open_toast_window(app, &payload) {
+            Ok(()) => *shown = Some(seq),
+            Err(e) => {
+                // The slot must not stay with a toast that has no window. Whoever takes a toast out of the slot reports
+                // it, once: if the slot has moved on by itself (the main window dismissed this toast meanwhile), that
+                // has been done already.
+                let dropped = {
+                    let mut st = toasts.state.lock().map_err(|e| e.to_string())?;
+                    let still = st.current.as_ref().is_some_and(|c| c.seq == seq);
+                    if still {
+                        st.advance();
+                    }
+                    still
+                };
+                if dropped && mine == Some(seq) {
+                    result = Err(e);
+                } else if dropped {
+                    toast_lost(app, payload, &e);
+                }
+            }
+        }
+        // again: the slot may have changed while the window was being built
+    }
+    result
 }
 
 /// Linux stand-in for the corner window: the same title, label and meta as one desktop notification. No buttons; the
@@ -904,50 +1047,75 @@ async fn toast_show(app: AppHandle, state: tauri::State<'_, Toasts>, payload: Va
         // instead; toast_payload then has no current payload and toast_action finds no window, which both handle already.
         return notify_from_toast(&app, &payload);
     }
-    {
-        let mut st = state.0.lock().map_err(|e| e.to_string())?;
-        if app.get_webview_window("toast").is_some() {
+    let (seq, gone) = {
+        let mut st = state.state.lock().map_err(|e| e.to_string())?;
+        // Decided from the slot, under the lock, and not from whether a window exists: Tauri knows a window's label only
+        // once the window is built, so two calls in the same tick would both find none and both build one. The slot alone
+        // would wedge the queue behind a toast whose window never came up or went away without a word, so a toast counts
+        // only while its window exists or it took the slot a moment ago.
+        let busy = st
+            .current
+            .as_ref()
+            .is_some_and(|c| c.since.elapsed() < TOAST_GRACE || app.get_webview_window("toast").is_some());
+        if busy {
             st.queue.push_back(payload);
             return Ok(());
         }
-        st.current = Some(payload.clone());
+        let gone = st.current.take().map(|c| c.payload);
+        (st.take_slot(payload), gone)
+    };
+    if let Some(p) = gone {
+        toast_lost(&app, p, "its window was gone");
     }
-    open_toast_window(&app, &payload)
+    // On a thread that may block: toast_sync waits its turn, then for the main thread to build the window.
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || toast_sync(&app2, Some(seq)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
+/// The payload of the toast that holds the slot, with its seq as `toastSeq`.
 #[tauri::command]
 fn toast_payload(state: tauri::State<'_, Toasts>) -> Result<Option<Value>, String> {
-    Ok(state.0.lock().map_err(|e| e.to_string())?.current.clone())
+    let st = state.state.lock().map_err(|e| e.to_string())?;
+    Ok(st.current.as_ref().map(|c| {
+        let mut p = c.payload.clone();
+        if let Some(o) = p.as_object_mut() {
+            o.insert("toastSeq".to_string(), json!(c.seq));
+        }
+        p
+    }))
 }
 
-/// The toast page reports what the user did; the main window gets the event, the window closes,
-/// and the next queued toast (if any) opens after a beat.
+/// The toast page reports what the user did; the main window gets the event, and the window follows the slot: it
+/// closes, and the next queued toast (if any) opens after a beat. `seq` is the toastSeq the page was showing, so an
+/// action that arrives late can never land on the toast after it. Without one (the main window dismissing a toast) the
+/// action is for the toast that holds the slot now.
 #[tauri::command]
-async fn toast_action(app: AppHandle, state: tauri::State<'_, Toasts>, action: String) -> Result<(), String> {
-    let (current, next) = {
-        let mut st = state.0.lock().map_err(|e| e.to_string())?;
-        let current = st.current.take();
-        let next = st.queue.pop_front();
-        st.current = next.clone();
-        (current, next)
+async fn toast_action(app: AppHandle, state: tauri::State<'_, Toasts>, action: String, seq: Option<u64>) -> Result<(), String> {
+    let done = {
+        let mut st = state.state.lock().map_err(|e| e.to_string())?;
+        if st.current.as_ref().is_some_and(|c| seq.is_none() || seq == Some(c.seq)) {
+            let done = st.current.take().map(|c| c.payload);
+            // The next queued toast takes the slot now, while the old window is still up: a toast_show that arrives
+            // before the next window exists then queues behind it instead of building a window of its own.
+            st.advance();
+            done
+        } else {
+            None
+        }
     };
     if action == "open" || action == "install" {
         show_main(&app);
     }
-    if let Some(p) = current {
+    if let Some(p) = done {
         let _ = app.emit_to("main", "sundial://toast-action", json!({ "action": action, "payload": p }));
     }
     // Off the toast's own call: tearing a webview down from inside its IPC handler is another Windows deadlock.
-    // destroy() skips the close-request round trip; building from a plain thread hands creation to the event loop.
+    // A plain thread hands the closing and the building to the event loop.
     let app2 = app.clone();
     std::thread::spawn(move || {
-        if let Some(w) = app2.get_webview_window("toast") {
-            let _ = w.destroy();
-        }
-        if let Some(n) = next {
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            let _ = open_toast_window(&app2, &n);
-        }
+        let _ = toast_sync(&app2, None);
     });
     Ok(())
 }
@@ -1097,25 +1265,91 @@ fn deep_link_pending(state: tauri::State<'_, DeepLinks>) -> Result<Option<String
 
 /// Set while the app is on its way out, so the close-to-tray handler stops holding windows open.
 static QUITTING: AtomicBool = AtomicBool::new(false);
+/// A quit has been asked for. It first gives the page a moment to save, and a second request in that time must not
+/// start a second wait or a second teardown.
+static QUIT_PENDING: AtomicBool = AtomicBool::new(false);
 
-/// Quit for real: tray icon gone (Windows otherwise keeps a ghost icon until the next mouse-over), every window
-/// destroyed without a close request, the event loop asked to stop, and a watchdog in case it does not.
+/// How long a quit, or an update about to run its installer, waits for the page to save.
+const FLUSH_WAIT: std::time::Duration = std::time::Duration::from_millis(700);
+/// From a quit request to the process being gone, whatever else happens.
+const QUIT_LIMIT: std::time::Duration = std::time::Duration::from_millis(2500);
+
+/// Counts the page's quit_ready answers. flush_page waits for the next one.
+#[derive(Default)]
+pub struct FlushGate {
+    answers: Mutex<u64>,
+    answered: std::sync::Condvar,
+}
+
+/// Asks the page to write out what it is still holding (desktop.js keeps the newest state for 250 ms, ui.js what was
+/// typed last for 600 ms) and waits for its quit_ready, at most FLUSH_WAIT. True when the page answered. With no main
+/// window there is nobody to ask. The page's save_db and quit_ready arrive on the main thread, so this must never run
+/// there: it would only sit out the whole wait.
+fn flush_page(app: &AppHandle) -> bool {
+    let Some(gate) = app.try_state::<FlushGate>() else { return false };
+    if app.get_webview_window("main").is_none() {
+        return false;
+    }
+    let before = match gate.answers.lock() {
+        Ok(n) => *n,
+        Err(_) => return false,
+    };
+    if app.emit_to("main", "sundial://flush", ()).is_err() {
+        return false;
+    }
+    // The count, not the wake-up, says whether an answer came: one that arrives before this thread sleeps is not missed.
+    let Ok(n) = gate.answers.lock() else { return false };
+    let waited = gate.answered.wait_timeout_while(n, FLUSH_WAIT, |n| *n == before);
+    matches!(waited, Ok((_, w)) if !w.timed_out())
+}
+
+/// The page's answer to "sundial://flush": what it was holding is written, or could not be.
+#[tauri::command]
+fn quit_ready(gate: tauri::State<'_, FlushGate>) {
+    if let Ok(mut n) = gate.answers.lock() {
+        *n += 1;
+    }
+    gate.answered.notify_all();
+}
+
+/// Debug builds only (tools/selftest): the same quit as the tray menu, so the save-before-quit handshake can be tested
+/// without a click on the tray. In a release build it does nothing.
+#[tauri::command]
+fn dev_quit(app: AppHandle) {
+    if cfg!(debug_assertions) {
+        quit_app(&app);
+    }
+}
+
+/// Quit for real: the page saves, then the tray icon goes (Windows otherwise keeps a ghost icon until the next
+/// mouse-over), every window is destroyed without a close request and the event loop is asked to stop. A watchdog ends
+/// the process if any of that does not happen in time.
 fn quit_app(app: &AppHandle) {
-    QUITTING.store(true, Ordering::SeqCst);
-    // Tray removal destroys a hidden window, which Windows only allows from the thread that owns it.
-    let h = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        drop(h.remove_tray_by_id("main"));
-        for (_, w) in h.webview_windows() {
-            let _ = w.destroy();
-        }
-        h.exit(0);
-    });
+    if QUIT_PENDING.swap(true, Ordering::SeqCst) {
+        return;
+    }
     let h2 = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(1500));
+        std::thread::sleep(QUIT_LIMIT);
         h2.cleanup_before_exit();
         std::process::exit(0);
+    });
+    // The wait is on a thread of its own: the tray menu and the close button call this on the main thread, and that is
+    // the thread that has to deliver the page's save_db and quit_ready. QUITTING stays off until the wait is over, so
+    // the main window is still there to do the saving (on Linux without a tray the close button comes through here).
+    let h = app.clone();
+    std::thread::spawn(move || {
+        flush_page(&h);
+        QUITTING.store(true, Ordering::SeqCst);
+        // Tray removal destroys a hidden window, which Windows only allows from the thread that owns it.
+        let h1 = h.clone();
+        let _ = h.run_on_main_thread(move || {
+            drop(h1.remove_tray_by_id("main"));
+            for (_, w) in h1.webview_windows() {
+                let _ = w.destroy();
+            }
+            h1.exit(0);
+        });
     });
 }
 
@@ -1200,7 +1434,8 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(PendingUpdate(Mutex::new(None)))
-        .manage(Toasts(Mutex::new(ToastState::default())))
+        .manage(Toasts::default())
+        .manage(FlushGate::default())
         .manage(DeepLinks(Mutex::new(None)))
         .setup(|app| {
             #[cfg(target_os = "linux")]
@@ -1268,7 +1503,7 @@ pub fn run() {
             autostart_get, autostart_set, secret_set, secret_get, secret_delete, secret_store,
             set_hotkeys, ai_parse, app_version, update_check, update_install,
             toast_show, toast_payload, toast_action, deep_link_pending, machine_name,
-            platform_info, platform
+            platform_info, platform, quit_ready, dev_quit
         ])
         .build(tauri::generate_context!())
         .expect("error while building Sundial")
